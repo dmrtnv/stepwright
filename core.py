@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Feature pipeline runner: one feature folder = numbered steps, each a fresh `claude -p` sequence (plan → implement →
 review → respond) on its own branch, in its own Docker Sandboxes VM, gated by the runner and published as a draft PR
-by a GitHub App. A step starts only after the previous one merged. Runbook: ~/.claude/pipeline/README.md. Commands:
+by a GitHub App. A step starts only after the previous one merged. Runbook: README.md beside this file. Commands:
 `pipeline help` (the COMMANDS table below).
 
 Modules: core (this: state machine, stages, gates, publish, PR loops, admission), backend (sbx), adapter (repos and
@@ -5310,7 +5310,7 @@ def command_help(argv):
         print(f"no command {argv[0]!r}" + suggestion(argv[0]), file=sys.stderr)
         return 2
 
-    print('pipeline: unattended feature pipeline, one PR per step (runbook ~/.claude/pipeline/README.md)')
+    print(f'pipeline: unattended feature pipeline, one PR per step (runbook: {PIPELINE_DIR / "README.md"})')
 
     for group, title, example in HELP_GROUPS:
         entries = [(usage, summary) for usage, summary, kind in COMMANDS.values() if kind == group]
