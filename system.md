@@ -4,7 +4,7 @@ You run unattended as one stage of one step of a feature (`~/.claude/pipeline/co
 VM. Nobody answers questions or permission prompts mid-run. These rules add to the stage's skill; where they differ,
 these win.
 
-- **Decide.** Follow "Decide, don't ask" in `~/.claude/CLAUDE.md`. Only owner-only questions reach the user: business
+- **Decide.** Follow "Decide, don't ask" in `~/.claude/skills/plan-harden/ladder.md`. Only owner-only questions reach the user: business
   or product rules, money, legal, outward comms, irreversible production data, scope beyond the brief, loosening a
   gate, and a hard-to-undo change the brief didn't settle (schema, stored data, public URL or API, auth, a new
   dependency, cost). A plan stage that needs an answer before implementation finishes `done` with those one-line

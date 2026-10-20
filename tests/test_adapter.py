@@ -62,6 +62,12 @@ class AdapterCase(unittest.TestCase):
 
 
 class ConfigTest(AdapterCase):
+    def test_the_example_config_loads_with_defaults(self):
+        shutil.copy(Path(adapter.__file__).parent / 'examples/config.example.json', self.config)
+        config = adapter.load_config()
+        self.assertEqual(config['app']['privateKey'], str(Path.home() / '.config/pipeline/app.pem'))
+        self.assertEqual((config['admission'], config['template']), (adapter.DEFAULT_ADMISSION, adapter.DEFAULT_TEMPLATE))
+
     def test_a_missing_config_or_missing_keys_are_named(self):
         with self.assertRaisesRegex(adapter.AdapterError, 'no .*config.json'):
             adapter.load_config()
@@ -222,6 +228,10 @@ class ValidateTest(unittest.TestCase):
         draft = json.loads((Path(adapter.__file__).parent / 'sandbox/pipeline.node-pnpm.json').read_text())
         config = adapter.validate('acme/shop', draft)
         self.assertIn('one-migration', [check['name'] for check in config['checkFast']])
+
+    def test_the_python_preset_is_valid(self):
+        draft = json.loads((Path(adapter.__file__).parent / 'sandbox/pipeline.python.json').read_text())
+        self.assertEqual([check['name'] for check in adapter.validate('acme/shop', draft)['checkFast']], ['test'])
 
 
 class GlobTest(unittest.TestCase):

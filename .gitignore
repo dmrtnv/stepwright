@@ -1,2 +1,5 @@
 __pycache__/
 .claude/plans/
+# Your config and state while they still live beside core.py
+/config.json
+/logs/
