@@ -1,0 +1,33 @@
+[Unit]
+Description=Docker Sandboxes daemon, capped so pipeline VMs yield to manual work
+
+[Service]
+# Foreground (-d detaches). One daemon per user (it holds sandboxd.lock); pipeline admission requires this unit active.
+# Refuses to start while another daemon (one started by hand, outside the caps) holds the lock; Restart= retries, so
+# it takes over once that one stops.
+ExecStartPre=/bin/sh -c '[ ! -e "$$1" ] || flock -n "$$1" true || { echo "another sbx daemon holds $$1: sbx daemon stop" >&2; exit 1; }' sh %h/.local/state/sandboxes/sandboxes/sandboxd/sandboxd.lock
+ExecStart=/usr/bin/sbx daemon start
+# Active only once the daemon accepts connections (a stale socket file refuses them), so units ordered after it wait.
+ExecStartPost=/bin/sh -c 'i=0; until /usr/bin/python3 -c "import socket, sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])" "$$1" 2>/dev/null; do i=$$((i + 1)); [ "$$i" -lt 120 ] || { echo "sbx daemon socket not ready after 60s" >&2; exit 1; }; sleep 0.5; done' sh %h/.local/state/sandboxes/sandboxes/sandboxd/sandboxd.sock
+# sbin too: the daemon needs mkfs.ext4 (/usr/sbin) for its block volume driver, else every create fails.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=SBX_NO_TELEMETRY=1
+Environment=DOCKER_SANDBOXES_CLONED_WORKSPACE_SIZE=40g
+# The VM processes live in this unit's cgroup and a new daemon never re-adopts them: any stop, crash or restart of
+# the daemon ends every VM. Restart only when no stage runs (`pipeline status`).
+KillMode=mixed
+# always, not on-failure: after a docker-sbx upgrade the new client replaces the old daemon, which exits 0.
+Restart=always
+RestartSec=15
+# Caps: set them for your machine (RAM from `free -g`, threads from `nproc`). Each stage VM is 8 GiB and 6 CPUs.
+#   MemoryMax  = RAM - 8G (what the desktop and your own work keep)     e.g. 32G RAM -> 24G
+#   MemoryHigh = MemoryMax - 3G (above it the VMs are throttled, not killed)
+#   CPUQuota   = (threads - 4) x 100% (4 threads always free for you)  e.g. 16 threads -> 1200%
+MemoryHigh=21G
+MemoryMax=24G
+MemorySwapMax=4G
+CPUQuota=1200%
+CPUWeight=25
+
+[Install]
+WantedBy=default.target

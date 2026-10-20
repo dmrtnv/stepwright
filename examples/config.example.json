@@ -1,0 +1,4 @@
+{
+  "app": {"id": 1234567, "slug": "your-app-slug", "privateKey": "~/.config/pipeline/app.pem", "reviewer": "your-github-login"},
+  "repos": {"your-github-login/your-repo": "~/code/your-repo"}
+}

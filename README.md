@@ -1,9 +1,26 @@
-# Pipeline runbook
+# stepwright
 
-You write short briefs; the pipeline turns each into a reviewed branch and a draft PR, alone, in a throwaway sandbox VM,
-while you work. Claude never pushes or merges: the runner pushes `agent/**` through a GitHub App, **you** review and
-merge, then the next step starts. Sandbox facts: `sandbox/README.md`. What every sbx VM on the box reserves (stage VMs
-`pl-*`, and a companion CI runner's `ci-*` VMs if you run one): `sbx-host status`.
+An unattended PR pipeline for your own GitHub repos. You write short briefs; stepwright turns each into a planned,
+implemented, reviewed branch and a draft PR, one step at a time, while you work. Every stage is Claude Code running in
+a throwaway [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM with no secrets and deny-by-default
+network. Claude never pushes or merges: the runner pushes `agent/**` branches through your GitHub App, **you** review
+and merge, then the next step starts.
+
+**Install:** [INSTALL.md](INSTALL.md) (Ubuntu 24.04+, a Claude subscription, a GitHub App of your own).
+
+## Terms of use
+
+stepwright runs the unmodified `claude` CLI with **your own** Claude login. Unattended use of a subscription is a gray
+area: Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (§3) forbid accessing the services
+"through automated or non-human means, whether through a bot, script, or otherwise", "except when you are accessing
+our Services via an Anthropic API Key or where we otherwise explicitly permit it". The
+[Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) adds that "Advertised usage limits for
+Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
+yourself; you are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
+
+## How it works
+
+Sandbox facts: `sandbox/README.md`. What every sbx VM on the box reserves: `sbx-host status`.
 
 ```
 you: /pipeline-feature <name>     → <repo>/.claude/plans/<name>/ with 00-overview.md + NN-slug/brief.md per PR
@@ -11,8 +28,8 @@ you: pipeline <name> [--detach]   (or wait: the tick timer starts it within 5 mi
 you: pipeline status [--watch]    (what needs you, runs, queues; `pipeline help` lists every command)
 
 each step (one PR, one sandbox pl-<repo>-<name>-NN):
-  admit       not held, sbx.service up, a free stage slot (`pipeline parallel`, ≤3), ≥10 GiB free, weekly <90 % and
-              5-hour <85 % usage — else queued
+  admit       not held, sbx.service up, a free stage slot (`pipeline parallel`, ≤2 by default), ≥10 GiB free, weekly <80 % and
+              5-hour <70 % usage (defaults) — else queued
   provision   template built if missing, sandbox cloned from the runner's clean clone, kit copied, branch from
               origin/<base>, repo setup (an sbx/VM-git/fetch/setup failure retries 3× 15 min apart, then pauses)
   plan        Claude writes plan.md            → waits if it has questions for you (autonomy auto: takes its
@@ -45,25 +62,20 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
 | sbx daemon (owns every VM) | `systemctl --user status sbx.service`: a user unit that caps the VMs (MemoryHigh, MemoryMax, swap, CPUQuota, a low CPUWeight) so manual work wins every contention; stopping, restarting or a crash of the daemon ends every VM (a new daemon never re-adopts them), so restart it only when no stage runs |
 | tick | `systemctl --user list-timers pipeline-tick.timer` (every 5 min; runs are transient units `pipeline-run-*`) |
 
-## One-time setup
+## Setup
 
-1. Sandboxes: install `docker-sbx` ([Docker's guide](https://docs.docker.com/ai/sandboxes/install/)) and join the
-   `kvm` group (log out and in), then `sbx-host/install-sbx.sh`, `sbx login`, `pipeline template build`, then
-   `sandbox/gate.py --repo <checkout>` (every line PASS). With the default policy (`"claude": "host", "build": "auto"`) the runner builds the template for a new
-   host `claude` itself before the next sandbox create; see Upgrading.
-2. Your own GitHub App: contents + pull requests write; checks, statuses, actions read; no
-   workflows. Optional: actions write lets it rerun CI that failed without a failed step, but it also allows
-   dispatching any workflow on its own branches and deleting runs, logs and caches: grant it only once deploy
-   environments allow deploys from reviewed branches alone, with the deploy secrets in those environments. Private key → `~/.config/pipeline/app.pem`, `chmod 600`. Then `pipeline prove-app --repo <o>/<r>`.
-3. Optional: `~/.config/ntfy/topic`, one line `<random>`, mode 600 (ntfy.sh phone pings; never in a dotfiles repo).
-   `pipeline status -v` says `ntfy: topic missing` without it.
-4. Systemd user units: `sbx.service` (the capped daemon: enabled, started only if no other daemon holds
-   `sandboxd.lock`), `pipeline-tick.timer` (every 5 min) and its service, plus `~/.local/bin/pipeline` linked to
-   `pipeline`; `loginctl enable-linger` so they run while you are logged out. A daemon started by hand (`sbx daemon start`, or one any `sbx` command autostarted)
-   sits outside the caps and dies with its terminal or unit; while it holds the lock the unit refuses to start
-   (retries every 15 s) and stages queue. Cut over once, when no stage runs:
-   `pipeline stop --all`, `sbx daemon stop`, `systemctl --user start sbx.service`, `sandbox/gate.py`,
-   `pipeline stop --clear`. Check: `pipeline status -v` shows `shims n/n` (every VM in the unit's cgroup).
+Step by step: [INSTALL.md](INSTALL.md). Notes for later:
+
+- **Template**: with the default policy (`"claude": "host", "build": "auto"`) the runner builds the template for a new
+  host `claude` itself before the next sandbox create; see Upgrading.
+- **Actions write** (optional) lets the App rerun CI that failed without a failed step, but it also allows
+  dispatching any workflow on its own branches and deleting runs, logs and caches: grant it only once deploy
+  environments allow deploys from reviewed branches alone, with the deploy secrets in those environments.
+- **A daemon started by hand** (`sbx daemon start`, or one any `sbx` command autostarted while `sbx.service` was down)
+  sits outside the caps and dies with its terminal; while it holds `sandboxd.lock` the unit refuses to start (retries
+  every 15 s) and stages queue. Cut over once, when no stage runs: `pipeline stop --all`, `sbx daemon stop`,
+  `systemctl --user start sbx.service`, `sandbox/gate.py --repo <checkout>`, `pipeline stop --clear`. Check:
+  `pipeline status -v` shows `shims n/n` (every VM in the unit's cgroup).
 
 **New repo**: install the App on it; rulesets: base branch requires a PR with 1 code-owner
 approval and the CI checks, non-admins may push only `agent/**`; `CODEOWNERS`; CI running on `pull_request` (drafts
@@ -117,8 +129,8 @@ a run holds the feature. Ctrl+C, SIGTERM and
   feature lock)), in `order` then oldest-queued order, and none while the host would refuse it (kill switch, sbx,
   memory, usage).
 - **Admission** before every stage: not held or drained, `sbx.service` active (the capped daemon; never an uncapped one), a slot
-  (`logs/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots` = 3), held until the run
-  exits), `MemAvailable` ≥10 GiB (`admission.minMemoryGb`), weekly <90 % and 5-hour <85 %
+  (`logs/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
+  exits), `MemAvailable` ≥10 GiB (`admission.minMemoryGb`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
   (from `logs/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
   refreshes it, so your manual use counts). Failing ⇒ step `ready`, "queued: <why>"
   (pinged once per reason, low priority; never for busy stage slots), the run ends, tick retries oldest first. Never waits in-process.
@@ -212,7 +224,7 @@ shows the queue).
 | `ready`, "queued: …" | nothing: tick retries when a slot, memory or usage frees up |
 | `ready`, "queued: held (pipeline start <name>)" / "after <other> …" / "drained"; `held: by you` / `held: after <other>` in `-v` | yours: `pipeline start <name>` (or `pipeline start` for a drain); an `--after` releases itself when the other merges (`next:` says which) |
 | `held: …` / `after …` refusing a run | the feature is held: `pipeline start <name>` first |
-| `ready`, "queued: sbx.service not active" | `systemctl --user start sbx.service` (if another daemon holds `sandboxd.lock`: the cutover in One-time setup); tick resumes. Never run `sbx …` by hand while it is down: that autostarts the daemon which blocks the unit. After an unattended docker-sbx upgrade (`/var/log/apt/history.log`) the unit restarts itself (`Restart=always`); rerun `sandbox/gate.py` |
+| `ready`, "queued: sbx.service not active" | `systemctl --user start sbx.service` (if another daemon holds `sandboxd.lock`: the cutover in Setup); tick resumes. Never run `sbx …` by hand while it is down: that autostarts the daemon which blocks the unit. After an unattended docker-sbx upgrade (`/var/log/apt/history.log`) the unit restarts itself (`Restart=always`); rerun `sandbox/gate.py` |
 | "CI … not a code failure (network: …): rerun n/2" | nothing: a failed DNS lookup in the job (CI VMs resolve through the host, see Host DNS); GitHub reruns it |
 | `paused`, "respond-N blocked: … e2e … `getaddrinfo ENOTFOUND` / PUT timeout to R2" | the reruns were spent, or a timeout left no DNS words in the log: check Host DNS, rerun the failed jobs on GitHub, then `pipeline <name> --detach` |
 | `ready`, "… limit until <time>" | nothing: tick resumes after the reset |
@@ -304,3 +316,7 @@ Rerun the gate after a `claude` or sbx upgrade or a `STAGES` change.
   pin (`pipeline template build` builds it now). Existing sandboxes keep
   their template (a session never resumes across CLI versions). Then `gate.py`. Disk: `pipeline template prune`
   (also run by `gc`) removes every template that is neither the target nor used by a sandbox.
+
+## License
+
+[MIT](LICENSE).

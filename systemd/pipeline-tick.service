@@ -1,0 +1,8 @@
+[Unit]
+Description=Pipeline tick: start runs for features with work
+
+[Service]
+Type=oneshot
+# Must reach node and claude: add the directories of `command -v node` and `command -v claude` if they are elsewhere.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/pipeline tick
