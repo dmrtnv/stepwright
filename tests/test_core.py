@@ -1108,6 +1108,24 @@ class RunnerTest(RunnerCase):
 
     # ------------------------------------------------------------------------------------------ happy path
 
+    def vm_argv(self):
+        create = next(call for call in self.sbx_calls() if call[0] == 'create')
+
+        return create[create.index('--cpus') + 1], create[create.index('-m') + 1]
+
+    def test_stage_vms_get_6_cpus_and_8_gb_by_default(self):
+        self.happy_path()
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0)
+        self.assertEqual(self.vm_argv(), ('6', '8g'))
+
+    def test_stage_vms_follow_the_vm_config_key(self):
+        config = json.loads(self.fixture.config.read_text())
+        config['vm'] = {'cpus': 4, 'memoryGb': 12}
+        write(self.fixture.config, json.dumps(config))
+        self.happy_path()
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0)
+        self.assertEqual(self.vm_argv(), ('4', '12g'))
+
     def test_a_run_writes_nothing_under_the_code_dir(self):
         def snapshot():
             return {path: path.stat().st_mtime_ns for path in core.PIPELINE_DIR.rglob('*') if path.is_file()

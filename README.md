@@ -51,7 +51,7 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
 | Piece | Where |
 |---|---|
 | runner (`pipeline` CLI) | `core.py` (state machine, stages, gates, publish, PR loops, admission), `backend.py` (sbx), `adapter.py` (repos, `pipeline.json`); `pipeline` → `~/.local/bin/pipeline` |
-| config (no secrets) | `~/.config/pipeline/config.json`: App id/slug/key path/reviewer, repo registry `{"<owner>/<repo>": "<checkout>"}`, admission limits, sandbox template policy `"template": {"claude": "host" \| "<x.y.z>", "build": "auto" \| "manual"}` |
+| config (no secrets) | `~/.config/pipeline/config.json`: App id/slug/key path/reviewer, repo registry `{"<owner>/<repo>": "<checkout>"}`, admission limits, sandbox template policy `"template": {"claude": "host" \| "<x.y.z>", "build": "auto" \| "manual"}`, stage VM size `"vm": {"cpus": 6, "memoryGb": 8}` (the defaults; whole numbers ≥ 1; applies to VMs created after the edit, a running VM keeps its size; sbx-host counts a stage VM at 8 GiB + overhead, so raise `reserve.pl` in `~/.config/sbx-host/config.json` with `vm.memoryGb`) |
 | sandbox templates | `pipeline template` (target, loaded ones, which sandbox uses which); `~/.local/state/pipeline/template-failed.json` marks a failed or missing one |
 | App key | `~/.config/pipeline/app.pem` (mode 600, never in a dotfiles repo, never in a VM) |
 | per-repo recipe | `<repo>/.claude/pipeline.json` on its base branch (setup, setup egress, checkFast, protected paths, migrations, required CI checks) |
@@ -140,7 +140,7 @@ a run holds the feature. Ctrl+C, SIGTERM and
   paused): one build try per 15 min, pings on the 1st and 3rd failure, heals on its own. `manual` never builds: the
   steps wait with one ping until `pipeline template build`. A sandbox keeps the template it was made from (its
   session's CLI version never changes under it).
-- **Sandbox**: `sbx create --clone` of the clean clone (6 CPU, 8 GiB), the claude kit's extra egress denied, kit
+- **Sandbox**: `sbx create --clone` of the clean clone (6 CPU, 8 GiB by default: config `vm`), the claude kit's extra egress denied, kit
   copied, the VM's `origin` rewritten to the clean clone (`url.…insteadOf`: sbx resets `origin` to GitHub on every
   start), a repo-local git identity of the App's bot (`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`; sbx
   copies yours into the VM's `~/.gitconfig`, and a squash credits every commit author other than the PR author as a

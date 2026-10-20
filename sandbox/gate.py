@@ -196,7 +196,7 @@ def test_2_claude(interactive):
 
 def test_2_login_survives_rm(tag):
     remove(SANDBOX_A)
-    created = create(SANDBOX_C, tag, cpus='2', memory='2g')
+    created = create(SANDBOX_C, tag, cpus=2, memory_gb=2)
 
     if not expect(2, 'create fresh sandbox C', created.returncode == 0, tail(created.stderr, 3)):
         return
@@ -510,12 +510,14 @@ def main():
     print(f'gate: template {tag}, repo {repo} (clean clone {clone}), config {config_path}', flush=True)
 
     try:
-        created = create(SANDBOX_A, tag, clone, clone=True)
+        size = core.vm_size()
+        created = create(SANDBOX_A, tag, clone, clone=True, **size)
+        label = f"create sandbox A (--clone, {size['cpus']} CPU, {size['memory_gb']} GB)"
 
-        if not expect(0, 'create sandbox A (--clone, 6 CPU, 8 GB)', created.returncode == 0, tail(created.stderr, 5)):
+        if not expect(0, label, created.returncode == 0, tail(created.stderr, 5)):
             return 1
 
-        created = create(SANDBOX_B, tag, cpus='2', memory='2g')
+        created = create(SANDBOX_B, tag, cpus=2, memory_gb=2)
         expect(0, 'create sandbox B (mountless)', created.returncode == 0, tail(created.stderr, 5))
         lock_egress(0, SANDBOX_A)
         lock_egress(0, SANDBOX_B)

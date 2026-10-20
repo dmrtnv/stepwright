@@ -250,8 +250,8 @@ def remove_template(tag):
         raise BackendError(f'docker image rm {tag}: {(image.stderr or image.stdout).strip()[-300:]}')
 
 
-def create(name, tag, source=None, clone=False, cpus='6', memory='8g'):
-    argv = ['create', '--name', name, '-t', tag, '--pull', 'never', '--cpus', cpus, '-m', memory]
+def create(name, tag, source=None, clone=False, *, cpus, memory_gb):
+    argv = ['create', '--name', name, '-t', tag, '--pull', 'never', '--cpus', str(cpus), '-m', f'{memory_gb}g']
 
     if clone:
         argv.append('--clone')

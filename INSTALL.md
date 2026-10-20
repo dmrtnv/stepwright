@@ -5,7 +5,7 @@ About an hour, most of it waiting for downloads. Each step ends with a **Check**
 ## What you need
 
 - **Ubuntu 24.04 or newer** (x86_64) with systemd, and hardware virtualization (`/dev/kvm` exists).
-- **≥ 24 GiB RAM and ≥ 8 CPU threads.** Each stage runs in a VM with 8 GiB and 6 CPUs.
+- **≥ 24 GiB RAM and ≥ 8 CPU threads.** Each stage runs in a VM with 8 GiB and 6 CPUs by default (`vm` in the config).
 - **Claude Code** (`claude`) signed in with your own Claude subscription. Max is recommended: stages are long.
 - **A Docker account** (free) for Docker Sandboxes.
 - **A GitHub account** and a repo you want the pipeline to work on.
@@ -123,7 +123,8 @@ Edit `~/.config/pipeline/config.json`:
 - `app.reviewer`: your GitHub login. The pipeline requests your review on each PR.
 - `repos`: `{"<owner>/<repo>": "<path of your checkout>"}`, for example `{"alice/shop": "~/code/shop"}`.
 
-The defaults for the limits (`admission`) and the sandbox template (`template`) are described in the README.
+The defaults for the limits (`admission`), the sandbox template (`template`) and the stage VM size (`vm`) are
+described in the README.
 
 Optional: phone notifications through [ntfy](https://ntfy.sh). Put a random topic name on one line in
 `~/.config/ntfy/topic`, `chmod 600` it, and subscribe to that topic in the ntfy app.

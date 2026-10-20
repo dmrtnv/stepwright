@@ -730,6 +730,13 @@ def template_policy():
     return adapter.load_config()['template']
 
 
+def vm_size():
+    """backend.create's size arguments from config.json "vm" (read per call: an edit applies to the next VM)."""
+    vm = adapter.load_config()['vm']
+
+    return {'cpus': vm['cpus'], 'memory_gb': vm['memoryGb']}
+
+
 def target_tag(policy=None):
     """The template new sandboxes are created from (config.json "template".claude: the host's Claude Code or a pin)."""
     return backend.template_tag((policy or template_policy())['claude'])
@@ -830,9 +837,10 @@ def ensure_sandbox(state):
             save_state(state)
 
         tag = ensure_template(state)
+        size = vm_size()
 
         with adapter.exclusive(f"fetch-{adapter.short(state['repo'])}"):
-            created = backend.create(name, tag, context['clone'], clone=True)
+            created = backend.create(name, tag, context['clone'], clone=True, **size)
 
         if created.returncode != 0:
             backend.remove(name)  # a half-made VM must never be reused without its egress lock

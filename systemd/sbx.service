@@ -19,7 +19,8 @@ KillMode=mixed
 # always, not on-failure: after a docker-sbx upgrade the new client replaces the old daemon, which exits 0.
 Restart=always
 RestartSec=15
-# Caps: set them for your machine (RAM from `free -g`, threads from `nproc`). Each stage VM is 8 GiB and 6 CPUs.
+# Caps: set them for your machine (RAM from `free -g`, threads from `nproc`). Each stage VM is 8 GiB and 6 CPUs
+# by default (config `vm`).
 #   MemoryMax  = RAM - 8G (what the desktop and your own work keep)     e.g. 32G RAM -> 24G
 #   MemoryHigh = MemoryMax - 3G (above it the VMs are throttled, not killed)
 #   CPUQuota   = (threads - 4) x 100% (4 threads always free for you)  e.g. 16 threads -> 1200%

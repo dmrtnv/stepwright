@@ -28,6 +28,8 @@ DEFAULT_ADMISSION = {'slots': 2, 'minMemoryGb': 10, 'weeklyMax': 80, 'fiveHourMa
 # claude: 'host' follows the host's Claude Code, '2.1.286' pins one; build: 'auto' (the runner builds a missing one
 # before a create) or 'manual' (only `pipeline template build`).
 DEFAULT_TEMPLATE = {'claude': 'host', 'build': 'auto'}
+# Each stage VM's size, fixed at sbx create: an edit applies to VMs created after it.
+DEFAULT_VM = {'cpus': 6, 'memoryGb': 8}
 CLAUDE_VERSION = re.compile(r'^\d+\.\d+\.\d+$')
 # The CLI's command names (core sets it from its COMMANDS): a feature folder named like one is never a feature, since
 # `pipeline <name>` (tick's run included) would run the command instead.
@@ -42,8 +44,8 @@ class AdapterError(Exception):
 
 
 def load_config():
-    """The pipeline's own config (no secrets): the GitHub App, the repo registry, the admission limits and the
-    sandbox template policy."""
+    """The pipeline's own config (no secrets): the GitHub App, the repo registry, the admission limits, the
+    sandbox template policy and the stage VM size."""
     try:
         config = json.loads(CONFIG.read_text())
     except FileNotFoundError:
@@ -83,6 +85,14 @@ def load_config():
 
     if template['build'] not in ('auto', 'manual'):
         raise AdapterError(f'{CONFIG}: template.build is "auto" or "manual", not {template["build"]!r}')
+
+    vm = config.get('vm', {})
+
+    if (not isinstance(vm, dict) or set(vm) - set(DEFAULT_VM)
+            or any(type(value) is not int or value < 1 for value in vm.values())):
+        raise AdapterError(f'{CONFIG}: vm is {{"cpus": <whole number ≥ 1>, "memoryGb": <whole number ≥ 1>}}')
+
+    config['vm'] = dict(DEFAULT_VM, **vm)
 
     config['app']['privateKey'] = str(Path(os.path.expanduser(app['privateKey'])))
 
