@@ -507,7 +507,7 @@ def main():
 
     memory_dir = os.path.join(HOME, '.claude', 'projects', repo.replace('/', '-'), 'memory')
     listeners_before = listening()
-    print(f'gate: template {tag}, repo {repo} (clean clone {clone}), config {config_path}', flush=True)
+    print(f'gate: template {tag}, repo {repo} (clean clone {clone}), config {core.adapter.CONFIG}', flush=True)
 
     try:
         size = core.vm_size()
