@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+"""The `pipeline` CLI (~/.local/bin/pipeline links here): see core.py."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import core  # noqa: E402
+
+sys.exit(core.main())

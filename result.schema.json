@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["done", "blocked", "failed"] },
+    "summary": { "type": "string" },
+    "questions": { "type": "array", "items": { "type": "string" } },
+    "flags": { "type": "array", "items": { "type": "string" } },
+    "owed": { "type": "array", "items": { "type": "string" } },
+    "deferred": { "type": "array", "items": { "type": "string" } },
+    "learnings": { "type": "array", "items": { "type": "string" } },
+    "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "blocking": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["status", "summary", "questions", "flags", "owed", "deferred"],
+  "additionalProperties": false
+}

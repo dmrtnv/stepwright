@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+"""sbx-host: the box's sbx VMs, what they reserve, and whether one more fits (sbx_host.py beside this file).
+Usage: sbx-host status                 the unit's memory, every reservation, the budget and the peaks sampled so far
+       sbx-host fits <kind> [<name>]   exit 0 when a VM of this kind (pl, ci) fits now, else 1; prints why either
+                                       way (<name>: the VM about to start, never counted twice)
+       sbx-host sample                 appends each running VM's host peak to ~/.local/state/sbx-host/peaks.jsonl
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sbx_host  # noqa: E402
+
+
+def size(value):
+    return '?' if value is None else 'no cap' if value == float('inf') else f'{value / sbx_host.GIB:.1f}'
+
+
+def status():
+    config = sbx_host.load_config()
+    problem = sbx_host.guard()
+
+    if problem:
+        print(f'{sbx_host.UNIT}: {problem}')
+        return 1
+
+    memory = sbx_host.reading()
+    budget = sbx_host.budget_mib(config, memory)
+    print(f"{sbx_host.UNIT}: VMs use {size(memory['current'])} GiB of {size(memory['high'])} soft cap "
+          f"({size(memory['max'])} hard) · swap {size(memory['swap'])} of {size(memory['swap_max'])} · "
+          f"oom {memory['oom'] if memory['oom'] is not None else '?'} · pressure full avg60 "
+          f"{memory['avg60'] if memory['avg60'] is not None else '?'}% · shims {memory['inside']}/{memory['total']}")
+    print(f"budget: {config['budget']} = {sbx_host.gib(budget) + ' GiB' if budget is not None else 'none (no cap)'} · "
+          f"floor {config['floorGib']} GiB (host free {sbx_host.mem_available_gib():.1f})")
+    counted = sbx_host.reservations(config)
+    print(f'reserved {sbx_host.gib(sum(mib for _, _, mib in counted))} GiB' + (':' if counted else ''))
+
+    for name, kind, mib in counted:
+        print(f'  {name}  {kind}  {sbx_host.gib(mib)}')
+
+    for kind in ('pl', 'ci'):
+        ok, why = sbx_host.fits(kind, config=config)
+        print(f"fits {kind} ({sbx_host.gib(config['reserve'][kind])} GiB): {'yes' if ok else 'no'}: {why}")
+
+    found = sbx_host.peaks()
+    print(f'peaks ({sbx_host.PEAK_DAYS} days, host VmHWM per VM): ' + (' · '.join(
+        f'{kind} {len(values)} VMs, p95 {sbx_host.gib(sbx_host.p95(values))} max {sbx_host.gib(max(values))} GiB'
+        for kind, values in sorted(found.items())) or 'none yet'))
+
+    return 0
+
+
+def main(argv):
+    try:
+        if argv == ['status']:
+            return status()
+
+        if len(argv) in (2, 3) and argv[0] == 'fits' and argv[1] in sbx_host.DEFAULT_CONFIG['reserve']:
+            ok, why = sbx_host.fits(argv[1], *argv[2:])
+            print(why)
+            return 0 if ok else 1
+
+        if argv == ['sample']:
+            sbx_host.sample()
+            return 0
+    except sbx_host.HostError as error:
+        print(f'sbx-host: {error}', file=sys.stderr)
+        return 1
+
+    print(__doc__.split('\n', 1)[1].rstrip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,27 @@
+{
+  "base": "main",
+  "setup": [
+    "for f in apps/api/.env.example apps/web/.env.example packages/db/.env.example; do cp \"$f\" \"${f%.example}\"; done",
+    "pnpm install --frozen-lockfile --fetch-timeout=600000 --config.fetch-retries=3",
+    "if find node_modules/.pnpm -mindepth 3 -maxdepth 4 -xtype l | grep -q .; then pnpm install --frozen-lockfile --fetch-timeout=600000 --config.fetch-retries=3; fi",
+    "test -d node_modules/.pnpm && ! find node_modules/.pnpm -mindepth 3 -maxdepth 4 -xtype l | grep .",
+    "docker compose pull",
+    "docker pull testcontainers/ryuk:0.14.0"
+  ],
+  "setupEgress": ["registry.npmjs.org", "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", "production.cloudfront.docker.com"],
+  "checkFast": [
+    {"name": "types", "run": "pnpm check:types"},
+    {"name": "lint", "run": "pnpm lint"},
+    {"name": "format", "run": "pnpm format:check"},
+    {"name": "scripts", "run": "pnpm check:scripts"},
+    {"name": "docs", "run": "pnpm check:docs"},
+    {"name": "test", "run": "pnpm test", "flakeReruns": 1},
+    {"name": "one-migration", "run": "pnpm dev:services:up && pnpm db:squash --dry-run | tee /dev/stderr | grep -q 'nothing to squash'"}
+  ],
+  "protected": ["pnpm-workspace.yaml", ".npmrc", "pnpm-lock.yaml", ".pnpmfile.cjs", ".github/**", ".claude/**"],
+  "gateConfig": ["turbo.json", "vitest.config.*", "vitest.workspace.*", "playwright.config.*", "eslint.config.*", "tsconfig*.json", ".syncpackrc*", ".prettierrc*", ".prettierignore", "scripts/check-*"],
+  "dependencyFields": ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "pnpm", "overrides", "resolutions", "packageManager", "engines"],
+  "migrations": {"dir": "packages/db/drizzle", "journal": "packages/db/drizzle/meta/_journal.json", "generate": "drizzle-generate.py"},
+  "ci": {"requiredChecks": ["check", "test", "e2e"]},
+  "github": {"protected": ["staging"]}
+}

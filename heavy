@@ -1,0 +1,50 @@
+#!/bin/bash
+# Runs one heavy command at a time on this machine (install, build, check, tests, e2e, migrate), and only once enough
+# memory is free: two suites at once have rebooted a machine. Optional: pipeline stages run in their own VM (the runner
+# sets HEAVY_MIN_FREE_GB=0 there) and admission control spaces them; skills may still name it.
+# Usage: heavy <command> [args…]. Exit 75 when the lock or the memory never came within HEAVY_WAIT_SECONDS.
+set -uo pipefail
+
+lock=${HEAVY_LOCK:-$HOME/.claude/pipeline/logs/heavy.lock}
+
+min_free_gb=${HEAVY_MIN_FREE_GB:-6}
+wait_seconds=${HEAVY_WAIT_SECONDS:-1800}
+
+if [ $# -eq 0 ]; then
+  echo 'usage: heavy <command> [args…]' >&2
+  exit 2
+fi
+
+mkdir -p "$(dirname "$lock")" 2>/dev/null
+touch "$lock" 2>/dev/null
+
+# Opened for reading: flock works on a read-only descriptor.
+if ! exec 9<"$lock"; then
+  echo "heavy: cannot open $lock" >&2
+  exit 75
+fi
+
+if ! flock -w "$wait_seconds" 9; then
+  echo "heavy: another heavy command held $lock for ${wait_seconds}s" >&2
+  exit 75
+fi
+
+deadline=$((SECONDS + wait_seconds))
+
+while :; do
+  free_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+
+  if (( free_kb >= min_free_gb * 1024 * 1024 )); then
+    break
+  fi
+
+  if (( SECONDS >= deadline )); then
+    echo "heavy: less than ${min_free_gb} GB free for ${wait_seconds}s" >&2
+    exit 75
+  fi
+
+  sleep 10
+done
+
+# exec keeps descriptor 9 open in the command, so the lock is held until it exits.
+exec "$@"
