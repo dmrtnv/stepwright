@@ -47,7 +47,7 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 SYSTEM_PROMPT = PIPELINE_DIR / 'system.md'
 RESULT_SCHEMA = PIPELINE_DIR / 'result.schema.json'
 NTFY_TOPIC = HOME / '.config/ntfy/topic'  # one line, mode 600, never in a dotfiles repo; a companion CI runner may read it too
-LOGS = PIPELINE_DIR / 'logs'
+LOGS = adapter.LOGS
 STOP_FLAG = LOGS / 'STOP'
 USAGE = LOGS / 'usage.json'
 CONTROL = LOGS / 'control.json'  # yours, from the CLI: parallel, drain, order (per feature: .pipeline/feature.json)
@@ -1001,6 +1001,8 @@ def write_usage(windows):
 def usage_probe():
     """A tiny Haiku call on the host (no tools, no session kept) whose rate_limit_event refreshes usage.json, so your
     manual use since the last stage is seen. Returns an error text or None."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+
     try:
         result = subprocess.run([CLAUDE, '-p', 'Reply with OK only.', '--model', USAGE_PROBE_MODEL, '--tools', '',
                                  '--no-session-persistence', '--output-format', 'stream-json', '--verbose'],
@@ -5281,7 +5283,8 @@ COMMANDS = {
     'help': ('help [<command>]', 'this help, or one command', 'admin'),
 }
 RUN_USAGE = ('<feature> [--repo <o>/<r>] [--until plan|implement|review|respond] [--step] [--detach]',
-             'run the current step on, in the foreground (--detach: background, log logs/<repo>-<feature>.out)')
+             'run the current step on, in the foreground '
+             '(--detach: background, log ~/.local/state/pipeline/<repo>-<feature>.out)')
 HELP_GROUPS = (('daily', 'DAILY', 'pipeline status --watch'), ('queue', 'QUEUE', 'pipeline order csv-export'),
                ('run', 'RUN', 'pipeline csv-export --detach'), ('admin', 'ADMIN', 'pipeline stop --all'))
 adapter.RESERVED = frozenset(COMMANDS)

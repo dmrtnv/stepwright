@@ -1,4 +1,4 @@
-"""Repo adapter: which repos the pipeline serves (~/.claude/pipeline/config.json), where their features live, the
+"""Repo adapter: which repos the pipeline serves (~/.config/pipeline/config.json), where their features live, the
 runner's clean clone of each, and each repo's recipe card (`.claude/pipeline.json` on its base branch).
 
 Nothing here is repo-specific: a new repo is a registry line plus its committed pipeline.json.
@@ -13,9 +13,8 @@ import subprocess
 from pathlib import Path
 
 HOME = Path.home()
-PIPELINE_DIR = Path(__file__).resolve().parent
-CONFIG = PIPELINE_DIR / 'config.json'
-LOGS = PIPELINE_DIR / 'logs'
+CONFIG = HOME / '.config/pipeline/config.json'
+LOGS = HOME / '.local/state/pipeline'  # every lock and runner state file
 CLONES = HOME / '.local/share/pipeline/repos'
 GIT_TIMEOUT_SECONDS = 600
 REPO_NAME = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')

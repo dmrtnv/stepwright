@@ -114,11 +114,11 @@ The pipeline pushes branches and opens PRs as this App, never as you.
 ## 6. Configure
 
 ```bash
-cd ~/.local/share/pipeline/runner
-cp examples/config.example.json config.json
+mkdir -p ~/.config/pipeline
+cp ~/.local/share/pipeline/runner/examples/config.example.json ~/.config/pipeline/config.json
 ```
 
-Edit `config.json`:
+Edit `~/.config/pipeline/config.json`:
 - `app.id` and `app.slug`: from step 5.
 - `app.reviewer`: your GitHub login. The pipeline requests your review on each PR.
 - `repos`: `{"<owner>/<repo>": "<path of your checkout>"}`, for example `{"alice/shop": "~/code/shop"}`.
@@ -194,7 +194,8 @@ When `pipeline status` shows no running stage:
 cd ~/.local/share/pipeline/runner && git fetch --tags && git checkout <new tag>
 ```
 
-Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check out the previous tag.
+Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check out the previous tag. Config
+(`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches them.
 
 ## Uninstall
 
@@ -202,7 +203,7 @@ Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check ou
 systemctl --user disable --now pipeline-tick.timer sbx.service
 rm ~/.local/bin/pipeline ~/.local/bin/sbx-host ~/.config/systemd/user/{sbx.service,pipeline-tick.service,pipeline-tick.timer}
 find ~/.claude/skills ~/.claude/agents -maxdepth 1 -lname "$HOME/.local/share/pipeline/runner/*" -delete
-rm -rf ~/.local/share/pipeline ~/.config/pipeline
+rm -rf ~/.local/share/pipeline ~/.config/pipeline ~/.local/state/pipeline
 ```
 
 Finally, delete the GitHub App in its settings, and remove the sandboxes and templates (`sbx ls`, `sbx rm`).
