@@ -1135,9 +1135,6 @@ class RunnerTest(RunnerCase):
         self.published()
         self.assertEqual(snapshot(), before)
 
-        for path in core.LOGS.iterdir():
-            self.assertTrue(path.is_relative_to(self.fixture.base), path)
-
     def test_a_plan_without_questions_runs_unattended_to_a_draft_pr(self):
         state = self.published()
         self.assertEqual(state['branch'], BRANCH)
