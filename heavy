@@ -5,7 +5,7 @@
 # Usage: heavy <command> [args…]. Exit 75 when the lock or the memory never came within HEAVY_WAIT_SECONDS.
 set -uo pipefail
 
-lock=${HEAVY_LOCK:-$HOME/.claude/pipeline/logs/heavy.lock}
+lock=${HEAVY_LOCK:-$HOME/.local/state/pipeline/heavy.lock}
 
 min_free_gb=${HEAVY_MIN_FREE_GB:-6}
 wait_seconds=${HEAVY_WAIT_SECONDS:-1800}

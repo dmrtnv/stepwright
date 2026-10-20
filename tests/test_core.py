@@ -1108,6 +1108,33 @@ class RunnerTest(RunnerCase):
 
     # ------------------------------------------------------------------------------------------ happy path
 
+    def vm_argv(self):
+        create = next(call for call in self.sbx_calls() if call[0] == 'create')
+
+        return create[create.index('--cpus') + 1], create[create.index('-m') + 1]
+
+    def test_stage_vms_get_6_cpus_and_8_gb_by_default(self):
+        self.happy_path()
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0)
+        self.assertEqual(self.vm_argv(), ('6', '8g'))
+
+    def test_stage_vms_follow_the_vm_config_key(self):
+        config = json.loads(self.fixture.config.read_text())
+        config['vm'] = {'cpus': 4, 'memoryGb': 12}
+        write(self.fixture.config, json.dumps(config))
+        self.happy_path()
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0)
+        self.assertEqual(self.vm_argv(), ('4', '12g'))
+
+    def test_a_run_writes_nothing_under_the_code_dir(self):
+        def snapshot():
+            return {path: path.stat().st_mtime_ns for path in core.PIPELINE_DIR.rglob('*') if path.is_file()
+                    and not {'.git', '__pycache__'} & set(path.relative_to(core.PIPELINE_DIR).parts)}
+
+        before = snapshot()
+        self.published()
+        self.assertEqual(snapshot(), before)
+
     def test_a_plan_without_questions_runs_unattended_to_a_draft_pr(self):
         state = self.published()
         self.assertEqual(state['branch'], BRANCH)
@@ -3234,6 +3261,18 @@ class PullRequestLoopTest(RunnerCase):
         self.assertEqual(self.main('respond', FEATURE), 1)
 
 
+class StatePathTest(unittest.TestCase):
+    """Config and state live outside the code dir (no fixture: the module defaults)."""
+
+    def test_config_and_state_live_in_the_users_config_and_state_dirs(self):
+        self.assertEqual(adapter.CONFIG, Path.home() / '.config/pipeline/config.json')
+        self.assertEqual(adapter.LOGS, Path.home() / '.local/state/pipeline')
+        self.assertIs(core.LOGS, adapter.LOGS)
+
+        for path in (core.STOP_FLAG, core.USAGE, core.CONTROL, core.TEMPLATE_FAILED):
+            self.assertEqual(path.parent, adapter.LOGS, path)
+
+
 class ClassifyRunTest(unittest.TestCase):
     """Whether a red workflow run is the code's fault, from documented fields: the red job that ended first decides."""
 
@@ -3879,6 +3918,21 @@ class AdmissionTest(RunnerCase):
         self.assertEqual(argv[argv.index('--model') + 1], 'claude-haiku-4-5-20251001')
         self.assertIn('--no-session-persistence', argv)
         self.assertEqual(core.read_usage()['seven_day']['utilization'], 0.42)
+
+    def test_the_usage_probe_creates_the_state_dir_it_runs_in(self):
+        stream = '\n'.join(json.dumps(event) for event in (
+            {'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed', 'unifiedWindows': {
+                'seven_day': {'utilization': 0.42, 'resetsAt': 2e9}, 'five_hour': {'utilization': 0.1, 'resetsAt': 2e9}}}},
+            {'type': 'result', 'subtype': 'success'}))
+        state = self.fixture.base / 'fresh-state'
+
+        def run(argv, **kwargs):
+            self.assertTrue(Path(kwargs['cwd']).is_dir())
+
+            return subprocess.CompletedProcess(argv, 0, stream, '')
+
+        with mock.patch.object(core, 'LOGS', state), mock.patch.object(core.subprocess, 'run', side_effect=run):
+            self.assertIsNone(core.usage_probe())
 
     def test_a_repeated_queue_reason_does_not_grow_the_history(self):
         self.usage(0.82)

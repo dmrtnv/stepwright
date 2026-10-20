@@ -5,7 +5,7 @@ About an hour, most of it waiting for downloads. Each step ends with a **Check**
 ## What you need
 
 - **Ubuntu 24.04 or newer** (x86_64) with systemd, and hardware virtualization (`/dev/kvm` exists).
-- **≥ 24 GiB RAM and ≥ 8 CPU threads.** Each stage runs in a VM with 8 GiB and 6 CPUs.
+- **≥ 24 GiB RAM and ≥ 8 CPU threads.** Each stage runs in a VM with 8 GiB and 6 CPUs by default (`vm` in the config).
 - **Claude Code** (`claude`) signed in with your own Claude subscription. Max is recommended: stages are long.
 - **A Docker account** (free) for Docker Sandboxes.
 - **A GitHub account** and a repo you want the pipeline to work on.
@@ -114,16 +114,17 @@ The pipeline pushes branches and opens PRs as this App, never as you.
 ## 6. Configure
 
 ```bash
-cd ~/.local/share/pipeline/runner
-cp examples/config.example.json config.json
+mkdir -p ~/.config/pipeline
+cp ~/.local/share/pipeline/runner/examples/config.example.json ~/.config/pipeline/config.json
 ```
 
-Edit `config.json`:
+Edit `~/.config/pipeline/config.json`:
 - `app.id` and `app.slug`: from step 5.
 - `app.reviewer`: your GitHub login. The pipeline requests your review on each PR.
 - `repos`: `{"<owner>/<repo>": "<path of your checkout>"}`, for example `{"alice/shop": "~/code/shop"}`.
 
-The defaults for the limits (`admission`) and the sandbox template (`template`) are described in the README.
+The defaults for the limits (`admission`), the sandbox template (`template`) and the stage VM size (`vm`) are
+described in the README.
 
 Optional: phone notifications through [ntfy](https://ntfy.sh). Put a random topic name on one line in
 `~/.config/ntfy/topic`, `chmod 600` it, and subscribe to that topic in the ntfy app.
@@ -194,7 +195,8 @@ When `pipeline status` shows no running stage:
 cd ~/.local/share/pipeline/runner && git fetch --tags && git checkout <new tag>
 ```
 
-Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check out the previous tag.
+Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check out the previous tag. Config
+(`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches them.
 
 ## Uninstall
 
@@ -202,7 +204,7 @@ Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check ou
 systemctl --user disable --now pipeline-tick.timer sbx.service
 rm ~/.local/bin/pipeline ~/.local/bin/sbx-host ~/.config/systemd/user/{sbx.service,pipeline-tick.service,pipeline-tick.timer}
 find ~/.claude/skills ~/.claude/agents -maxdepth 1 -lname "$HOME/.local/share/pipeline/runner/*" -delete
-rm -rf ~/.local/share/pipeline ~/.config/pipeline
+rm -rf ~/.local/share/pipeline ~/.config/pipeline ~/.local/state/pipeline
 ```
 
 Finally, delete the GitHub App in its settings, and remove the sandboxes and templates (`sbx ls`, `sbx rm`).

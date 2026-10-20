@@ -51,8 +51,8 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
 | Piece | Where |
 |---|---|
 | runner (`pipeline` CLI) | `core.py` (state machine, stages, gates, publish, PR loops, admission), `backend.py` (sbx), `adapter.py` (repos, `pipeline.json`); `pipeline` → `~/.local/bin/pipeline` |
-| config (no secrets) | `config.json` beside `core.py`: App id/slug/key path/reviewer, repo registry `{"<owner>/<repo>": "<checkout>"}`, admission limits, sandbox template policy `"template": {"claude": "host" \| "<x.y.z>", "build": "auto" \| "manual"}` |
-| sandbox templates | `pipeline template` (target, loaded ones, which sandbox uses which); `logs/template-failed.json` marks a failed or missing one |
+| config (no secrets) | `~/.config/pipeline/config.json`: App id/slug/key path/reviewer, repo registry `{"<owner>/<repo>": "<checkout>"}`, admission limits, sandbox template policy `"template": {"claude": "host" \| "<x.y.z>", "build": "auto" \| "manual"}`, stage VM size `"vm": {"cpus": 6, "memoryGb": 8}` (the defaults; whole numbers ≥ 1; applies to VMs created after the edit, a running VM keeps its size; sbx-host counts a stage VM at `reserve.pl` MiB, default 8192 + 512 overhead: when you change `vm.memoryGb`, set `"reserve": {"pl": <memoryGb × 1024 + 512>}` in `~/.config/sbx-host/config.json`) |
+| sandbox templates | `pipeline template` (target, loaded ones, which sandbox uses which); `~/.local/state/pipeline/template-failed.json` marks a failed or missing one |
 | App key | `~/.config/pipeline/app.pem` (mode 600, never in a dotfiles repo, never in a VM) |
 | per-repo recipe | `<repo>/.claude/pipeline.json` on its base branch (setup, setup egress, checkFast, protected paths, migrations, required CI checks) |
 | clean clones | `~/.local/share/pipeline/repos/<owner>/<repo>` (never checked out; holds `refs/pipeline/<feature>/<NN>`) |
@@ -80,7 +80,7 @@ Step by step: [INSTALL.md](INSTALL.md). Notes for later:
 **New repo**: install the App on it; rulesets: base branch requires a PR with 1 code-owner
 approval and the CI checks, non-admins may push only `agent/**`; `CODEOWNERS`; CI running on `pull_request` (drafts
 included); commit `.claude/pipeline.json` (template: `sandbox/pipeline.node-pnpm.json`); add
-`"<owner>/<repo>": "<checkout>"` to `config.json`; `pipeline prove-app --repo …`, `pipeline prove-gate --repo …`.
+`"<owner>/<repo>": "<checkout>"` to `~/.config/pipeline/config.json`; `pipeline prove-app --repo …`, `pipeline prove-gate --repo …`.
 
 `pipeline.json` keys: `base`, `setup` (commands, run in the VM with only `setupEgress` reachable, then egress is
 sealed and checked), `checkFast` (`{name, run, flakeReruns?}`: the gate commands; a flaky one reruns whole),
@@ -96,7 +96,7 @@ sealed and checked), `checkFast` (`{name, run, flakeReruns?}`: the gate commands
 |---|---|
 | Create a feature | `/pipeline-feature <name>` in a Claude session (interview → overview + briefs) |
 | Start or continue | `pipeline <name>` (from inside the repo; `--repo <o>/<r>` if the name exists twice) |
-| …in the background | `pipeline <name> --detach` (the run tick would start, now; a closed terminal doesn't stop it; log `logs/<repo>-<name>.out`) |
+| …in the background | `pipeline <name> --detach` (the run tick would start, now; a closed terminal doesn't stop it; log `~/.local/state/pipeline/<repo>-<name>.out`) |
 | See what needs you | `pipeline status`: header (claude usage, `stages n running of p`, badges only when abnormal, each with its fix), a `memory` line (the VMs' use against sbx.service's soft cap MemoryHigh and hard cap MemoryMax; `reserved` = what every VM not stopped may grow to, by owner, stages + CI (`sbx-host status`), `(over X by Y)` in yellow above the budget; host free against the stage floor), then NEEDS YOU · RUNNING (stage, time, last tool call) · QUEUED (start order) · `CI` (each companion CI runner slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature whose PR waits stays in WAITING with `· held`) · WAITING; `--watch [-n s]` redraws in place (q quits); `--all` adds merged; `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command) |
 | One feature in full | `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command, files, PR/CI, logs, last 5 history entries) |
 | What a stage is doing | `pipeline log <name>` (`HH:MM tool target` lines of the newest stage log; `-f` follows) |
@@ -123,15 +123,15 @@ a run holds the feature. Ctrl+C, SIGTERM and
 
 - **Your controls** (`pipeline pause/start/order/parallel/autonomy`, written by the CLI only; missing file = the
   defaults): per feature `<name>/.pipeline/feature.json` `{hold, after, autonomy}` (synced with the state files),
-  global `logs/control.json` `{parallel, drain, order}`. A hold or an unmerged `--after` stops the next stage (also
+  global `~/.local/state/pipeline/control.json` `{parallel, drain, order}`. A hold or an unmerged `--after` stops the next stage (also
   the next step after a merge; a PR poll still runs), and an explicit `pipeline <name>`, `--detach` or `respond`
   refuses. Tick starts PR polls always, stage work only into free slots (`parallel` − max(slots held, runs holding a
   feature lock)), in `order` then oldest-queued order, and none while the host would refuse it (kill switch, sbx,
   memory, usage).
 - **Admission** before every stage: not held or drained, `sbx.service` active (the capped daemon; never an uncapped one), a slot
-  (`logs/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
+  (`~/.local/state/pipeline/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
   exits), `MemAvailable` ≥10 GiB (`admission.minMemoryGb`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
-  (from `logs/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
+  (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
   refreshes it, so your manual use counts). Failing ⇒ step `ready`, "queued: <why>"
   (pinged once per reason, low priority; never for busy stage slots), the run ends, tick retries oldest first. Never waits in-process.
 - **Template**: the target is `pipeline-sandbox:claude-<v>-node-<host node>`, `<v>` the host's `claude --version`
@@ -140,7 +140,7 @@ a run holds the feature. Ctrl+C, SIGTERM and
   paused): one build try per 15 min, pings on the 1st and 3rd failure, heals on its own. `manual` never builds: the
   steps wait with one ping until `pipeline template build`. A sandbox keeps the template it was made from (its
   session's CLI version never changes under it).
-- **Sandbox**: `sbx create --clone` of the clean clone (6 CPU, 8 GiB), the claude kit's extra egress denied, kit
+- **Sandbox**: `sbx create --clone` of the clean clone (6 CPU, 8 GiB by default: config `vm`), the claude kit's extra egress denied, kit
   copied, the VM's `origin` rewritten to the clean clone (`url.…insteadOf`: sbx resets `origin` to GitHub on every
   start), a repo-local git identity of the App's bot (`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`; sbx
   copies yours into the VM's `~/.gitconfig`, and a squash credits every commit author other than the PR author as a
@@ -257,15 +257,15 @@ shows the queue).
 |---|---|
 | briefs, plans, reviews, PR text, done notice | `<repo>/.claude/plans/<name>/NN-<slug>/` (gitignored: back it up yourself) |
 | parked features, queue | `<repo>/.claude/plans/_backlog/<name>/`, `<repo>/.claude/plans/README.md` (below), `pipeline queue` |
-| your controls | `<name>/.pipeline/feature.json` (hold, after, autonomy), `logs/control.json` (parallel, drain, order) |
+| your controls | `<name>/.pipeline/feature.json` (hold, after, autonomy), `~/.local/state/pipeline/control.json` (parallel, drain, order) |
 | step state (read, don't edit) | `<name>/.pipeline/NN.json` |
 | stage logs (stream-json) | `<name>/.pipeline/NN-<stage>.log`; the final answer: `tail -n 1 <log> \| jq .structured_output` |
 | gate and setup output | `<name>/.pipeline/NN-gates.log`, `NN-setup.log` |
 | approved plan (tamper gate baseline) | `<name>/.pipeline/NN-plan.approved.md` |
 | the step's branch on the host | `git -C ~/.local/share/pipeline/repos/<o>/<r> log refs/pipeline/<name>/<NN>` |
 | inside the VM | `sbx exec -it pl-<repo>-<name>-<NN> bash` (workspace = the clean clone's path, plans under `/home/agent/plans`; a run that finds the VM running stops it first, ending this shell) |
-| runs started by tick | `logs/<repo>-<name>.out` beside `core.py`, `journalctl --user -u 'pipeline-run-*'` |
-| usage, slots, kill switch | `logs/usage.json`, `logs/slot-*.lock`, `logs/STOP` |
+| runs started by tick | `~/.local/state/pipeline/<repo>-<name>.out`, `journalctl --user -u 'pipeline-run-*'` |
+| usage, slots, kill switch | `usage.json`, `slot-*.lock`, `STOP` in `~/.local/state/pipeline/` |
 
 ## Backlog
 
