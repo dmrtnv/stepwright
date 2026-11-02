@@ -66,7 +66,8 @@ class ConfigTest(AdapterCase):
         shutil.copy(Path(adapter.__file__).parent / 'examples/config.example.json', self.config)
         config = adapter.load_config()
         self.assertEqual(config['app']['privateKey'], str(Path.home() / '.config/pipeline/app.pem'))
-        self.assertEqual((config['admission'], config['template']), (adapter.DEFAULT_ADMISSION, adapter.DEFAULT_TEMPLATE))
+        self.assertEqual((config['admission'], config['template'], config['vm']),
+                         (adapter.DEFAULT_ADMISSION, adapter.DEFAULT_TEMPLATE, adapter.DEFAULT_VM))
 
     def test_a_missing_config_or_missing_keys_are_named(self):
         with self.assertRaisesRegex(adapter.AdapterError, 'no .*config.json'):
@@ -108,6 +109,22 @@ class ConfigTest(AdapterCase):
             self.register({'a/r': self.base}, template=template)
 
             with self.assertRaisesRegex(adapter.AdapterError, re.escape(message)):
+                adapter.load_config()
+
+    def test_the_vm_size_defaults_to_6_cpus_8_gb_and_rejects_anything_else(self):
+        self.register({'a/r': self.base})
+        self.assertEqual(adapter.load_config()['vm'], {'cpus': 6, 'memoryGb': 8})
+
+        for vm, expected in (({'cpus': 6, 'memoryGb': 8}, {'cpus': 6, 'memoryGb': 8}),
+                             ({'memoryGb': 16}, {'cpus': 6, 'memoryGb': 16})):
+            self.register({'a/r': self.base}, vm=vm)
+            self.assertEqual(adapter.load_config()['vm'], expected)
+
+        for vm in ({'cpus': 0}, {'memoryGb': -1}, {'cpus': '6'}, {'cpus': True}, {'memoryGb': 8.5}, {'disk': 10},
+                   ['6'], 0):
+            self.register({'a/r': self.base}, vm=vm)
+
+            with self.assertRaisesRegex(adapter.AdapterError, re.escape('vm is {"cpus"'), msg=repr(vm)):
                 adapter.load_config()
 
 
