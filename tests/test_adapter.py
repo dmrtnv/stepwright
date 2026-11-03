@@ -78,6 +78,16 @@ class ConfigTest(AdapterCase):
         with self.assertRaisesRegex(adapter.AdapterError, 'lacks app.slug, app.privateKey, app.reviewer, repos'):
             adapter.load_config()
 
+    def test_a_config_of_the_wrong_shape_is_named(self):
+        app = {'id': 1, 'slug': 's', 'privateKey': '~/k.pem', 'reviewer': 'me'}
+
+        for value, message in (([], 'not a JSON object'), ({'app': 'x', 'repos': {'a/r': '/r'}}, 'app is an object'),
+                               ({'app': app, 'repos': {'a/r': '/r'}, 'admission': 'x'}, 'admission is an object')):
+            write(self.config, json.dumps(value))
+
+            with self.assertRaisesRegex(adapter.AdapterError, re.escape(message), msg=repr(value)):
+                adapter.load_config()
+
     def test_repos_are_owner_slash_repo_with_unique_names(self):
         self.register({'shop': self.base})
 

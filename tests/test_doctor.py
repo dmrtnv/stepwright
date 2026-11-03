@@ -466,6 +466,12 @@ class ConfigTest(DoctorCase):
                         f'edit {self.pipeline_config} (INSTALL step 6)')
 
 
+    def test_not_an_object(self):
+        self.pipeline_config.write_text('[]')
+        self.assertFail('config', f'{self.pipeline_config}: not a JSON object',
+                        f'edit {self.pipeline_config} (INSTALL step 6)')
+
+
 class ReserveTest(DoctorCase):
     def host(self, value):
         self.host_config.parent.mkdir(parents=True, exist_ok=True)
