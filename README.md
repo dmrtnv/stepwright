@@ -15,7 +15,7 @@ area: Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-term
 "through automated or non-human means, whether through a bot, script, or otherwise", "except when you are accessing
 our Services via an Anthropic API Key or where we otherwise explicitly permit it". The
 [Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) adds that "Advertised usage limits for
-Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
+Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
 yourself; you are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
 
 ## How it works

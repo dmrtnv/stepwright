@@ -162,7 +162,7 @@ pipeline template build
 Run `gate.py` from a terminal: the first time, it asks you to `/login` to Claude once inside a sandbox. It makes a few
 tiny Claude calls on your subscription.
 
-**Check:** every `gate.py` line prints PASS.
+**Check:** no `gate.py` line prints FAIL.
 
 ## 9. Turn on the timer
 
@@ -195,7 +195,7 @@ When `pipeline status` shows no running stage:
 cd ~/.local/share/pipeline/runner && git fetch --tags && git checkout <new tag>
 ```
 
-Then rerun `sandbox/gate.py` if the release notes say so. To roll back, check out the previous tag. Config
+Then rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so. To roll back, check out the previous tag. Config
 (`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches them.
 
 ## Uninstall
