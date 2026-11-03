@@ -2992,7 +2992,7 @@ def ci_runner_down():
 
 def ping_silent(state, number, missing, stuck=()):
     """One ping when a required check has not started CI_SILENT_SECONDS after the push: missing, or queued (`stuck`)
-    while no ci-runner unit is active."""
+    while no ci-runner unit is active. The queued text names ci-runner only when a ci-runner unit exists."""
     if (missing or stuck) and not state['ci'].get('silent_pinged') and \
             time.time() - (state['published_at'] or time.time()) > CI_SILENT_SECONDS:
         state['ci']['silent_pinged'] = True
@@ -3000,8 +3000,9 @@ def ping_silent(state, number, missing, stuck=()):
         minutes = CI_SILENT_SECONDS // 60
         notify(state, f"PR #{number}: " + '; '.join(
             ([f"no required check ({', '.join(missing)}) started in {minutes} min"] if missing else []) +
-            ([f"required checks ({', '.join(stuck)}) queued for {minutes} min; no ci-runner unit is active "
-              f"(`ci-runner status`)"] if stuck else [])), priority='high')
+            ([f"required checks ({', '.join(stuck)}) queued for {minutes} min" +
+              ('; no ci-runner unit is active (`ci-runner status`)' if ci_units() else '')] if stuck else [])),
+            priority='high')
 
 
 def request_review(state, repo, number, token):

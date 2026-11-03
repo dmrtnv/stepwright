@@ -35,6 +35,7 @@ SPAWN = core.spawn_feature_run  # the real one: RunnerCase patches core's
 NOTIFY = core.notify  # the real one too
 GITHUB_API = core.github_api  # the real ones too
 GITHUB_RAW = core.github_raw
+CI_UNITS = core.ci_units  # the real one: RunnerCase stubs it to {}
 
 FAKE_SBX = r'''#!/usr/bin/python3
 """Fake sbx: each sandbox is <root>/<name>/{home,workspace}; exec runs on the host with HOME=<home>, in its own
@@ -3216,18 +3217,26 @@ class PullRequestLoopTest(RunnerCase):
         self.actions(sha, {'id': 900, 'workflow_id': 1, 'status': 'queued', 'run_attempt': 1, 'check_suite_id': 9000},
                      jobs)
 
-    def runner_units(self, active):
-        """systemctl's answer for the ci-runner@ units; every other command runs."""
+    @contextlib.contextmanager
+    def runner_units(self, active, listed=True):
+        """systemctl's answer for the ci-runner@ units, read by the real ci_units too: `--state=active` lists the unit
+        when `active`, `--all` lists it when `listed`. Every other command runs."""
         real = subprocess.run
 
         def run(argv, *arguments, **options):
             if argv[:3] == ['systemctl', '--user', 'list-units']:
+                if '--all' in argv:
+                    text = f"ci-runner@1.service loaded {'active running' if active else 'inactive dead'} CI\n"
+
+                    return subprocess.CompletedProcess(argv, 0, text if listed else '', '')
+
                 return subprocess.CompletedProcess(argv, 0, 'ci-runner@1.service loaded active running CI\n'
                                                    if active else '', '')
 
             return real(argv, *arguments, **options)
 
-        return mock.patch.object(core.subprocess, 'run', side_effect=run)
+        with mock.patch.object(core.subprocess, 'run', side_effect=run), mock.patch.object(core, 'ci_units', CI_UNITS):
+            yield
 
     def test_checks_queued_with_no_ci_runner_unit_active_ping_once(self):
         state = self.published()
@@ -3242,6 +3251,19 @@ class PullRequestLoopTest(RunnerCase):
         self.assertEqual([message for message in self.notifications if 'PR #5' in message],
                          ['PR #5: required checks (check, test) queued for 30 min; no ci-runner unit is active '
                           '(`ci-runner status`)'])
+
+    def test_checks_queued_with_no_ci_runner_installed_ping_once(self):
+        state = self.published()
+        self.queued(state['published_sha'])
+        state['published_at'] = time.time() - core.CI_SILENT_SECONDS - 5
+        self.save(state)
+
+        with self.runner_units(active=False, listed=False):
+            self.main(FEATURE)
+            self.main(FEATURE)
+
+        self.assertEqual([message for message in self.notifications if 'PR #5' in message],
+                         ['PR #5: required checks (check, test) queued for 30 min'])
 
     def test_checks_queued_behind_a_busy_ci_runner_never_ping(self):
         state = self.published()

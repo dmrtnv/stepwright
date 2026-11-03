@@ -207,7 +207,7 @@ code). A re-run after the fixer reported `blocked` asks CI again first (rerun th
 ⇒ ready for review, your review requested (a 422 while CODEOWNERS already requested you is fine; another failure is a
 runner note), 📱 "✅ PR #n · CI green · confidence X · +Y weekly pts" (once per commit). No required check 30 min after a
 push, or one still queued while no `ci-runner@` unit is active (a companion self-hosted PR runner; a busy runner never
-pings) ⇒ one ping.
+pings) ⇒ one ping; it names `ci-runner status` only when a ci-runner unit exists.
 GitHub not answering (a 5xx, the network, a body that is not JSON) spends no fix or rerun
 and loses no ping: the step stays `done`, unpinged, and tick asks again every 5 min; 45 min after the first failure it pauses.
 
