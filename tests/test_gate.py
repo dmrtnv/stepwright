@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,8 +18,9 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TESTS.parent / 'sandbox'))
 
+import backend  # noqa: E402
 import gate  # noqa: E402
-from test_core import FAKE_SBX  # noqa: E402
+from test_core import FAKE_SBX, REAL_KIT, fixture_kit  # noqa: E402
 
 # 200 when the calling sandbox holds an allow rule for the URL's host, else what a blocked sbx proxy gives curl.
 RULE_CURL = r'''#!/usr/bin/python3
@@ -252,3 +254,49 @@ class PreflightCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class KitCopyCase(unittest.TestCase):
+    """Gate test 6 copies the kit that stages get: the runner's kit dir plus the user's own skills and agents."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='gate-kit-test-'))
+        self.addCleanup(shutil.rmtree, self.base)
+        self.home = self.base / 'home'
+        (self.home / '.claude/skills/plan-harden').mkdir(parents=True)
+        (self.home / '.claude/skills/plan-harden/SKILL.md').write_text('# stale\n')
+        (self.home / '.claude/skills/pipeline-feature').mkdir()
+        (self.home / '.claude/skills/pipeline-feature/SKILL.md').write_text('# host only\n')
+        (self.home / '.claude/agents').mkdir()
+        (self.home / '.claude/agents/web-researcher.md').write_text('# stale\n')
+        (self.home / '.claude/CLAUDE.md').write_text('# rules\n')
+        self.captured = self.base / 'captured'
+        self.captured.mkdir()
+        self.results = []
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(gate, 'HOME', str(self.home)))
+        stack.enter_context(mock.patch.object(gate, 'results', self.results))
+        stack.enter_context(mock.patch.object(gate, 'run', self.fake_run))
+        stack.enter_context(mock.patch.multiple(backend, HOME=self.home, KIT=fixture_kit(self.base)))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+
+    def fake_run(self, argv, timeout=120, check=False, **kwargs):
+        if argv[:3] == ['sbx', 'cp', '-L']:
+            source = Path(argv[3])
+            (shutil.copytree if source.is_dir() else shutil.copy)(source, self.captured / source.name)
+
+        return subprocess.CompletedProcess(argv, 0, '', '')
+
+    def test_the_gate_copies_the_runners_kit(self):
+        gate.copy_kit(gate.SANDBOX_A, None)
+        skills = self.captured / 'skills'
+        self.assertNotIn('pipeline-feature', {path.name for path in skills.iterdir()})
+        self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
+                         (REAL_KIT / 'skills/plan-harden/SKILL.md').read_text())
+        self.assertEqual((self.captured / 'agents/web-researcher.md').read_text(),
+                         (REAL_KIT / 'agents/web-researcher.md').read_text())
+        self.assertEqual((self.captured / 'CLAUDE.md').read_text(), '# rules\n')
+        copies = {result['check']: result['status'] for result in self.results if result['check'].startswith('sbx cp ')}
+        self.assertEqual(copies, {'sbx cp CLAUDE.md': 'PASS', 'sbx cp skills': 'PASS', 'sbx cp agents': 'PASS',
+                                  'sbx cp system.md': 'PASS'})
