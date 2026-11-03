@@ -5003,6 +5003,169 @@ def command_prove_app(repo):
     return 0 if all(results) else 1
 
 
+# ---------------------------------------------------------------------------------------------- init
+
+MEMINFO = Path('/proc/meminfo')
+INIT_MIN_RAM_GB = 16  # below either, init warns: its caps may not fit a stage VM
+INIT_MIN_THREADS = 8
+CAP_LINE = re.compile(r'^(MemoryHigh|MemoryMax|CPUQuota)=.*$', re.M)
+
+
+def init_sizes(mem_kib, threads):
+    """What init writes for a box with MemTotal mem_kib and `threads` logical CPUs (systemd/sbx.service's cap
+    comments). RAM is MemTotal rounded up to a whole GiB: MemTotal sits under the installed size, and truncating it
+    (`free -g`) would size a 24 GiB box as 23. Every value is at least 1, so a small box still gets a valid unit."""
+    ram = max(1, -(-mem_kib // 2**20))
+    threads = max(1, threads or 1)
+    memory_gb = 8 if ram >= 24 else 4
+    memory_max = max(1, ram - 8)
+    memory_high = max(1, memory_max - 3)
+    pl = memory_gb * 1024 + sbx_host.VM_OVERHEAD_MIB
+
+    return {'ramGb': ram, 'threads': threads, 'cpus': max(1, min(6, threads // 2)), 'memoryGb': memory_gb,
+            'memoryMax': memory_max, 'memoryHigh': memory_high, 'cpuQuota': max(1, threads - 4) * 100, 'pl': pl,
+            'slots': max(1, memory_high * 1024 // pl)}
+
+
+def mem_total_kib():
+    try:
+        text = MEMINFO.read_text()
+    except OSError as error:
+        raise PipelineError(f'{MEMINFO}: unreadable ({error.strerror})') from None
+
+    for line in text.splitlines():
+        if line.startswith('MemTotal:'):
+            return int(line.split()[1])
+
+    raise PipelineError(f'{MEMINFO} has no MemTotal line')
+
+
+def render_sbx_unit(sizes):
+    """systemd/sbx.service with its three cap lines set for this box; the rest (%h included) as it is."""
+    caps = {'MemoryHigh': f"{sizes['memoryHigh']}G", 'MemoryMax': f"{sizes['memoryMax']}G",
+            'CPUQuota': f"{sizes['cpuQuota']}%"}
+    template = PIPELINE_DIR / 'systemd' / SBX_UNIT
+    text, count = CAP_LINE.subn(lambda match: f'{match[1]}={caps[match[1]]}', template.read_text())
+
+    if count != len(caps):
+        raise PipelineError(f'{template}: expected one MemoryHigh=, MemoryMax= and CPUQuota= line each, found {count} '
+                            'cap lines; init writes no unit from it')
+
+    return text
+
+
+def render_pipeline_config(sizes):
+    example = PIPELINE_DIR / 'examples/config.example.json'
+
+    try:
+        config = json.loads(example.read_text())
+    except (OSError, ValueError) as error:
+        raise PipelineError(f'{example}: unreadable ({error})') from None
+
+    config['admission'] = {'slots': sizes['slots']}
+    config['vm'] = {'cpus': sizes['cpus'], 'memoryGb': sizes['memoryGb']}
+
+    return json.dumps(config, indent=2) + '\n'
+
+
+def init_item(path, link=None, content=None):
+    """Create path as a link to `link` or a file holding `content`, never replacing anything: open(..., 'x') and
+    symlink refuse an existing path (a dangling link included), so there is no check-then-write race. Prints one line;
+    False when it failed. A write error removes the file this call created, so a rerun is not stuck on a stub."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:  # FileExistsError here is a file where a directory should be: a failure, not "exists"
+        print(f'failed   {path}: cannot create {error.filename or path.parent} ({error.strerror or error})')
+        return False
+
+    try:
+        if link is not None:
+            os.symlink(link, path)
+            print(f'linked   {path} -> {link}')
+            return True
+
+        handle = open(path, 'x')
+    except FileExistsError:
+        print(f'skipped  {path} (exists)')
+        return True
+    except OSError as error:
+        print(f'failed   {path}: {error.strerror or error}')
+        return False
+
+    try:
+        with handle:
+            handle.write(content)
+    except OSError as error:
+        path.unlink(missing_ok=True)
+        print(f'failed   {path}: {error.strerror or error}')
+        return False
+
+    print(f'wrote    {path}')
+    return True
+
+
+def command_init():
+    """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the three user units with caps
+    sized for this box, and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
+    starts or runs anything: it prints the next commands."""
+    sizes = init_sizes(mem_total_kib(), os.cpu_count())
+    units = HOME / '.config/systemd/user'
+    # Everything is rendered before the first write: a drifted or missing template fails the run with nothing written.
+    contents = {SBX_UNIT: render_sbx_unit(sizes), adapter.CONFIG: render_pipeline_config(sizes)}
+
+    for name in (TICK_UNIT, TICK_TIMER):
+        try:
+            contents[name] = (PIPELINE_DIR / 'systemd' / name).read_text()
+        except OSError as error:
+            raise PipelineError(f"{PIPELINE_DIR / 'systemd' / name}: unreadable ({error.strerror})") from None
+
+    print(f"This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads. Stage VMs get "
+          f"{sizes['cpus']} CPUs and {sizes['memoryGb']} GiB each; {SBX_UNIT} gets MemoryMax={sizes['memoryMax']}G, "
+          f"MemoryHigh={sizes['memoryHigh']}G and CPUQuota={sizes['cpuQuota']}%; admission.slots is {sizes['slots']} "
+          f"and reserve.pl {sizes['pl']} MiB.")
+
+    if sizes['ramGb'] < INIT_MIN_RAM_GB or sizes['threads'] < INIT_MIN_THREADS:
+        print(f"Warning: This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads; stepwright needs "
+              f'at least {INIT_MIN_RAM_GB} GiB and {INIT_MIN_THREADS} threads. These caps may not fit a stage VM: '
+              f'check them in {units / SBX_UNIT} before you enable it.')
+
+    results = [init_item(HOME / '.local/bin/pipeline', link=PIPELINE_DIR / 'pipeline'),
+               init_item(HOME / '.local/bin/sbx-host', link=PIPELINE_DIR / 'sbx-host/sbx-host')]
+
+    for item in backend.KIT_ITEMS:
+        for entry in sorted((backend.KIT / item).iterdir()):
+            if entry.name != '__pycache__':
+                results.append(init_item(HOME / '.claude' / item / entry.name, link=entry))
+
+    for name in (SBX_UNIT, TICK_UNIT, TICK_TIMER):
+        results.append(init_item(units / name, content=contents[name]))
+
+    results.append(init_item(adapter.CONFIG, content=contents[adapter.CONFIG]))
+
+    # reserve.pl follows the VM size the runner will use: a kept config's, else this box's.
+    try:
+        memory_gb = adapter.load_config()['vm']['memoryGb']
+    except adapter.AdapterError:
+        memory_gb = sizes['memoryGb']
+
+    if memory_gb != sizes['memoryGb']:
+        print(f"Your config keeps vm.memoryGb {memory_gb}; this box would get {sizes['memoryGb']}.")
+
+    reserve = {'reserve': {'pl': memory_gb * 1024 + sbx_host.VM_OVERHEAD_MIB}}
+    results.append(init_item(sbx_host.CONFIG, content=json.dumps(reserve, indent=2) + '\n'))
+
+    print(f'\nNext (INSTALL step 3 on):\n'
+          f'  systemctl --user daemon-reload\n'
+          f'  systemctl --user enable --now {SBX_UNIT}\n'
+          f'  loginctl enable-linger "$USER"\n'
+          f'  {PIPELINE_DIR}/sbx-host/install-sbx.sh\n'
+          f'  sbx login\n'
+          f'then create your GitHub App (step 4), fill app.id, app.slug, app.reviewer and repos in {adapter.CONFIG} '
+          f'(step 5), and run pipeline doctor.')
+
+    return 0 if all(results) else 1
+
+
 # ---------------------------------------------------------------------------------------------- doctor
 
 DOCTOR_TIMEOUT_SECONDS = 30
@@ -5767,6 +5930,8 @@ COMMANDS = {
     'gc': ('gc', "clean merged steps' VMs, refs and logs, old snapshot refs, unused templates", 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
+    'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
+             'admin'),
     'doctor': ('doctor', 'check this install: a PASS/FAIL line per check, a fix under each FAIL', 'admin'),
     'prove-app': ('prove-app [--repo <o>/<r>]', 'read-only: what the GitHub App reaches', 'admin'),
     'prove-gate': ('prove-gate [--repo <o>/<r>]', 'throwaway draft PR: GitHub refuses the App all but agent/**',
@@ -5892,6 +6057,9 @@ def main(argv=None):
 
         if command == 'template':
             return command_template(argv[1:])
+
+        if command == 'init':
+            return command_init() if len(argv) == 1 else usage_error(command)
 
         if command == 'doctor':
             return command_doctor() if len(argv) == 1 else usage_error(command)
