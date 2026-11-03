@@ -5,11 +5,17 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
-**Rerun the gate:** yes (its preflight now validates the recipe).
+**Rerun the gate:** yes (its preflight now validates the recipe, and its kit test copies the runner's kit).
 
 ### Added
 
 - This changelog. INSTALL's Update section points at it.
+
+### Changed
+
+- Stage VMs get the stage skills and agents from the runner's kit dir, so a stage runs the checked-out tag's skills.
+  Your CLAUDE.md, skills and agents are still copied; one with a kit name is replaced whole. `pipeline-feature` is
+  no longer copied into VMs.
 
 ### Fixed
 

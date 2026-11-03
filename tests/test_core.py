@@ -549,6 +549,23 @@ def move_main(content, file):
     return MOVE_MAIN.replace('CONTENT', content).replace('FILE', file)
 
 
+REAL_KIT = Path(__file__).resolve().parent.parent / 'kit'
+
+
+def fixture_kit(base):
+    """A copy of the repo's kit dir under base, with host __pycache__ in it, so a test never writes into kit/."""
+    kit = Path(base) / 'kit'
+    shutil.copytree(REAL_KIT, kit, ignore=shutil.ignore_patterns('__pycache__'))
+    write(kit / 'skills/pr-text/__pycache__/check.cpython-312.pyc', 'bytecode')
+    write(kit / 'skills/__pycache__/x.pyc', 'bytecode')
+
+    return kit
+
+
+def relative_files(directory):
+    return {str(path.relative_to(directory)) for path in Path(directory).rglob('*') if path.is_file()}
+
+
 def write(path, content, mode=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1240,12 +1257,42 @@ class RunnerTest(RunnerCase):
                          'a done step must not publish again')
 
     def test_the_kit_memory_and_stage_settings_are_in_the_sandbox(self):
+        kit = fixture_kit(self.fixture.base)
+        personal = self.fixture.home / '.claude'
+        write(personal / 'skills/pr-text/SKILL.md', '# my pr-text\n')
+        write(personal / 'skills/pr-text/fixtures/a.md', 'a\n')
+        write(personal / 'skills/pr-text/test_check.py', 'pass\n')
+        write(personal / 'skills/pipeline-feature/SKILL.md', '# mine\n')
+        write(personal / 'agents/mine.md', '# my agent\n')
+        write(self.fixture.base / 'linked/linear/SKILL.md', '# linear\n')
+        (personal / 'skills/linear').symlink_to(self.fixture.base / 'linked/linear')
         self.happy_path()
-        self.main(FEATURE, '--until', 'plan')
+
+        with mock.patch.object(backend, 'KIT', kit):
+            self.main(FEATURE, '--until', 'plan')
+
         home = self.fixture.sbx / SANDBOX / 'home'
+        skills = home / '.claude/skills'
         self.assertEqual((home / '.claude/CLAUDE.md').read_text(), '# rules\n')
-        self.assertTrue((home / '.claude/skills/plan-harden/SKILL.md').exists())
-        self.assertTrue((home / '.claude/agents/web-researcher.md').exists())
+        kit_skills = {path.name for path in (REAL_KIT / 'skills').iterdir() if path.name != '__pycache__'}
+        self.assertEqual({path.name for path in skills.iterdir()}, kit_skills - {'pipeline-feature'} | {'linear'})
+        kit_pr_text = {path for path in relative_files(REAL_KIT / 'skills/pr-text') if '__pycache__' not in path}
+        self.assertEqual(relative_files(skills / 'pr-text'), kit_pr_text, 'a kit skill replaces a personal one whole')
+        self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
+                         (REAL_KIT / 'skills/plan-harden/SKILL.md').read_text())
+        self.assertEqual([str(path) for path in skills.rglob('__pycache__')], [])
+        self.assertFalse((skills / 'linear').is_symlink())
+        self.assertFalse((skills / 'linear/SKILL.md').is_symlink())
+        self.assertEqual((skills / 'linear/SKILL.md').read_text(), '# linear\n')
+        agents = home / '.claude/agents'
+        self.assertEqual({path.name for path in agents.iterdir()}, {'mine.md', 'web-researcher.md'})
+        self.assertEqual((agents / 'web-researcher.md').read_text(),
+                         (REAL_KIT / 'agents/web-researcher.md').read_text())
+        target = f'{SANDBOX}:{home}/.claude/'
+        copied = sorted(Path(call[-2]).name for call in self.sbx_calls()
+                        if call[:1] == ['cp'] and call[-1] == target
+                        and Path(call[-2]).name in ('CLAUDE.md', 'skills', 'agents'))
+        self.assertEqual(copied, ['CLAUDE.md', 'agents', 'skills'], 'one sbx cp per kit item')
         self.assertEqual((home / 'memory/MEMORY.md').read_text(), '- one\n- two\n')
 
         for script in backend.KIT_SCRIPTS:
@@ -1260,6 +1307,20 @@ class RunnerTest(RunnerCase):
         self.assertEqual(denied, [['policy', 'deny', 'network', '--sandbox', SANDBOX, 'statsig.example.org']])
         setup_rules = [call[:2] for call in self.sbx_calls() if call[:1] == ['policy'] and 'registry.npmjs.org' in call]
         self.assertEqual(setup_rules, [['policy', 'allow'], ['policy', 'rm']], 'setup egress is removed after setup')
+
+    def test_the_kit_reaches_the_sandbox_without_personal_claude_files(self):
+        kit = fixture_kit(self.fixture.base)
+        shutil.rmtree(self.fixture.home / '.claude')
+        self.happy_path()
+
+        with mock.patch.object(backend, 'KIT', kit):
+            self.main(FEATURE, '--until', 'plan')
+
+        claude = self.fixture.sbx / SANDBOX / 'home/.claude'
+        kit_skills = {path.name for path in (REAL_KIT / 'skills').iterdir() if path.name != '__pycache__'}
+        self.assertEqual({path.name for path in (claude / 'skills').iterdir()}, kit_skills - {'pipeline-feature'})
+        self.assertEqual({path.name for path in (claude / 'agents').iterdir()}, {'web-researcher.md'})
+        self.assertFalse((claude / 'CLAUDE.md').exists())
 
     def test_a_plan_with_questions_waits_for_the_answer(self):
         self.happy_path(**{'thing-01-plan': [PLAN_ASKS]})

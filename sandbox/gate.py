@@ -281,12 +281,16 @@ def test_4_setup_and_checks(config, workspace, skip_checks):
 
 def copy_kit(name, memory_dir):
     sh(name, 'mkdir -p /home/agent/.claude')
-    items = [os.path.join(HOME, '.claude', item) for item in ('CLAUDE.md', 'skills', 'agents')]
-    items += [path for path in (str(backend.PIPELINE_DIR / 'system.md'),) if os.path.exists(path)]
 
-    for item in items:
-        result = run(['sbx', 'cp', '-L', item, f'{name}:/home/agent/.claude/'], timeout=300)
-        expect(6, f'sbx cp {os.path.basename(item)}', result.returncode == 0, tail(result.stderr, 3))
+    with tempfile.TemporaryDirectory(prefix='gate-kit-') as directory:
+        # the runner's own build (backend.stage_kit_tree), so this proves the kit that stages get
+        items = [os.path.join(HOME, '.claude', 'CLAUDE.md')]
+        items += [str(backend.stage_kit_tree(item, directory)) for item in backend.KIT_ITEMS]
+        items += [path for path in (str(backend.PIPELINE_DIR / 'system.md'),) if os.path.exists(path)]
+
+        for item in items:
+            result = run(['sbx', 'cp', '-L', item, f'{name}:/home/agent/.claude/'], timeout=300)
+            expect(6, f'sbx cp {os.path.basename(item)}', result.returncode == 0, tail(result.stderr, 3))
 
     if memory_dir and os.path.isdir(memory_dir):
         # a directory lands inside an existing destination directory, so this makes VM_MEMORY
