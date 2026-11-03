@@ -133,8 +133,9 @@ a run holds the feature. Ctrl+C, SIGTERM and
   (`~/.local/state/pipeline/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
   exits), room for the stage's VM (`sbx-host fits pl <vm>`: every reserve within the budget, the host's `floorGib`
   free; `~/.config/sbx-host/config.json`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
-  (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
-  refreshes it, so your manual use counts). Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM
+  (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; a window an event omits
+  is kept, with its own reading time, until it resets; older than 30 min ⇒ a one-token Haiku probe refreshes it, so
+  your manual use counts). Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM
   is stopped between stages, moved to the next step's VM, given back when the run ends, so a CI VM never takes a
   stage's memory between its stages. Failing ⇒ step `ready`, "queued: <why>"
   (pinged once per reason, low priority; never for busy stage slots), the run ends, tick retries oldest first. Never waits in-process.
