@@ -49,6 +49,12 @@ def load_config():
     except (OSError, ValueError) as error:
         raise HostError(f'{CONFIG}: unreadable ({error})') from None
 
+    if not isinstance(value, dict):
+        raise HostError(f'{CONFIG}: not a JSON object')
+
+    if not isinstance(value.get('reserve') or {}, dict):
+        raise HostError(f"{CONFIG}: reserve is an object, not {value['reserve']!r}")
+
     config = dict(DEFAULT_CONFIG, **{key: value[key] for key in DEFAULT_CONFIG if key in value})
     config['reserve'] = dict(DEFAULT_CONFIG['reserve'], **(value.get('reserve') or {}))
 

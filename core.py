@@ -5186,7 +5186,7 @@ def doctor_reserve(loaded):
 
     try:
         reserve = sbx_host.load_config()['reserve']['pl']
-    except (sbx_host.HostError, TypeError) as error:
+    except sbx_host.HostError as error:
         return [('sbx-host reserve', False, str(error), f'edit {sbx_host.CONFIG}')]
 
     if type(reserve) not in (int, float):

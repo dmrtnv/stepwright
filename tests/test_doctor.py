@@ -501,6 +501,12 @@ class ReserveTest(DoctorCase):
         self.assertTrue(line.startswith(f'FAIL  sbx-host reserve: {self.host_config}: unreadable'), line)
         self.assertEqual(after, f'      fix: edit {self.host_config}')
 
+    def test_not_an_object(self):
+        for value, detail in (([], 'not a JSON object'), ({'reserve': 'x'}, "reserve is an object, not 'x'"),
+                              ({'reserve': [8192]}, 'reserve is an object, not [8192]')):
+            self.host(value)
+            self.assertFail('sbx-host reserve', f'{self.host_config}: {detail}', f'edit {self.host_config}')
+
     def test_skipped_without_a_pipeline_config(self):
         self.pipeline_config.write_text('{')
         line, after = self.check('sbx-host reserve')
