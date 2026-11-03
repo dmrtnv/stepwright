@@ -162,7 +162,7 @@ pipeline template build
 Run `gate.py` from a terminal: the first time, it asks you to `/login` to Claude once inside a sandbox. It makes a few
 tiny Claude calls on your subscription.
 
-**Check:** no `gate.py` line prints FAIL.
+**Check:** `gate.py` ends with `N checks, 0 FAIL`. It prints that line only after every check has run.
 
 ## 9. Turn on the timer
 

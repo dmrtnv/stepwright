@@ -20,7 +20,8 @@ What changed for you in each release, newest first. Each release says whether to
   limit is still enforced. Status shows a carried window's age (`5h 75% (90 min old)`) and a window with no live
   reading (missing, unreadable or past its reset) as `?` instead of `0%` or a stale percentage.
 - The "required checks queued" ping names `ci-runner status` only when a ci-runner unit exists.
-- INSTALL's gate check now reads "no `gate.py` line prints FAIL" (the gate also prints INFO lines).
+- INSTALL's gate check now reads "`gate.py` ends with `N checks, 0 FAIL`" instead of asking for PASS lines (the
+  gate also prints INFO lines).
 - README quotes the Claude Code legal page as it reads now: "Pro, Max, and Ultra plans".
 
 ## v0.2 - 2026-11-03
