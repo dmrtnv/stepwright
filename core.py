@@ -13,11 +13,13 @@ import collections
 import contextlib
 import difflib
 import fcntl
+import grp
 import http.client
 import importlib.util
 import io
 import json
 import os
+import pwd
 import re
 import select
 import shlex
@@ -53,6 +55,7 @@ STOP_FLAG = LOGS / 'STOP'
 USAGE = LOGS / 'usage.json'
 CONTROL = LOGS / 'control.json'  # yours, from the CLI: parallel, drain, order (per feature: .pipeline/feature.json)
 TICK_UNIT = 'pipeline-tick.service'
+TICK_TIMER = 'pipeline-tick.timer'
 TEMPLATE_FAILED = LOGS / 'template-failed.json'
 SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (README "What runs where")
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
@@ -4912,8 +4915,11 @@ def command_template(argv):
     return usage_error('template')
 
 
-def expect(label, ok, detail=''):
+def expect(label, ok, detail='', fix=''):
     print(f"{'PASS' if ok else 'FAIL'}  {label}" + (f': {detail}' if detail else ''))
+
+    if fix and not ok:
+        print(f'      fix: {fix}')
 
     return ok
 
@@ -4993,6 +4999,245 @@ def command_prove_app(repo):
 
     print('writes (draft PR, ready flip, comment, review request) are exercised by `pipeline prove-gate`; a CI rerun '
           'only by a real infra failure')
+
+    return 0 if all(results) else 1
+
+
+# ---------------------------------------------------------------------------------------------- doctor
+
+DOCTOR_TIMEOUT_SECONDS = 30
+DOCTOR_TOOLS = {'claude': 'install Claude Code and sign in (INSTALL: What you need)',
+                'node': 'install Node, any LTS (INSTALL: What you need)',
+                'git': 'sudo apt install git (INSTALL: What you need)',
+                'jq': 'sudo apt install jq (INSTALL: What you need)',
+                'sbx': 'install the docker-sbx package (INSTALL step 1)'}
+# `systemctl is-enabled` states of a unit systemd knows and would start: the tick service has no [Install] section.
+STARTABLE = ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias')
+
+
+def unit_state(unit):
+    """`systemctl --user is-enabled` of a unit: its first stdout line, '' when systemctl gives none."""
+    return (sbx_host.systemctl('is-enabled', unit).stdout.strip().splitlines() or [''])[0]
+
+
+def install_unit_fix(unit, step, enable=True):
+    return (f'copy systemd/{unit} to ~/.config/systemd/user/, then systemctl --user daemon-reload'
+            + (f' && systemctl --user enable --now {unit}' if enable else '') + f' (INSTALL step {step})')
+
+
+def doctor_tools(loaded):
+    return [(f'tool {name}', bool(path := shutil.which(name)), path or 'not on PATH', fix)
+            for name, fix in DOCTOR_TOOLS.items()]
+
+
+def doctor_kvm(loaded):
+    try:
+        gid = grp.getgrnam('kvm').gr_gid
+    except KeyError:
+        return [('kvm group', False, 'this box has no kvm group',
+                 'check that /dev/kvm exists (hardware virtualization on), then install docker-sbx (INSTALL step 1)')]
+
+    ok = gid in os.getgroups() or gid == os.getgid()
+
+    return [('kvm group', ok, 'you are in it' if ok else 'you are not in it',
+             'sudo usermod -aG kvm "$USER", then log out and back in (INSTALL step 1)')]
+
+
+def doctor_docker(loaded):
+    """The gate's own probe (sandbox/gate.py): the daemon answers this user, without sudo."""
+    fix = 'start Docker and let your user run it without sudo (INSTALL: What you need)'
+
+    try:
+        result = subprocess.run(['docker', 'info', '--format', '{{.ServerVersion}}'], capture_output=True, text=True,
+                                errors='replace', stdin=subprocess.DEVNULL, timeout=DOCTOR_TIMEOUT_SECONDS)
+    except OSError as error:
+        return [('docker', False, f'docker: {error.strerror}', fix)]
+    except subprocess.TimeoutExpired:
+        return [('docker', False, f'no answer in {DOCTOR_TIMEOUT_SECONDS} s', fix)]
+
+    if result.returncode == 0:
+        return [('docker', True, f'server {result.stdout.strip()}', fix)]
+
+    return [('docker', False, (result.stderr.strip().splitlines() or [f'exit {result.returncode}'])[-1], fix)]
+
+
+def doctor_runner(loaded):
+    """HEAD against the newest local tag, by commit: several tags can share one, and describe picks any of them."""
+    try:
+        head = git_result(PIPELINE_DIR, 'rev-parse', 'HEAD')
+        tags = git_result(PIPELINE_DIR, 'tag', '--list', '--sort=-v:refname').stdout.split()
+    except (OSError, PipelineError) as error:
+        return [('runner', False, str(error), 'clone it as INSTALL step 2 says')]
+
+    if head.returncode != 0:
+        return [('runner', False, f'{PIPELINE_DIR} is not a git checkout', 'clone it as INSTALL step 2 says')]
+
+    if not tags:
+        return [('runner', True, 'no release tags (INSTALL step 2 checks out main then)', '')]
+
+    newest = tags[0]
+
+    if git_result(PIPELINE_DIR, 'rev-parse', f'{newest}^{{commit}}').stdout.strip() == head.stdout.strip():
+        return [('runner', True, f'{newest}, the newest local tag (`git fetch --tags` looks for newer)', '')]
+
+    current = git_result(PIPELINE_DIR, 'describe', '--tags', '--always').stdout.strip()
+
+    return [('runner', False, f'at {current}, the newest local tag is {newest}',
+             f'when `pipeline status` shows no running stage: git -C {PIPELINE_DIR} checkout {newest} (INSTALL Update)')]
+
+
+def doctor_kit(loaded):
+    """Each kit skill and agent: ~/.claude/<item>/<name> resolves to it (INSTALL step 3)."""
+    results = []
+
+    for item in backend.KIT_ITEMS:
+        linked = HOME / '.claude' / item
+
+        for entry in sorted((backend.KIT / item).iterdir()):
+            if entry.name == '__pycache__':
+                continue
+
+            link = linked / entry.name
+            label = f'kit {item}/{entry.name}'
+
+            if link.resolve() == entry.resolve():
+                results.append((label, True, f'links to {entry}', ''))
+            elif not os.path.lexists(link):
+                results.append((label, False, 'not linked', f'ln -s {entry} {linked}/'))
+            elif link.is_symlink():
+                results.append((label, False, f'links to {os.readlink(link)}', f'ln -sfn {entry} {link}'))
+            else:
+                results.append((label, False, "your own copy, not the kit's",
+                                f'move {link} aside, then ln -s {entry} {linked}/'))
+
+    return results
+
+
+def doctor_sbx_unit(loaded):
+    """Enabled (INSTALL step 4 runs enable --now: else no daemon after a reboot) and active."""
+    state, active = unit_state(SBX_UNIT), sbx_host.active()
+    installed = state not in ('', 'not-found')
+    fix = f'systemctl --user enable --now {SBX_UNIT}' if installed else install_unit_fix(SBX_UNIT, 4)
+
+    return [(f'unit {SBX_UNIT}', state == 'enabled' and active,
+             f"{state if installed else 'not installed'}, {'active' if active else 'inactive'}", fix)]
+
+
+def doctor_linger(loaded):
+    """Your units run while you are logged out. The user is named: `show-user` alone may mean the manager."""
+    fix = 'loginctl enable-linger "$USER" (INSTALL step 4)'
+    user = pwd.getpwuid(os.getuid()).pw_name
+
+    try:
+        result = subprocess.run(['loginctl', 'show-user', user, '--property=Linger', '--value'], capture_output=True,
+                                text=True, errors='replace', stdin=subprocess.DEVNULL, timeout=DOCTOR_TIMEOUT_SECONDS)
+    except OSError as error:
+        return [('linger', False, f'loginctl: {error.strerror}', fix)]
+    except subprocess.TimeoutExpired:
+        return [('linger', False, f'loginctl: no answer in {DOCTOR_TIMEOUT_SECONDS} s', fix)]
+
+    value = result.stdout.strip()
+
+    if result.returncode != 0 or not value:
+        return [('linger', False, (result.stderr.strip().splitlines() or [f'loginctl exit {result.returncode}'])[-1],
+                 fix)]
+
+    return [('linger', value == 'yes', {'yes': 'on', 'no': 'off'}.get(value, value), fix)]
+
+
+def doctor_app_key(loaded):
+    """The key the runner reads (app.privateKey), by check_key's rule; app.pem beside the config when it won't load."""
+    config, _ = loaded
+    key = Path(config['app']['privateKey']) if config else adapter.CONFIG.parent / 'app.pem'
+
+    try:
+        mode = check_key({'privateKey': str(key)}).stat().st_mode
+    except PipelineError as error:
+        fix = (f'chmod 600 {key}' if key.exists() else
+               f'generate a private key in the App settings and save it as {key} (INSTALL step 5)')
+        return [('app key', False, str(error), fix)]
+
+    return [('app key', True, f'{key}, mode {oct(mode & 0o777)}', '')]
+
+
+def doctor_config(loaded):
+    _, error = loaded
+
+    if error is None:
+        return [('config', True, str(adapter.CONFIG), '')]
+
+    fix = (f'edit {adapter.CONFIG} (INSTALL step 6)' if adapter.CONFIG.exists() else
+           f'cp {PIPELINE_DIR}/examples/config.example.json {adapter.CONFIG}, then edit it (INSTALL step 6)')
+
+    return [('config', False, error, fix)]
+
+
+def doctor_reserve(loaded):
+    """sbx-host counts a stage VM at reserve.pl: at least the VM's memory (no overhead: a tuned box runs below the
+    default, which adds VM_OVERHEAD_MIB). The fix suggests the default rule."""
+    config, _ = loaded
+
+    if config is None:
+        return [('sbx-host reserve', None, 'needs config.json to load', '')]
+
+    memory = config['vm']['memoryGb']
+    need = memory * 1024
+    fix = f'set "reserve": {{"pl": {need + sbx_host.VM_OVERHEAD_MIB}}} in {sbx_host.CONFIG} (at least {need})'
+
+    try:
+        reserve = sbx_host.load_config()['reserve']['pl']
+    except (sbx_host.HostError, TypeError) as error:
+        return [('sbx-host reserve', False, str(error), f'edit {sbx_host.CONFIG}')]
+
+    if type(reserve) not in (int, float):
+        return [('sbx-host reserve', False, f'pl is {reserve!r}, not a number of MiB', fix)]
+
+    ok = reserve >= need
+
+    return [('sbx-host reserve', ok, f"pl {reserve} MiB {'≥' if ok else '<'} {need} MiB (vm.memoryGb {memory} × 1024)",
+             fix)]
+
+
+def doctor_tick_service(loaded):
+    """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
+    state = unit_state(TICK_UNIT)
+    installed = state not in ('', 'not-found')
+    fix = f'systemctl --user unmask {TICK_UNIT}' if state == 'masked' else install_unit_fix(TICK_UNIT, 9, enable=False)
+
+    return [(f'unit {TICK_UNIT}', state in STARTABLE, state if installed else 'not installed', fix)]
+
+
+def doctor_tick_timer(loaded):
+    state = unit_state(TICK_TIMER)
+    installed = state not in ('', 'not-found')
+    fix = f'systemctl --user enable --now {TICK_TIMER}' if installed else install_unit_fix(TICK_TIMER, 9)
+
+    return [(f'unit {TICK_TIMER}', state == 'enabled', state if installed else 'not installed', fix)]
+
+
+DOCTOR_CHECKS = (doctor_tools, doctor_kvm, doctor_docker, doctor_runner, doctor_kit, doctor_sbx_unit, doctor_linger,
+                 doctor_app_key, doctor_config, doctor_reserve, doctor_tick_service, doctor_tick_timer)
+
+
+def command_doctor():
+    """This install, in INSTALL's order: a PASS/FAIL line per check, a fix under each FAIL, then `N checks, K FAIL`.
+    Local only: no network and no sbx call. A future check that runs sbx calls sbx_host.guard() first (a client call
+    while sbx.service is down starts a daemon outside its caps)."""
+    try:
+        loaded = adapter.load_config(), None
+    except adapter.AdapterError as error:
+        loaded = None, str(error)
+
+    results = []
+
+    for check in DOCTOR_CHECKS:
+        for label, ok, detail, fix in check(loaded):
+            if ok is None:
+                print(f'SKIP  {label}: {detail}')
+            else:
+                results.append(expect(label, ok, detail, fix))
+
+    print(f'{len(results)} checks, {results.count(False)} FAIL')
 
     return 0 if all(results) else 1
 
@@ -5503,6 +5748,7 @@ COMMANDS = {
     'gc': ('gc', "clean merged steps' VMs, refs and logs, old snapshot refs, unused templates", 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
+    'doctor': ('doctor', 'check this install: a PASS/FAIL line per check, a fix under each FAIL', 'admin'),
     'prove-app': ('prove-app [--repo <o>/<r>]', 'read-only: what the GitHub App reaches', 'admin'),
     'prove-gate': ('prove-gate [--repo <o>/<r>]', 'throwaway draft PR: GitHub refuses the App all but agent/**',
                    'admin'),
@@ -5627,6 +5873,9 @@ def main(argv=None):
 
         if command == 'template':
             return command_template(argv[1:])
+
+        if command == 'doctor':
+            return command_doctor() if len(argv) == 1 else usage_error(command)
 
         if command in ('prove-app', 'prove-gate'):
             extra = argv[1:]
