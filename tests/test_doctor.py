@@ -356,6 +356,9 @@ class KitLoopTest(DoctorCase):
 class UnitsTest(DoctorCase):
     NO_FILE = {'stderr': 'Failed to get unit file state for x: No such file or directory'}
     NO_BUS = {'stderr': 'Failed to connect to bus: No medium found'}
+    # An XDG_RUNTIME_DIR with no bus socket in it, e.g. after su; the second is newer systemd's wording.
+    NO_SOCKET = ({'stderr': 'Failed to connect to bus: No such file or directory'},
+                 {'stderr': 'Failed to connect to user scope bus via local transport: No such file or directory'})
     BUS_FIX = ('run doctor as yourself in a login session, not through sudo or su: systemctl --user cannot reach '
                'your user manager here')
 
@@ -384,13 +387,20 @@ class UnitsTest(DoctorCase):
                             '(INSTALL step 4)')
 
     def test_no_user_manager_is_not_read_as_not_installed(self):
-        self.enabled(**{'sbx.service': self.NO_BUS, 'pipeline-tick.service': self.NO_BUS,
-                        'pipeline-tick.timer': self.NO_BUS})
-        self.change(active=False)
-        error = self.NO_BUS['stderr']
-        self.assertFail('unit sbx.service', f'{error}, inactive', self.BUS_FIX)
-        self.assertFail('unit pipeline-tick.service', error, self.BUS_FIX)
-        self.assertFail('unit pipeline-tick.timer', error, self.BUS_FIX)
+        for answer in (self.NO_BUS, *self.NO_SOCKET):
+            with self.subTest(answer['stderr']):
+                self.enabled(**{'sbx.service': answer, 'pipeline-tick.service': answer,
+                                'pipeline-tick.timer': answer})
+                self.change(active=False)
+                error = answer['stderr']
+                self.assertFail('unit sbx.service', f'{error}, inactive', self.BUS_FIX)
+                self.assertFail('unit pipeline-tick.service', error, self.BUS_FIX)
+                self.assertFail('unit pipeline-tick.timer', error, self.BUS_FIX)
+
+    def test_no_systemctl_is_not_installed(self):
+        missing = subprocess.CompletedProcess([], 1, '', "[Errno 2] No such file or directory: 'systemctl'")
+        with mock.patch.object(sbx_host, 'systemctl', return_value=missing):
+            self.assertEqual(core.unit_state('sbx.service'), ('', 'not installed'))
 
     def test_tick_service_states(self):
         for state in ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias'):

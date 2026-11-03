@@ -5030,7 +5030,8 @@ def unit_state(unit):
     if state and state != 'not-found':
         return state, state
 
-    if state or not error or 'No such file or directory' in error:
+    # Only these two errors mean "no unit file": a bus error can end in the same ENOENT text (no socket after su).
+    if state or not error or error.startswith('Failed to get unit file state') or error.endswith(": 'systemctl'"):
         return '', 'not installed'
 
     return None, error
