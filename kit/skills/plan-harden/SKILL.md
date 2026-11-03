@@ -1,6 +1,6 @@
 ---
 name: plan-harden
-description: Hardens an implementation plan before any code is written. It verifies every premise and claim against code and primary docs, builds a user-facing feature parity inventory, runs a pre-mortem, simplifies the implementation without dropping features, and turns open questions into evidenced decisions checked by a fresh critic. Use before presenting any non-trivial implementation plan (before ExitPlanMode), when a plan is sent back, or when asked to harden, critique, verify or stress-test a plan or brief.
+description: Hardens an implementation plan before any code is written. It verifies every premise and claim against code and primary docs, builds a user-facing feature parity inventory, runs a pre-mortem, simplifies the implementation without dropping features, and turns open questions into evidenced decisions checked by a fresh critic. Use before presenting any implementation plan, including one that looks trivial (before ExitPlanMode), when a plan is sent back, or when asked to harden, critique, verify or stress-test a plan or brief.
 argument-hint: "[plan | brief [plan]]"
 ---
 

@@ -45,7 +45,7 @@ owner's approval. Never `git stash`: commit a WIP and fold it in later with
 
 ## Before finishing
 
-1. **Pre-review.** In the pipeline (stage rules from `~/.claude/pipeline/system.md`), skip it: the review stage
+1. **Pre-review.** In the pipeline (the stage block names the stage rules), skip it: the review stage
    follows. Otherwise spawn one fresh subagent with the plan, `git diff origin/<default>...HEAD`,
    `~/.claude/skills/review-branch/checklist.md` and the overlay. Ask it to check the diff against the plan's Done
    when and the checklist, reporting findings with file:line. Fix what holds, with commits.
