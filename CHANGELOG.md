@@ -10,6 +10,10 @@ What changed for you in each release, newest first. Each release says whether to
 ### Added
 
 - This changelog. INSTALL's Update section points at it.
+- `pipeline doctor` checks the install without the network or `sbx`: tools on PATH, the kvm group, Docker, the
+  runner's tag, the kit links, `sbx.service` and linger, the App key, the config, the sbx-host reserve and the tick
+  units. It prints a PASS or FAIL line per check, a fix under each FAIL, and `N checks, K FAIL`; it exits 1 on any
+  FAIL. INSTALL's Check lines use it. A feature folder can no longer be named `doctor`.
 
 ### Changed
 

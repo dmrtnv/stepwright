@@ -40,6 +40,8 @@ ln -s "$PWD/sbx-host/sbx-host" ~/.local/bin/sbx-host
 Keep this clone for running the pipeline only. Don't develop in it.
 
 **Check:** `pipeline help` lists the commands. If you get "command not found", add `~/.local/bin` to your `PATH`.
+Then run `pipeline doctor`: the `tool`, `kvm group`, `docker` and `runner` lines PASS. The lines for later steps FAIL
+until you do those steps; each FAIL has a `fix:` line under it.
 
 ## 3. Install the stage kit
 
@@ -54,13 +56,12 @@ for skill in kit/skills/*; do ln -s "$PWD/$skill" ~/.claude/skills/; done
 ln -s "$PWD/kit/agents/web-researcher.md" ~/.claude/agents/
 ```
 
-`ln` refuses to overwrite: if you already have a skill with the same name, decide which one to keep for your own
-sessions; stage VMs always use the kit's.
+`ln` refuses to overwrite: if you already have a skill or agent with the same name, `pipeline doctor` reports it as
+a FAIL until you replace it with the kit's link. Stage VMs always use the kit's either way.
 Stage VMs also get your `~/.claude/CLAUDE.md` and your other skills and agents. A skill or agent with a kit name is
 replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets out of them.
 
-**Check:** `ls ~/.claude/skills` shows `plan-harden`, `plan-implement`, `review-branch`, `review-respond`, `pr-text`,
-`wrap-up`, `commit-message` and `pipeline-feature`.
+**Check:** in `pipeline doctor`, every `kit` line PASSes: each kit skill and agent links into this clone's kit dir.
 
 ## 4. Start the sandbox daemon
 
@@ -89,7 +90,8 @@ replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets ou
    sbx login
    ```
 
-**Check:** `systemctl --user is-active sbx.service` prints `active`; `sbx-host status` prints the memory budget.
+**Check:** in `pipeline doctor`, the `unit sbx.service` and `linger` lines PASS; `sbx-host status` prints the memory
+budget.
 
 ## 5. Create your GitHub App
 
@@ -114,6 +116,8 @@ The pipeline pushes branches and opens PRs as this App, never as you.
 
 5. Click **Install App**, then **Only select repositories**, pick your repo and install.
 
+**Check:** in `pipeline doctor`, the `app key` line PASSes.
+
 ## 6. Configure
 
 ```bash
@@ -132,7 +136,8 @@ described in the README.
 Optional: phone notifications through [ntfy](https://ntfy.sh). Put a random topic name on one line in
 `~/.config/ntfy/topic`, `chmod 600` it, and subscribe to that topic in the ntfy app.
 
-**Check:** `pipeline prove-app --repo <owner>/<repo>`. Every permission line must PASS. Lines about rules, CI runs
+**Check:** in `pipeline doctor`, the `config` and `sbx-host reserve` lines PASS. Then run
+`pipeline prove-app --repo <owner>/<repo>`: every permission line must PASS. Lines about rules, CI runs
 or job logs may still FAIL; step 7 fixes them.
 
 ## 7. Prepare your repo
@@ -179,8 +184,8 @@ systemctl --user enable --now pipeline-tick.timer
 If `node` or `claude` live outside `/usr/local/bin` and `/usr/bin` (`command -v node claude`), add their
 directories to `PATH=` in `pipeline-tick.service`.
 
-**Check:** `systemctl --user list-timers pipeline-tick.timer` shows the next run, and `pipeline status` prints a
-header without errors.
+**Check:** `systemctl --user list-timers pipeline-tick.timer` shows the next run, `pipeline status` prints a
+header without errors, and `pipeline doctor` ends with `N checks, 0 FAIL`.
 
 ## 10. Run your first feature
 

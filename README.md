@@ -112,6 +112,7 @@ sealed and checked), `checkFast` (`{name, run, flakeReruns?}`: the gate commands
 | Fewer or more at once | `pipeline parallel [N]` (shows / sets 1..`admission.slots`; lowering lets running stages finish) |
 | Stop everything now | `pipeline stop --all` (runs stopped resumable, VMs stopped); `pipeline stop --clear` → tick resumes |
 | Start what has work | `pipeline tick` (the timer does it every 5 min; a run that frees a slot starts it at once) |
+| Check the install | `pipeline doctor` (a PASS/FAIL line per check, a fix under each FAIL; exits 1 on any FAIL) |
 | Clean up | `pipeline gc` (orphan sandboxes, refs and logs of merged steps, snapshot refs > 14 days, then `template prune`) |
 | Sandbox templates | `pipeline template` (show), `pipeline template build [<x.y.z>]` (now, foreground), `pipeline template prune` (all but the target and the ones a sandbox uses, from sbx and docker, plus leftover tars) |
 
@@ -257,7 +258,7 @@ shows the queue).
 | "PR #n was closed unmerged" | reopen it and re-run, or delete the feature folder (a note "sbx rm … failed": remove the sandbox first) |
 | `[running?]` | the run died; tick or `pipeline <name> --detach` resumes it (a VM it left running is stopped first; sbx itself stops a VM 30 s after its last session) |
 | `paused`, "interrupted (Ctrl+C, SIGTERM or a closed terminal)" | `pipeline <name> --detach` (a background run no closed terminal stops) |
-| "the GitHub App key … missing / mode" | `pipeline prove-app` diagnoses it |
+| "the GitHub App key … missing / mode" | `pipeline doctor` (its `app key` line) or `pipeline prove-app` diagnoses it |
 
 ## Where things are
 
