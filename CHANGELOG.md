@@ -32,6 +32,8 @@ What changed for you in each release, newest first. Each release says whether to
 - The "required checks queued" ping names `ci-runner status` only when a ci-runner unit exists.
 - INSTALL's gate check now reads "`gate.py` ends with `N checks, 0 FAIL`" instead of asking for PASS lines (the
   gate also prints INFO lines).
+- A `config.json` or sbx-host `config.json` that is not a JSON object, or whose `app`, `admission` or `reserve` is
+  not an object, now gives a message naming the file instead of a traceback.
 - README quotes the Claude Code legal page as it reads now: "Pro, Max, and Ultra plans".
 
 ## v0.2 - 2026-11-03
