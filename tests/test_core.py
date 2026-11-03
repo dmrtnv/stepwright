@@ -35,6 +35,7 @@ SPAWN = core.spawn_feature_run  # the real one: RunnerCase patches core's
 NOTIFY = core.notify  # the real one too
 GITHUB_API = core.github_api  # the real ones too
 GITHUB_RAW = core.github_raw
+CI_UNITS = core.ci_units  # the real one: RunnerCase stubs it to {}
 
 FAKE_SBX = r'''#!/usr/bin/python3
 """Fake sbx: each sandbox is <root>/<name>/{home,workspace}; exec runs on the host with HOME=<home>, in its own
@@ -3216,18 +3217,26 @@ class PullRequestLoopTest(RunnerCase):
         self.actions(sha, {'id': 900, 'workflow_id': 1, 'status': 'queued', 'run_attempt': 1, 'check_suite_id': 9000},
                      jobs)
 
-    def runner_units(self, active):
-        """systemctl's answer for the ci-runner@ units; every other command runs."""
+    @contextlib.contextmanager
+    def runner_units(self, active, listed=True):
+        """systemctl's answer for the ci-runner@ units, read by the real ci_units too: `--state=active` lists the unit
+        when `active`, `--all` lists it when `listed`. Every other command runs."""
         real = subprocess.run
 
         def run(argv, *arguments, **options):
             if argv[:3] == ['systemctl', '--user', 'list-units']:
+                if '--all' in argv:
+                    text = f"ci-runner@1.service loaded {'active running' if active else 'inactive dead'} CI\n"
+
+                    return subprocess.CompletedProcess(argv, 0, text if listed else '', '')
+
                 return subprocess.CompletedProcess(argv, 0, 'ci-runner@1.service loaded active running CI\n'
                                                    if active else '', '')
 
             return real(argv, *arguments, **options)
 
-        return mock.patch.object(core.subprocess, 'run', side_effect=run)
+        with mock.patch.object(core.subprocess, 'run', side_effect=run), mock.patch.object(core, 'ci_units', CI_UNITS):
+            yield
 
     def test_checks_queued_with_no_ci_runner_unit_active_ping_once(self):
         state = self.published()
@@ -3242,6 +3251,19 @@ class PullRequestLoopTest(RunnerCase):
         self.assertEqual([message for message in self.notifications if 'PR #5' in message],
                          ['PR #5: required checks (check, test) queued for 30 min; no ci-runner unit is active '
                           '(`ci-runner status`)'])
+
+    def test_checks_queued_with_no_ci_runner_installed_ping_once(self):
+        state = self.published()
+        self.queued(state['published_sha'])
+        state['published_at'] = time.time() - core.CI_SILENT_SECONDS - 5
+        self.save(state)
+
+        with self.runner_units(active=False, listed=False):
+            self.main(FEATURE)
+            self.main(FEATURE)
+
+        self.assertEqual([message for message in self.notifications if 'PR #5' in message],
+                         ['PR #5: required checks (check, test) queued for 30 min'])
 
     def test_checks_queued_behind_a_busy_ci_runner_never_ping(self):
         state = self.published()
@@ -4482,6 +4504,68 @@ class AdmissionTest(RunnerCase):
         self.happy_path()
         self.main(FEATURE, '--until', 'plan')
         self.assertEqual(self.state()['stage'], 'implement', self.state()['reason'])
+
+    def carried_usage(self):
+        """A reading 90 min old whose five_hour window then goes missing from a fresh event."""
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time() - 5400,
+            'five_hour': {'utilization': 0.75, 'resetsAt': time.time() + 3600},
+            'seven_day': {'utilization': 0.1, 'resetsAt': time.time() + 86400}}))
+        core.write_usage({'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}})
+
+    def test_a_window_the_event_omits_is_kept_with_its_reading_time(self):
+        self.carried_usage()
+        usage = core.read_usage()
+        self.assertEqual(usage['five_hour']['utilization'], 0.75)
+        self.assertAlmostEqual(usage['five_hour']['at'], time.time() - 5400, delta=60)
+        self.assertEqual(usage['seven_day']['utilization'], 0.2)
+        self.assertAlmostEqual(usage['seven_day']['at'], usage['at'], delta=1)
+        self.happy_path()
+        self.main(FEATURE)
+        self.assertEqual(self.state()['reason'], 'queued: 5-hour usage 75% ≥ 70%')
+        self.assertEqual(self.claude_calls(), [])
+
+    def test_an_expired_window_is_not_carried(self):
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time() - 5400,
+            'five_hour': {'utilization': 0.75, 'resetsAt': time.time() - 60}}))
+        core.write_usage({'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}})
+        self.assertNotIn('five_hour', core.read_usage())
+
+    def test_a_reading_written_before_windows_had_their_own_time_still_carries(self):
+        self.usage(0.2, age=600)
+        old = core.read_usage()['at']
+        self.main('status')
+        self.assertNotIn('min old', self.output)
+        core.write_usage({'seven_day': {'utilization': 0.3, 'resetsAt': time.time() + 86400}})
+        usage = core.read_usage()
+        self.assertEqual(usage['five_hour']['utilization'], 0.1)
+        self.assertEqual(usage['five_hour']['at'], old)
+        self.main('status')
+        self.assertIn('5h 10% (10 min old)', self.output.splitlines()[0])
+
+    def test_status_shows_a_carried_window_age_and_a_missing_one_as_unknown(self):
+        self.carried_usage()
+        self.main('status')
+        self.assertIn('claude weekly 20% · 5h 75% (90 min old) · stages', self.output.splitlines()[0])
+        self.main('status', '-v')
+        self.assertIn('claude usage: weekly 20% · 5h 75% (90 min old) (0 min ago;', self.output)
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}}))
+        self.main('status')
+        self.assertIn('claude weekly 20% · 5h ? · stages', self.output.splitlines()[0])
+        self.main('status', '-v')
+        self.assertIn('claude usage: weekly 20% · 5h ? (0 min ago;', self.output)
+
+    def test_status_shows_an_expired_or_unreadable_window_as_unknown(self):
+        self.usage(0.95, resets_in=-60)
+        self.main('status')
+        self.assertIn('claude weekly ? · 5h 10% · stages', self.output.splitlines()[0])
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'seven_day': {'utilization': None, 'resetsAt': time.time() + 86400},
+            'five_hour': {'utilization': 0.1, 'resetsAt': time.time() + 3600}}))
+        self.main('status')
+        self.assertIn('claude weekly ? · 5h 10% · stages', self.output.splitlines()[0])
 
     def test_the_usage_probe_reads_the_haiku_stream(self):
         stream = '\n'.join(json.dumps(event) for event in (

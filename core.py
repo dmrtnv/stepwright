@@ -1065,13 +1065,26 @@ def read_usage():
     return usage if usage.get('at') else None
 
 
+def live_window(info, now):
+    """A usage window that still counts: a numeric utilization and a reset not yet passed."""
+    return isinstance(info, dict) and isinstance(info.get('utilization'), (int, float)) and \
+        (info.get('resetsAt') or 0) >= now
+
+
 def write_usage(windows):
+    """Write a fresh reading. A live window the event omits is carried with its own reading time (`at`), so a
+    5-hour limit seen earlier still counts until it resets; an old window without `at` was read at the file's `at`."""
     if not isinstance(windows, dict) or not windows:
         return
 
+    now = time.time()
+    old = read_usage() or {}
+    carried = {window: {**info, 'at': info.get('at') or old['at']} for window, info in old.items()
+               if window != 'at' and window not in windows and live_window(info, now)}
+    fresh = {window: {**info, 'at': now} if isinstance(info, dict) else info for window, info in windows.items()}
     LOGS.mkdir(parents=True, exist_ok=True)
-    temporary = USAGE.with_name('usage.json.tmp')
-    temporary.write_text(json.dumps({'at': time.time(), **windows}) + '\n')
+    temporary = USAGE.with_name(f'usage.json.{os.getpid()}.tmp')
+    temporary.write_text(json.dumps({'at': now, **carried, **fresh}) + '\n')
     os.replace(temporary, USAGE)
 
 
@@ -1124,13 +1137,12 @@ def usage_problem(limits, probe=True):
         return None
 
     for window, key, label in (('seven_day', 'weeklyMax', 'weekly'), ('five_hour', 'fiveHourMax', '5-hour')):
-        info = usage.get(window) or {}
-        utilization = info.get('utilization')
+        info = usage.get(window)
 
-        if not isinstance(utilization, (int, float)) or (info.get('resetsAt') or 0) < time.time():
+        if not live_window(info, time.time()):
             continue
 
-        percent = utilization * 100
+        percent = info['utilization'] * 100
 
         if percent >= limits[key]:
             return f'{label} usage {percent:.0f}% ≥ {limits[key]}%'
@@ -2980,7 +2992,7 @@ def ci_runner_down():
 
 def ping_silent(state, number, missing, stuck=()):
     """One ping when a required check has not started CI_SILENT_SECONDS after the push: missing, or queued (`stuck`)
-    while no ci-runner unit is active."""
+    while no ci-runner unit is active. The queued text names ci-runner only when a ci-runner unit exists."""
     if (missing or stuck) and not state['ci'].get('silent_pinged') and \
             time.time() - (state['published_at'] or time.time()) > CI_SILENT_SECONDS:
         state['ci']['silent_pinged'] = True
@@ -2988,8 +3000,9 @@ def ping_silent(state, number, missing, stuck=()):
         minutes = CI_SILENT_SECONDS // 60
         notify(state, f"PR #{number}: " + '; '.join(
             ([f"no required check ({', '.join(missing)}) started in {minutes} min"] if missing else []) +
-            ([f"required checks ({', '.join(stuck)}) queued for {minutes} min; no ci-runner unit is active "
-              f"(`ci-runner status`)"] if stuck else [])), priority='high')
+            ([f"required checks ({', '.join(stuck)}) queued for {minutes} min" +
+              ('; no ci-runner unit is active (`ci-runner status`)' if ci_units() else '')] if stuck else [])),
+            priority='high')
 
 
 def request_review(state, repo, number, token):
@@ -3540,10 +3553,21 @@ def next_command(state, status):
     return None
 
 
-def usage_windows(usage, labels=('weekly', '5h')):
-    """`weekly 41% · 5h 4%` from a usage reading."""
-    return ' · '.join(f"{label} {((usage.get(window) or {}).get('utilization') or 0) * 100:.0f}%"
-                      for window, label in zip(('seven_day', 'five_hour'), labels))
+def usage_windows(usage, now, labels=('weekly', '5h')):
+    """`weekly 41% · 5h 4% (90 min old)` from a usage reading: a window carried from an older reading gives its age,
+    one missing, unreadable or past its reset is `?`."""
+    def window_text(window, label):
+        info = usage.get(window)
+
+        if not live_window(info, now):
+            return f'{label} ?'
+
+        at = info.get('at') or usage['at']
+        age = f' ({int((now - at) / 60)} min old)' if at < usage['at'] else ''
+
+        return f"{label} {info['utilization'] * 100:.0f}%{age}"
+
+    return ' · '.join(window_text(window, label) for window, label in zip(('seven_day', 'five_hour'), labels))
 
 
 def command_status_verbose(show_all=False, probes=None):
@@ -3554,8 +3578,8 @@ def command_status_verbose(show_all=False, probes=None):
 
     if usage:
         age = int((time.time() - usage['at']) / 60)
-        print(f"claude usage: {usage_windows(usage)} ({age} min ago; stages queue at {limits['weeklyMax']}% / "
-              f"{limits['fiveHourMax']}%)")
+        print(f"claude usage: {usage_windows(usage, time.time())} ({age} min ago; stages queue at "
+              f"{limits['weeklyMax']}% / {limits['fiveHourMax']}%)")
     else:
         print('claude usage: unknown (the next stage probes it)')
 
@@ -3955,7 +3979,7 @@ def header_line(model):
 
     if usage:
         stale = ' (stale)' if model['now'] - usage['at'] > USAGE_STALE_SECONDS else ''
-        claude = f'claude {usage_windows(usage)}{stale}'
+        claude = f"claude {usage_windows(usage, model['now'])}{stale}"
     else:
         claude = 'claude usage ?'
 

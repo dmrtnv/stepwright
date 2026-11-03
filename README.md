@@ -15,7 +15,7 @@ area: Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-term
 "through automated or non-human means, whether through a bot, script, or otherwise", "except when you are accessing
 our Services via an Anthropic API Key or where we otherwise explicitly permit it". The
 [Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) adds that "Advertised usage limits for
-Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
+Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
 yourself; you are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
 
 ## How it works
@@ -133,8 +133,9 @@ a run holds the feature. Ctrl+C, SIGTERM and
   (`~/.local/state/pipeline/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
   exits), room for the stage's VM (`sbx-host fits pl <vm>`: every reserve within the budget, the host's `floorGib`
   free; `~/.config/sbx-host/config.json`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
-  (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
-  refreshes it, so your manual use counts). Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM
+  (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; a window an event omits
+  is kept, with its own reading time, until it resets; older than 30 min ⇒ a one-token Haiku probe refreshes it, so
+  your manual use counts). Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM
   is stopped between stages, moved to the next step's VM, given back when the run ends, so a CI VM never takes a
   stage's memory between its stages. Failing ⇒ step `ready`, "queued: <why>"
   (pinged once per reason, low priority; never for busy stage slots), the run ends, tick retries oldest first. Never waits in-process.
@@ -206,7 +207,7 @@ code). A re-run after the fixer reported `blocked` asks CI again first (rerun th
 ⇒ ready for review, your review requested (a 422 while CODEOWNERS already requested you is fine; another failure is a
 runner note), 📱 "✅ PR #n · CI green · confidence X · +Y weekly pts" (once per commit). No required check 30 min after a
 push, or one still queued while no `ci-runner@` unit is active (a companion self-hosted PR runner; a busy runner never
-pings) ⇒ one ping.
+pings) ⇒ one ping; it names `ci-runner status` only when a ci-runner unit exists.
 GitHub not answering (a 5xx, the network, a body that is not JSON) spends no fix or rerun
 and loses no ping: the step stays `done`, unpinged, and tick asks again every 5 min; 45 min after the first failure it pauses.
 
