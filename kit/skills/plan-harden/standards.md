@@ -6,9 +6,7 @@ AGENTS.md, linked docs, memory, a "Workflow overlay" memory entry) win where the
 
 ## Values
 
-Simplicity, consistency, reliability, maintainability. DRY. No unnecessary complexity or useless abstraction; YAGNI.
-Prefer one-liners where they stay readable. UX is full-featured and never compromised by simplicity. **All features
-must remain or be improved.** Make no assumptions; verify every claim.
+Values and the verification bar: `~/.claude/CLAUDE.md`. **All features must remain or be improved.**
 
 ## On top of the decision ladder
 

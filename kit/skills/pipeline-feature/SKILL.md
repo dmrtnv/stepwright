@@ -13,6 +13,9 @@ start the pipeline yourself: print the command and stop. The runbook is the `REA
 memory entry if the index lists one). Plans stay out of the project's git (the folder is ignored on purpose; back it up yourself). A feature not to start yet goes to `.claude/plans/_backlog/<feature>/` and gets a row in
 `.claude/plans/README.md` (the queue).
 
+**Plan-mode handoff:** on approval of a plan-mode plan, write the folder from it without re-planning; re-audit paths
+and line numbers against the default branch.
+
 ## Steps
 
 1. **Name.** Lowercase letters, digits and dashes (`unique-names`, `perfect-fit-queue`), never a `pipeline` command
