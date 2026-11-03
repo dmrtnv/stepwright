@@ -16,6 +16,7 @@ from unittest import mock
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
+sys.path.insert(0, str(TESTS.parent))
 sys.path.insert(0, str(TESTS.parent / 'sandbox'))
 
 import backend  # noqa: E402
@@ -252,10 +253,6 @@ class PreflightCase(unittest.TestCase):
         self.assertIsNone(config)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class KitCopyCase(unittest.TestCase):
     """Gate test 6 copies the kit that stages get: the runner's kit dir plus the user's own skills and agents."""
 
@@ -300,3 +297,7 @@ class KitCopyCase(unittest.TestCase):
         copies = {result['check']: result['status'] for result in self.results if result['check'].startswith('sbx cp ')}
         self.assertEqual(copies, {'sbx cp CLAUDE.md': 'PASS', 'sbx cp skills': 'PASS', 'sbx cp agents': 'PASS',
                                   'sbx cp system.md': 'PASS'})
+
+
+if __name__ == '__main__':
+    unittest.main()
