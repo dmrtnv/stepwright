@@ -1,4 +1,5 @@
 """sbx_host against a fake `sbx` on PATH and fake cgroup, proc and state directories."""
+import io
 import json
 import os
 import subprocess
@@ -124,7 +125,7 @@ class FitsTest(HostCase):
         self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192)])
         self.assertEqual(sbx_host.fits('pl'), (True, 'reserved 24.5 + 8.5 GiB'))
         self.free = 9.99
-        self.assertEqual(sbx_host.fits('pl'), (False, '10.0 GiB free < 10 GiB'))
+        self.assertEqual(sbx_host.fits('pl'), (False, '9.9 GiB free < 10 GiB'))
 
     def test_the_reserve_and_floor_come_from_the_config(self):
         self.config(reserve={'pl': 5632}, floorGib=4)
@@ -146,18 +147,93 @@ class FitsTest(HostCase):
         self.assertRaises(sbx_host.HostError, sbx_host.fits, 'pl')
 
 
+class ClaimTest(HostCase):
+    def setUp(self):
+        super().setUp()
+        self.config(budget='max+swap-1G', reserve={'pl': 8192, 'ci': 8512})
+        self.cap(high=16.5, high_max=19.5, swap_max=8)
+        self.pending = self.base / 'state/pending'
+
+    def other_process(self):
+        holder = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+
+        return holder.pid
+
+    def test_a_claim_is_written_only_when_it_fits_unless_always(self):
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192)])
+        self.assertEqual(sbx_host.claim('pl', 'pl-shop-c-01'),
+                         (False, 'reserved 24.3 + 8.0 GiB > 26.5 (max+swap-1G)'))
+        self.assertFalse((self.pending / 'pl-shop-c-01').exists())
+        self.assertEqual(sbx_host.claim('ci', 'ci-1-9'), (True, 'reserved 16.0 + 8.3 GiB of 26.5'),
+                         'two stages and the CI lane fit')
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192),
+                  ('pl-shop-c-01', 'running', 8192)])
+        self.assertEqual(sbx_host.claim('ci', 'ci-1-9', always=True)[0], False)
+        self.assertEqual(json.loads((self.pending / 'ci-1-9').read_text())['kind'], 'ci', 'the CI lane claims anyway')
+
+    def test_a_second_claim_counts_the_first_and_release_gives_it_back(self):
+        self.units['ci-runner@1.service'] = False
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192)])
+        self.pending.mkdir(parents=True)
+        (self.pending / 'ci-2-5').write_text(json.dumps({'pid': self.other_process(), 'kind': 'ci'}))
+        self.assertEqual(sbx_host.claim('pl', 'pl-shop-c-01'), (False, 'reserved 24.3 + 8.0 GiB > 26.5 (max+swap-1G)'))
+        (self.pending / 'ci-2-5').unlink()
+        self.assertEqual(sbx_host.claim('pl', 'pl-shop-c-01'), (True, 'reserved 16.0 + 8.0 GiB of 26.5'))
+        self.assertEqual(sbx_host.fits('ci', 'ci-2-6')[0], False, 'the claim counts for others')
+        sbx_host.release('pl-shop-c-01')
+        self.assertEqual(sbx_host.pending(), [])
+
+    def test_one_claim_per_process_and_dead_holders_files_go(self):
+        self.units['ci-runner@1.service'] = False
+        self.pending.mkdir(parents=True)
+        dead = subprocess.Popen(['true'])
+        dead.wait()
+        (self.pending / 'pl-shop-x-01').write_text(json.dumps({'pid': dead.pid, 'kind': 'pl'}))
+        sbx_host.claim('pl', 'pl-shop-a-01')
+        sbx_host.claim('pl', 'pl-shop-a-02')
+        self.assertEqual(sorted(path.name for path in self.pending.iterdir()), ['pl-shop-a-02'],
+                         'the next step moves the claim; a dead holder\'s file is deleted')
+        self.assertEqual(sbx_host.fits('pl', 'pl-shop-a-02'), (True, 'reserved 0.0 + 8.0 GiB of 26.5'),
+                         'its own claim never counts against it')
+
+    def test_a_reused_pid_holds_nothing(self):
+        proc = self.base / 'proc' / str(os.getpid())
+        proc.mkdir(parents=True)
+        (proc / 'stat').write_text(f'{os.getpid()} (python3) S' + ' 0' * 18 + ' 500 0\n')
+        self.assertEqual(sbx_host.process_start(os.getpid()), 500)
+        self.pending.mkdir(parents=True)
+        (self.pending / 'pl-shop-x-01').write_text(json.dumps({'pid': os.getpid(), 'kind': 'pl', 'start': 499}))
+        self.assertEqual(sbx_host.pending(), [])
+
+    def test_room_counts_what_still_fits(self):
+        self.assertEqual(sbx_host.room('pl'), 2, '26.5 − the CI lane 8.3 holds two stages')
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'stopped', 8192)])
+        self.assertEqual(sbx_host.room('pl'), 1)
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192)])
+        self.assertEqual(sbx_host.room('pl'), 0)
+        self.vms([])
+        self.free = 9.99
+        self.assertEqual(sbx_host.room('pl'), 0, 'below the floor')
+        self.free = 20.0
+        self.cap(high=16.5, high_max=None, swap_max=8)
+        self.assertEqual(sbx_host.room('pl'), float('inf'), 'no cap: no budget to fill')
+
+
 class ReadingTest(HostCase):
     def test_the_reading_has_every_cap_and_counts_shims_outside(self):
         (self.group / 'memory.current').write_text(f'{13 * GIB}\n')
         (self.group / 'memory.events').write_text('low 0\nhigh 7\nmax 0\noom 0\noom_kill 2\n')
+        (self.group / 'memory.swap.events').write_text('high 0\nmax 360\nfail 372\n')
         (self.group / 'memory.pressure').write_text('some avg10=0 avg60=1.00 avg300=0 total=1\n'
                                                     'full avg10=0 avg60=0.25 avg300=0 total=1\n')
         self.shim(11, 1024)
         self.shim(12, 1024)
         (self.base / 'proc/12/cgroup').write_text('0::/user.slice/tmux.scope\n')
         memory = sbx_host.reading()
-        self.assertEqual((memory['current'], memory['high'], memory['oom'], memory['high_events'], memory['avg60']),
-                         (13 * GIB, int(16.5 * GIB), 2, 7, 0.25))
+        self.assertEqual((memory['current'], memory['high'], memory['oom'], memory['high_events'], memory['avg60'],
+                          memory['swap_fail']), (13 * GIB, int(16.5 * GIB), 2, 7, 0.25, 372))
         self.assertEqual((memory['inside'], memory['total']), (1, 2))
         self.assertIsNone(memory['peak'], 'unreadable is None, not 0')
 
@@ -190,11 +266,28 @@ class SampleTest(HostCase):
 
 
 class CliTest(HostCase):
-    def test_fits_exits_by_the_answer(self):
+    def setUp(self):
+        super().setUp()
         cli = Path(__file__).resolve().parent.parent / 'sbx-host/sbx-host'
+        self.cli = {'__name__': 'cli', '__file__': str(cli)}
+        exec(compile(cli.read_text(), str(cli), 'exec'), self.cli)
+
+    def hold(self, *argv, code=0):
+        """main(['hold', ...]) running a command that records the claims it sees and exits `code`: (exit, stderr,
+        the claims the command saw or None when it never ran)."""
+        seen = self.base / 'seen'
+        seen.unlink(missing_ok=True)
+        command = [sys.executable, '-c', 'import os, sys; open(sys.argv[1], "w").write(" ".join(sorted(os.listdir('
+                   'sys.argv[2])))); sys.exit(int(sys.argv[3]))', str(seen), str(self.base / 'state/pending'), str(code)]
+
+        with mock.patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            result = self.cli['main'](['hold', *argv, '--', *command])
+
+        return result, stderr.getvalue(), seen.read_text() if seen.exists() else None
+
+    def test_fits_exits_by_the_answer(self):
+        spec = self.cli
         self.vms([('pl-shop-a-01', 'running', 8192), ('ci-1-1', 'running', 7168)])
-        spec = {'__name__': 'cli', '__file__': str(cli)}
-        exec(compile(cli.read_text(), str(cli), 'exec'), spec)
 
         with mock.patch('sys.stdout'):
             self.assertEqual(spec['main'](['fits', 'ci']), 1)
@@ -204,6 +297,44 @@ class CliTest(HostCase):
             self.vms([('pl-shop-a-01', 'running', 8192)])
             self.assertEqual(spec['main'](['fits', 'ci']), 1, 'the CI lane and a new CI VM')
             self.assertEqual(spec['main'](['fits', 'ci', 'ci-1-9']), 0, "slot 1's VM is the lane")
+
+    def test_hold_runs_the_command_holding_the_claim(self):
+        self.assertEqual(self.hold('ci', 'ci-2-9', code=3), (3, '', 'ci-2-9'), "the command's own code")
+        self.assertEqual(sbx_host.pending(), [], 'given back after')
+        self.vms([('pl-shop-a-01', 'running', 8192), ('pl-shop-b-01', 'running', 8192)])
+        self.assertEqual(self.hold('ci', 'ci-2-9'), (75, 'sbx-host: refused: reserved 24.5 + 7.5 GiB > 16.5 (high)\n',
+                                                     None))
+        self.assertEqual(self.hold('--always', 'ci', 'ci-1-9'), (0, 'sbx-host: over: reserved 17.0 + 7.5 GiB > 16.5 (high)\n',
+                                                                 'ci-1-9'))
+        self.assertEqual(sbx_host.pending(), [])
+
+    def test_hold_never_runs_the_command_when_no_sbx_call_may(self):
+        self.units['sbx.service'] = False
+        self.assertEqual(self.hold('--always', 'ci', 'ci-1-9'),
+                         (1, 'sbx-host: no sbx call: sbx.service is not active (systemctl --user start sbx.service)\n',
+                          None))
+        with mock.patch('sys.stderr'):
+            self.assertEqual(self.cli['main'](['hold', 'ci', 'ci-1-9']), 2, 'no command: the usage')
+
+    def test_status_says_when_a_reserve_is_below_its_peaks(self):
+        state = self.base / 'state'
+        state.mkdir()
+        now = int(time.time())
+        (state / 'peaks.jsonl').write_text(''.join(json.dumps({'at': now, 'name': f'ci-1-{index}', 'kind': 'ci',
+                                                               'hwm_mib': 7900}) + '\n' for index in range(3)))
+        self.config(reserve={'ci': 8512})
+
+        with mock.patch('sys.stdout', new_callable=io.StringIO) as stdout:
+            self.cli['main'](['status'])
+
+        self.assertIn('retune ci: reserve 8.3 · p95+512 8.2\n', stdout.getvalue())
+        self.config(reserve={'ci': 8192})
+
+        with mock.patch('sys.stdout', new_callable=io.StringIO) as stdout:
+            self.cli['main'](['status'])
+
+        self.assertIn('retune ci: reserve 8.0 · p95+512 8.2 (raise the reserve)\n', stdout.getvalue())
+        self.assertNotIn('retune pl', stdout.getvalue(), 'no pl peaks yet')
 
 
 if __name__ == '__main__':

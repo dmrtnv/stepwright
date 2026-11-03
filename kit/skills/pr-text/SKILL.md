@@ -54,4 +54,4 @@ Print the title and the body as two separate fenced code blocks, ready to paste.
 
 Run `python3 ~/.claude/skills/pr-text/check.py <pr.md>` (or on a file holding the title, a blank line and the body)
 and fix until it prints nothing. check.py locks this format: the pipeline's respond gate runs it, and every rule it
-checks has a test in `test_check.py`.
+checks has a test in the repo's `tests/test_pr_text_check.py`.

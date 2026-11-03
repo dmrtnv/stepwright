@@ -92,8 +92,15 @@ class ConfigTest(AdapterCase):
     def test_admission_defaults_and_the_key_path_expand(self):
         self.register({'a/r': self.base}, admission={'slots': 3})
         config = adapter.load_config()
-        self.assertEqual(config['admission'], {'slots': 3, 'minMemoryGb': 10, 'weeklyMax': 80, 'fiveHourMax': 70})
+        self.assertEqual(config['admission'], {'slots': 3, 'weeklyMax': 80, 'fiveHourMax': 70})
         self.assertEqual(config['app']['privateKey'], str(Path.home() / 'k.pem'))
+
+    def test_old_min_memory_key_is_a_config_error(self):
+        self.register({'a/r': self.base}, admission={'slots': 3, 'minMemoryGb': 10})
+
+        with self.assertRaisesRegex(adapter.AdapterError, re.escape(
+                'admission.minMemoryGb moved to ~/.config/sbx-host/config.json floorGib')):
+            adapter.load_config()
 
     def test_the_template_policy_defaults_to_host_auto_and_rejects_anything_else(self):
         self.register({'a/r': self.base})

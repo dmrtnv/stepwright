@@ -24,7 +24,7 @@ STEP_DIR = re.compile(r'^(\d{2})-([a-z0-9][a-z0-9-]*)$')
 REQUIRED = ('base', 'setup', 'setupEgress', 'checkFast', 'protected', 'ci')
 OPTIONAL = ('gateConfig', 'dependencyFields', 'migrations', 'github')
 MIGRATION_KEYS = ('dir', 'journal', 'generate')
-DEFAULT_ADMISSION = {'slots': 2, 'minMemoryGb': 10, 'weeklyMax': 80, 'fiveHourMax': 70}
+DEFAULT_ADMISSION = {'slots': 2, 'weeklyMax': 80, 'fiveHourMax': 70}
 # claude: 'host' follows the host's Claude Code, '2.1.286' pins one; build: 'auto' (the runner builds a missing one
 # before a create) or 'manual' (only `pipeline template build`).
 DEFAULT_TEMPLATE = {'claude': 'host', 'build': 'auto'}
@@ -71,6 +71,9 @@ def load_config():
 
     if len(set(shorts)) != len(shorts):
         raise AdapterError(f'{CONFIG}: two repos share a name; sandbox and lock names need it unique')
+
+    if 'minMemoryGb' in (config.get('admission') or {}):
+        raise AdapterError(f'{CONFIG}: admission.minMemoryGb moved to ~/.config/sbx-host/config.json floorGib')
 
     config['admission'] = dict(DEFAULT_ADMISSION, **(config.get('admission') or {}))
     template = config.get('template') or {}
