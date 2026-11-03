@@ -265,8 +265,13 @@ def repo_config(repo, revision=None):
     if result.returncode != 0:
         raise AdapterError(f'{repo}: no .claude/pipeline.json on {revision} (commit one; see README "New repo")')
 
+    return parse_repo_config(repo, result.stdout)
+
+
+def parse_repo_config(repo, text):
+    """`text` (str or bytes) as a validated recipe card, or the runner's AdapterError for it."""
     try:
-        config = json.loads(result.stdout)
+        config = json.loads(text)
     except ValueError as error:
         raise AdapterError(f'{repo}: .claude/pipeline.json is not JSON ({error})') from None
 

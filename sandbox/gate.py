@@ -488,10 +488,21 @@ def preflight(repo, tag):
     if not os.path.isdir(os.path.join(repo, '.git')):
         problems.append(f'{repo} is not a git checkout')
 
-    if not os.path.exists(os.path.join(repo, '.claude', 'pipeline.json')):
-        problems.append(f'{repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)')
+    recipe = os.path.join(repo, '.claude', 'pipeline.json')
+    config = None
 
-    return problems
+    if not os.path.exists(recipe):
+        problems.append(f'{repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)')
+    else:
+        try:
+            with open(recipe, 'rb') as handle:
+                config = core.adapter.parse_repo_config(repo, handle.read())
+        except OSError as error:
+            problems.append(f'{recipe}: {error.strerror}')
+        except core.adapter.AdapterError as error:
+            problems.append(str(error))
+
+    return problems, config
 
 
 def main():
@@ -503,14 +514,11 @@ def main():
     args = parser.parse_args()
     repo = os.path.abspath(os.path.expanduser(args.repo))
     tag = template_tag()
-    problems = preflight(repo, tag)
+    problems, config = preflight(repo, tag)
 
     if problems:
         print('preflight failed:\n  ' + '\n  '.join(problems), file=sys.stderr)
         return 2
-
-    with open(os.path.join(repo, '.claude', 'pipeline.json')) as handle:
-        config = json.load(handle)
 
     os.makedirs(WORK_ROOT, exist_ok=True)
     work = tempfile.mkdtemp(prefix='run-', dir=WORK_ROOT)

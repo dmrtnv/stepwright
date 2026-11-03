@@ -179,5 +179,76 @@ class GateEgressCase(unittest.TestCase):
         self.assertEqual(self.rules(gate.SANDBOX_A), [])
 
 
+class PreflightCase(unittest.TestCase):
+    """Preflight with sbx, the template and kvm faked present, so only the checkout's recipe decides."""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix='gate-preflight-')
+        self.addCleanup(subprocess.run, ['rm', '-rf', self.repo])
+        os.makedirs(os.path.join(self.repo, '.git'))
+        os.makedirs(os.path.join(self.repo, '.claude'))
+        self.recipe = os.path.join(self.repo, '.claude', 'pipeline.json')
+        self.argvs = []
+
+        def fake_run(argv, *args, **kwargs):
+            self.argvs.append(argv)
+            out = {'template': 'pipeline 1\n', 'id': 'agent kvm\n'}.get(argv[1] if argv[0] == 'sbx' else argv[0], '')
+
+            return subprocess.CompletedProcess(argv, 0, out, '')
+
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(gate.shutil, 'which', lambda name: f'/usr/bin/{name}'))
+        stack.enter_context(mock.patch.object(gate, 'run', fake_run))
+        stack.enter_context(mock.patch.object(gate, 'template_tag', lambda: 'pipeline:1'))
+
+    def write(self, text):
+        with open(self.recipe, 'w') as handle:
+            handle.write(text)
+
+    def test_a_recipe_that_is_not_json_fails_preflight(self):
+        self.write('{"base": "main",')
+        stderr = io.StringIO()
+
+        with mock.patch.object(sys, 'argv', ['gate.py', '--repo', self.repo]), contextlib.redirect_stderr(stderr):
+            code = gate.main()
+
+        self.assertEqual(code, 2)
+        self.assertIn('preflight failed:', stderr.getvalue())
+        self.assertIn(f'{self.repo}: .claude/pipeline.json is not JSON', stderr.getvalue())
+        self.assertNotIn('create', [argv[1] for argv in self.argvs if argv[0] == 'sbx'])
+
+    def test_a_recipe_the_runner_rejects_fails_preflight(self):
+        recipe = json.loads((TESTS.parent / 'sandbox' / 'pipeline.python.json').read_text())
+        del recipe['ci']
+        self.write(json.dumps(recipe))
+
+        self.assertEqual(gate.preflight(self.repo, 'pipeline:1'),
+                         ([f'{self.repo} .claude/pipeline.json: missing key ci'], None))
+
+    def test_a_valid_recipe_passes_preflight_validated(self):
+        preset = (TESTS.parent / 'sandbox' / 'pipeline.python.json').read_text()
+        self.write(preset)
+        problems, config = gate.preflight(self.repo, 'pipeline:1')
+
+        self.assertEqual(problems, [])
+        self.assertEqual(config['gateConfig'], [])
+        self.assertEqual(config['checkFast'], json.loads(preset)['checkFast'])
+
+    def test_an_unreadable_recipe_fails_preflight(self):
+        os.makedirs(self.recipe)
+        problems, config = gate.preflight(self.repo, 'pipeline:1')
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.recipe, problems[0])
+        self.assertIsNone(config)
+
+    def test_a_missing_recipe_still_names_the_presets(self):
+        problems, config = gate.preflight(self.repo, 'pipeline:1')
+
+        self.assertEqual(problems, [f'{self.repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)'])
+        self.assertIsNone(config)
+
+
 if __name__ == '__main__':
     unittest.main()
