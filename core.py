@@ -5262,7 +5262,7 @@ def doctor_runner(loaded):
 
 
 def doctor_kit(loaded):
-    """Each kit skill and agent: ~/.claude/<item>/<name> resolves to it (INSTALL step 3)."""
+    """Each kit skill and agent: ~/.claude/<item>/<name> resolves to it (INSTALL step 2)."""
     results = []
 
     for item in backend.KIT_ITEMS:
@@ -5289,12 +5289,11 @@ def doctor_kit(loaded):
 
 
 def doctor_sbx_unit(loaded):
-    """Enabled (INSTALL step 4 runs enable --now: else no daemon after a reboot) and active."""
+    """Enabled (INSTALL step 3 runs enable --now: else no daemon after a reboot) and active."""
     (state, detail), active = unit_state(SBX_UNIT), sbx_host.active()
     fix = {None: NO_USER_MANAGER_FIX,
-           '': f'mkdir -p ~/.config/systemd/user && cp {PIPELINE_DIR}/systemd/{SBX_UNIT} ~/.config/systemd/user/, '
-               f'set MemoryHigh, MemoryMax and CPUQuota in it to fit this box, then systemctl --user daemon-reload && '
-               f'systemctl --user enable --now {SBX_UNIT} (INSTALL step 4)'}.get(
+           '': f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload && '
+               f'systemctl --user enable --now {SBX_UNIT} (INSTALL step 3)'}.get(
         state, f'systemctl --user enable --now {SBX_UNIT}')
 
     return [(f'unit {SBX_UNIT}', state == 'enabled' and active, f"{detail}, {'active' if active else 'inactive'}",
@@ -5303,7 +5302,7 @@ def doctor_sbx_unit(loaded):
 
 def doctor_linger(loaded):
     """Your units run while you are logged out. The user is named: `show-user` alone may mean the manager."""
-    fix = 'loginctl enable-linger "$USER" (INSTALL step 4)'
+    fix = 'loginctl enable-linger "$USER" (INSTALL step 3)'
     user = pwd.getpwuid(os.getuid()).pw_name
 
     try:
@@ -5333,20 +5332,37 @@ def doctor_app_key(loaded):
         mode = check_key({'privateKey': str(key)}).stat().st_mode
     except PipelineError as error:
         fix = (f'chmod 600 {key}' if key.exists() else
-               f'generate a private key in the App settings and save it as {key} (INSTALL step 5)')
+               f'generate a private key in the App settings and save it as {key} (INSTALL step 4)')
         return [('app key', False, str(error), fix)]
 
     return [('app key', True, f'{key}, mode {oct(mode & 0o777)}', '')]
 
 
+def example_placeholders(config):
+    """The example config's placeholders that config still holds (the skeleton `pipeline init` writes loads, so
+    load_config can't tell). privateKey is a real default path, not a placeholder. No example, no check."""
+    try:
+        example = json.loads((PIPELINE_DIR / 'examples/config.example.json').read_text())
+        app, repos = example['app'], example['repos']
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+    kept = [f'app.{key}' for key in ('id', 'slug', 'reviewer') if key in app and config['app'].get(key) == app[key]]
+
+    return kept + [f'repos {name}' for name in repos if name in config['repos']]
+
+
 def doctor_config(loaded):
-    _, error = loaded
+    config, error = loaded
+    edit = f'edit {adapter.CONFIG} (INSTALL step 5)'
 
     if error is None:
+        if kept := example_placeholders(config):
+            return [('config', False, f"{adapter.CONFIG}: still has the example's {', '.join(kept)}", edit)]
+
         return [('config', True, str(adapter.CONFIG), '')]
 
-    fix = (f'edit {adapter.CONFIG} (INSTALL step 6)' if adapter.CONFIG.exists() else
-           f'cp {PIPELINE_DIR}/examples/config.example.json {adapter.CONFIG}, then edit it (INSTALL step 6)')
+    fix = edit if adapter.CONFIG.exists() else f'{PIPELINE_DIR}/pipeline init, then {edit}'
 
     return [('config', False, error, fix)]
 
@@ -5381,8 +5397,7 @@ def doctor_tick_service(loaded):
     """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
     state, detail = unit_state(TICK_UNIT)
     fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {TICK_UNIT}'}.get(
-        state, f'cp {PIPELINE_DIR}/systemd/{TICK_UNIT} ~/.config/systemd/user/, then systemctl --user daemon-reload '
-               '(INSTALL step 9)')
+        state, f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload (INSTALL step 8)')
 
     return [(f'unit {TICK_UNIT}', state in STARTABLE, detail, fix)]
 
@@ -5390,8 +5405,8 @@ def doctor_tick_service(loaded):
 def doctor_tick_timer(loaded):
     state, detail = unit_state(TICK_TIMER)
     fix = {None: NO_USER_MANAGER_FIX,
-           '': f'cp {PIPELINE_DIR}/systemd/{TICK_TIMER} ~/.config/systemd/user/, then systemctl --user daemon-reload '
-               f'&& systemctl --user enable --now {TICK_TIMER} (INSTALL step 9)'}.get(
+           '': f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload && '
+               f'systemctl --user enable --now {TICK_TIMER} (INSTALL step 8)'}.get(
         state, f'systemctl --user enable --now {TICK_TIMER}')
 
     return [(f'unit {TICK_TIMER}', state == 'enabled', detail, fix)]
