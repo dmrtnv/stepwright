@@ -33,7 +33,10 @@ FAKES = {
 args = sys.argv[1:]
 assert args[0] == '--user', args
 if args[1] == 'is-enabled':
-    print(state['enabled'].get(args[2], ''))
+    if isinstance(value := state['enabled'].get(args[2], ''), dict):
+        print(value['stderr'], file=sys.stderr)
+        sys.exit(1)
+    print(value)
     sys.exit(0 if state['enabled'].get(args[2]) in ('enabled', 'static') else 1)
 if args[1] == 'is-active':
     sys.exit(0 if state['active'] else 3)
@@ -343,6 +346,11 @@ class KitTest(DoctorCase):
 
 
 class UnitsTest(DoctorCase):
+    NO_FILE = {'stderr': 'Failed to get unit file state for x: No such file or directory'}
+    NO_BUS = {'stderr': 'Failed to connect to bus: No medium found'}
+    BUS_FIX = ('run doctor as yourself in a login session, not through sudo or su: systemctl --user cannot reach '
+               'your user manager here')
+
     def enabled(self, **states):
         self.change(enabled=dict(GOOD_STATE['enabled'], **states))
 
@@ -358,12 +366,23 @@ class UnitsTest(DoctorCase):
         self.assertFail('unit sbx.service', 'enabled, inactive', 'systemctl --user enable --now sbx.service')
 
     def test_sbx_service_not_found(self):
-        for state in ('not-found', ''):
+        for state in ('not-found', '', self.NO_FILE):
             self.enabled(**{'sbx.service': state})
             self.change(active=False)
             self.assertFail('unit sbx.service', 'not installed, inactive',
-                            'copy systemd/sbx.service to ~/.config/systemd/user/, then systemctl --user daemon-reload '
-                            '&& systemctl --user enable --now sbx.service (INSTALL step 4)')
+                            f'mkdir -p ~/.config/systemd/user && cp {self.runner}/systemd/sbx.service '
+                            '~/.config/systemd/user/, set MemoryHigh, MemoryMax and CPUQuota in it to fit this box, '
+                            'then systemctl --user daemon-reload && systemctl --user enable --now sbx.service '
+                            '(INSTALL step 4)')
+
+    def test_no_user_manager_is_not_read_as_not_installed(self):
+        self.enabled(**{'sbx.service': self.NO_BUS, 'pipeline-tick.service': self.NO_BUS,
+                        'pipeline-tick.timer': self.NO_BUS})
+        self.change(active=False)
+        error = self.NO_BUS['stderr']
+        self.assertFail('unit sbx.service', f'{error}, inactive', self.BUS_FIX)
+        self.assertFail('unit pipeline-tick.service', error, self.BUS_FIX)
+        self.assertFail('unit pipeline-tick.timer', error, self.BUS_FIX)
 
     def test_tick_service_states(self):
         for state in ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias'):
@@ -375,11 +394,11 @@ class UnitsTest(DoctorCase):
         self.assertFail('unit pipeline-tick.service', 'masked', 'systemctl --user unmask pipeline-tick.service')
 
     def test_tick_service_missing(self):
-        for state in ('not-found', ''):
+        for state in ('not-found', '', self.NO_FILE):
             self.enabled(**{'pipeline-tick.service': state})
             self.assertFail('unit pipeline-tick.service', 'not installed',
-                            'copy systemd/pipeline-tick.service to ~/.config/systemd/user/, then systemctl --user '
-                            'daemon-reload (INSTALL step 9)')
+                            f'cp {self.runner}/systemd/pipeline-tick.service ~/.config/systemd/user/, then '
+                            'systemctl --user daemon-reload (INSTALL step 9)')
 
     def test_timer_enabled(self):
         self.assertPass('unit pipeline-tick.timer', 'enabled')
@@ -391,7 +410,7 @@ class UnitsTest(DoctorCase):
     def test_timer_not_found(self):
         self.enabled(**{'pipeline-tick.timer': 'not-found'})
         self.assertFail('unit pipeline-tick.timer', 'not installed',
-                        'copy systemd/pipeline-tick.timer to ~/.config/systemd/user/, then systemctl --user '
+                        f'cp {self.runner}/systemd/pipeline-tick.timer ~/.config/systemd/user/, then systemctl --user '
                         'daemon-reload && systemctl --user enable --now pipeline-tick.timer (INSTALL step 9)')
 
 

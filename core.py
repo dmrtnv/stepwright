@@ -5015,14 +5015,25 @@ DOCTOR_TOOLS = {'claude': 'install Claude Code and sign in (INSTALL: What you ne
 STARTABLE = ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias')
 
 
+NO_USER_MANAGER_FIX = ('run doctor as yourself in a login session, not through sudo or su: systemctl --user cannot '
+                       'reach your user manager here')
+
+
 def unit_state(unit):
-    """`systemctl --user is-enabled` of a unit: its first stdout line, '' when systemctl gives none."""
-    return (sbx_host.systemctl('is-enabled', unit).stdout.strip().splitlines() or [''])[0]
+    """`systemctl --user is-enabled` of a unit as (state, detail): state is its first stdout line, '' when systemd has
+    no such unit file (older systemd says so on stderr only; so does a missing systemctl), and None when systemctl
+    could not answer, e.g. no user bus under sudo; detail is what doctor shows."""
+    result = sbx_host.systemctl('is-enabled', unit)
+    state = (result.stdout.strip().splitlines() or [''])[0]
+    error = (result.stderr.strip().splitlines() or [''])[-1]
 
+    if state and state != 'not-found':
+        return state, state
 
-def install_unit_fix(unit, step, enable=True):
-    return (f'copy systemd/{unit} to ~/.config/systemd/user/, then systemctl --user daemon-reload'
-            + (f' && systemctl --user enable --now {unit}' if enable else '') + f' (INSTALL step {step})')
+    if state or not error or 'No such file or directory' in error:
+        return '', 'not installed'
+
+    return None, error
 
 
 def doctor_tools(loaded):
@@ -5115,12 +5126,15 @@ def doctor_kit(loaded):
 
 def doctor_sbx_unit(loaded):
     """Enabled (INSTALL step 4 runs enable --now: else no daemon after a reboot) and active."""
-    state, active = unit_state(SBX_UNIT), sbx_host.active()
-    installed = state not in ('', 'not-found')
-    fix = f'systemctl --user enable --now {SBX_UNIT}' if installed else install_unit_fix(SBX_UNIT, 4)
+    (state, detail), active = unit_state(SBX_UNIT), sbx_host.active()
+    fix = {None: NO_USER_MANAGER_FIX,
+           '': f'mkdir -p ~/.config/systemd/user && cp {PIPELINE_DIR}/systemd/{SBX_UNIT} ~/.config/systemd/user/, '
+               f'set MemoryHigh, MemoryMax and CPUQuota in it to fit this box, then systemctl --user daemon-reload && '
+               f'systemctl --user enable --now {SBX_UNIT} (INSTALL step 4)'}.get(
+        state, f'systemctl --user enable --now {SBX_UNIT}')
 
-    return [(f'unit {SBX_UNIT}', state == 'enabled' and active,
-             f"{state if installed else 'not installed'}, {'active' if active else 'inactive'}", fix)]
+    return [(f'unit {SBX_UNIT}', state == 'enabled' and active, f"{detail}, {'active' if active else 'inactive'}",
+             fix)]
 
 
 def doctor_linger(loaded):
@@ -5200,19 +5214,22 @@ def doctor_reserve(loaded):
 
 def doctor_tick_service(loaded):
     """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
-    state = unit_state(TICK_UNIT)
-    installed = state not in ('', 'not-found')
-    fix = f'systemctl --user unmask {TICK_UNIT}' if state == 'masked' else install_unit_fix(TICK_UNIT, 9, enable=False)
+    state, detail = unit_state(TICK_UNIT)
+    fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {TICK_UNIT}'}.get(
+        state, f'cp {PIPELINE_DIR}/systemd/{TICK_UNIT} ~/.config/systemd/user/, then systemctl --user daemon-reload '
+               '(INSTALL step 9)')
 
-    return [(f'unit {TICK_UNIT}', state in STARTABLE, state if installed else 'not installed', fix)]
+    return [(f'unit {TICK_UNIT}', state in STARTABLE, detail, fix)]
 
 
 def doctor_tick_timer(loaded):
-    state = unit_state(TICK_TIMER)
-    installed = state not in ('', 'not-found')
-    fix = f'systemctl --user enable --now {TICK_TIMER}' if installed else install_unit_fix(TICK_TIMER, 9)
+    state, detail = unit_state(TICK_TIMER)
+    fix = {None: NO_USER_MANAGER_FIX,
+           '': f'cp {PIPELINE_DIR}/systemd/{TICK_TIMER} ~/.config/systemd/user/, then systemctl --user daemon-reload '
+               f'&& systemctl --user enable --now {TICK_TIMER} (INSTALL step 9)'}.get(
+        state, f'systemctl --user enable --now {TICK_TIMER}')
 
-    return [(f'unit {TICK_TIMER}', state == 'enabled', state if installed else 'not installed', fix)]
+    return [(f'unit {TICK_TIMER}', state == 'enabled', detail, fix)]
 
 
 DOCTOR_CHECKS = (doctor_tools, doctor_kvm, doctor_docker, doctor_runner, doctor_kit, doctor_sbx_unit, doctor_linger,
