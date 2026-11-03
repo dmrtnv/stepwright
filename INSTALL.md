@@ -43,7 +43,9 @@ Keep this clone for running the pipeline only. Don't develop in it.
 
 ## 3. Install the stage kit
 
-Stages run Claude Code skills (plan, implement, review, respond). Link them into your Claude config:
+Stages run Claude Code skills (plan, implement, review, respond). They live in the kit dir of this clone, and
+stage VMs get them from there, so a stage runs the skills of the checked-out tag. Link them into your Claude
+config for host use: `/pipeline-feature` and your own sessions.
 
 ```bash
 cd ~/.local/share/pipeline/runner
@@ -52,9 +54,10 @@ for skill in kit/skills/*; do ln -s "$PWD/$skill" ~/.claude/skills/; done
 ln -s "$PWD/kit/agents/web-researcher.md" ~/.claude/agents/
 ```
 
-`ln` refuses to overwrite: if you already have a skill with the same name, decide which one to keep.
-Everything in `~/.claude/CLAUDE.md`, `~/.claude/skills` and `~/.claude/agents` is copied into every stage VM, so
-keep secrets out of them.
+`ln` refuses to overwrite: if you already have a skill with the same name, decide which one to keep for your own
+sessions; stage VMs always use the kit's.
+Stage VMs also get your `~/.claude/CLAUDE.md` and your other skills and agents. A skill or agent with a kit name is
+replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets out of them.
 
 **Check:** `ls ~/.claude/skills` shows `plan-harden`, `plan-implement`, `review-branch`, `review-respond`, `pr-text`,
 `wrap-up`, `commit-message` and `pipeline-feature`.
