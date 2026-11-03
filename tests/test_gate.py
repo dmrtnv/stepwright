@@ -152,6 +152,16 @@ class GateEgressCase(unittest.TestCase):
         self.assertIn('broken', [r for r in self.results if r['check'] == 'setup'][0]['detail'])
         self.assertFalse(os.path.exists(os.path.join(self.workspace, 'ran')), 'setup stops at the first failure')
 
+    def test_setup_label_is_short_and_keeps_the_exit_code(self):
+        command = 'echo ' + 'x' * 200 + '\nexit 3'
+        gate.test_4_setup_and_checks(dict(NO_EGRESS, setup=[command]), self.workspace, True)
+
+        labels = [r['check'] for r in self.results if r['check'].startswith('setup: ')]
+        self.assertEqual(len(labels), 1, labels)
+        self.assertTrue(labels[0].endswith(' → exit 3'), labels[0])
+        self.assertLessEqual(len(labels[0]), 100, labels[0])
+        self.assertNotIn('\n', labels[0])
+
     def test_a_failed_egress_removal_fails_the_seal(self):
         os.environ['FAKE_POLICY_RM_FAIL'] = '1'
         config = dict(NO_EGRESS, setup=['true'], setupEgress=['pypi.org'])

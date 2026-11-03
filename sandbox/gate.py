@@ -237,10 +237,22 @@ def test_5_rules():
     expect(5, 'rule removed, live without restart', not ok_after, detail_after)
 
 
+def setup_label(text):
+    """One short line for a backend.setup log entry: the command cut to 80 chars, then its exit code."""
+    command, arrow, rest = text.partition(' → exit ')
+
+    if not arrow:
+        return text.splitlines()[0][:100]
+
+    code = rest.partition('\n')[0]
+
+    return f'{" ".join(command.split())[:80]} → exit {code}'
+
+
 def test_4_setup_and_checks(config, workspace, skip_checks):
     """The runner's own setup path (backend.setup): setup hosts allowed only while setup runs, then sealed again."""
     failures, seal = backend.setup(SANDBOX_A, workspace, config['setup'], config['setupEgress'],
-                                   lambda text: record(4, text.splitlines()[0], 'INFO'))
+                                   lambda text: record(4, setup_label(text), 'INFO'))
 
     if not expect(4, 'setup', not failures, tail('\n\n'.join(failures), 8)):
         log = run(['sbx', 'policy', 'log', SANDBOX_A, '--limit', '30'])
