@@ -33,6 +33,8 @@ import core  # noqa: E402
 
 SPAWN = core.spawn_feature_run  # the real one: RunnerCase patches core's
 NOTIFY = core.notify  # the real one too
+GITHUB_API = core.github_api  # the real ones too
+GITHUB_RAW = core.github_raw
 
 FAKE_SBX = r'''#!/usr/bin/python3
 """Fake sbx: each sandbox is <root>/<name>/{home,workspace}; exec runs on the host with HOME=<home>, in its own
@@ -524,7 +526,7 @@ PLAN = {'run': ["printf '# Plan\\n\\nDigest.\\n' > {step}/plan.md"]}
 PLAN_ASKS = {'run': PLAN['run'], 'result': {'questions': ['Q1? Rec: A']}}
 IMPLEMENT = {'run': ["echo code > thing.txt && git add -A && git commit -qm 'fix: Do the thing'"]}
 REVIEW = {'run': ['echo findings > {step}/review-1.md']}
-RESPOND = {'run': ["printf 'fix: Do the thing\\n\\nWhy it matters.\\n' > {step}/pr.md"],
+RESPOND = {'run': ["printf 'fix: Do the thing\\n\\nWhy it matters.\\n\\nNo migrations.\\n' > {step}/pr.md"],
            'result': {'flags': ['⚑ kept the old label'], 'owed': ['after merge: pnpm db:migrate on shop'],
                       'learnings': ['a trap worth remembering']}}
 BLOCKED = {'result': {'status': 'blocked', 'summary': 'needs a product call', 'questions': ['Q1? Rec: A']}}
@@ -877,7 +879,9 @@ class Fixture:
         write(self.config, json.dumps({
             'app': {'id': 42, 'slug': 'test-pipeline', 'privateKey': str(self.key), 'reviewer': 'reviewer1'},
             'repos': {REPO: str(self.main)},
-            'admission': {'slots': 2, 'minMemoryGb': 0, 'weeklyMax': 80, 'fiveHourMax': 70}}))
+            'admission': {'slots': 2, 'weeklyMax': 80, 'fiveHourMax': 70}}))
+        self.sbx_host_config = self.base / 'sbx-host.json'
+        write(self.sbx_host_config, json.dumps({'floorGib': 0}))
 
     @staticmethod
     def configure(repository):
@@ -920,7 +924,7 @@ class RunnerCase(unittest.TestCase):
                                 spawn_feature_run=lambda repo, feature: self.spawned.append((repo, feature)),
                                 stop_units=lambda: None, sbx_service_active=lambda: True),
             mock.patch.multiple(core.sbx_host, active=lambda: True, cgroup=lambda: None, PROC=fixture.base / 'proc',
-                                STATE=fixture.base / 'sbx-host', CONFIG=fixture.base / 'sbx-host.json',
+                                STATE=fixture.base / 'sbx-host', CONFIG=fixture.sbx_host_config,
                                 ci_lane=lambda: False),
             mock.patch.multiple(core, ci_units=lambda: {}, CI_STATE=fixture.base / 'ci-runner'),
         ]
@@ -1023,6 +1027,41 @@ class RunnerCase(unittest.TestCase):
         config['template'] = template
         write(self.fixture.config, json.dumps(config))
 
+    def budget(self, *others):
+        """sbx-host's live shape: a 26.5 GiB budget (19.5 hard + 8 swap − 1), stages reserve 8.0 and CI VMs 8.3; the
+        `others` VMs running beside this feature's."""
+        cgroup = self.fixture.base / 'cgroup/sbx.service'
+        write(cgroup / 'memory.max', f'{int(19.5 * 2**30)}\n')
+        write(cgroup / 'memory.swap.max', f'{8 * 2**30}\n')
+        write(self.fixture.sbx_host_config, json.dumps({'reserve': {'pl': 8192, 'ci': 8512}, 'floorGib': 0,
+                                                        'budget': 'max+swap-1G'}))
+        patch = mock.patch.multiple(core.sbx_host, CGROUP_ROOT=self.fixture.base / 'cgroup', cgroup=lambda: cgroup)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.others(*others)
+
+    def others(self, *names):
+        path = self.fixture.sbx / 'meta.json'
+        meta = {name: value for name, value in (json.loads(path.read_text()) if path.exists() else {}).items()
+                if name.startswith(f'pl-shop-{FEATURE}-')}
+        write(path, json.dumps(dict(meta, **{name: {'status': 'running', 'memory_mib': 8192} for name in names})))
+
+    def claims(self):
+        pending = self.fixture.base / 'sbx-host/pending'
+
+        return sorted(path.name for path in pending.iterdir()) if pending.exists() else []
+
+    def seeing(self, behavior):
+        """The behavior, also recording the memory claims while its stage runs (seen())."""
+        pending, seen = self.fixture.base / 'sbx-host/pending', self.fixture.base / 'seen-claims'
+
+        return dict(behavior, run=behavior.get('run', []) + [f'ls {pending} | paste -sd, >> {seen}'])
+
+    def seen(self):
+        path = self.fixture.base / 'seen-claims'
+
+        return path.read_text().splitlines() if path.exists() else []
+
     def sandbox_status(self, name=SANDBOX):
         path = self.fixture.sbx / 'meta.json'
         meta = json.loads(path.read_text()) if path.exists() else {}
@@ -1086,9 +1125,9 @@ class RunnerCase(unittest.TestCase):
              'app': {'slug': 'github-actions'}, 'check_suite': {'id': run['check_suite_id']},
              'output': {'title': None, 'summary': None}} for job in jobs]
 
-    def move_main(self):
+    def move_main(self, file='fresh.txt'):
         git(self.fixture.other, 'pull', '-q')
-        write(self.fixture.other / 'fresh.txt', 'fresh\n')
+        write(self.fixture.other / file, 'fresh\n')
         git(self.fixture.other, 'add', '-A')
         git(self.fixture.other, 'commit', '-qm', 'chore: main moved')
         git(self.fixture.other, 'push', '-q', 'origin', 'main')
@@ -1185,7 +1224,7 @@ class RunnerTest(RunnerCase):
         self.assertEqual(state['published_sha'], sha)
         self.assertEqual((self.fixture.step / 'plan.md').read_text(), '# Plan\n\nDigest.\n', 'plan.md copied out')
         pull = self.github.pull(5)
-        self.assertEqual((pull['title'], pull['body'], pull['draft']), ('fix: Do the thing', 'Why it matters.', True))
+        self.assertEqual((pull['title'], pull['body'], pull['draft']), ('fix: Do the thing', 'Why it matters.\n\nNo migrations.', True))
         self.assertIn(core.EVIDENCE_MARKER, next(iter(self.github.comments.values())))
         self.assertEqual(self.sandbox_status(), 'stopped', 'the VM stops when the run ends')
         calls_before = len(self.github.calls)
@@ -2215,11 +2254,11 @@ class RunnerTest(RunnerCase):
         respond = dict(RESPOND, run=[
             "printf 'fix: Do the thing\\n\\nWhy it matters.\\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\\n"
             "Keep this, Claude Code wrote nothing here.\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
-            "\\n\\n' > {step}/pr.md"])
+            "\\n\\nNo migrations.\\n' > {step}/pr.md"])
         self.published(**{'thing-01-respond-1': [respond]})
         pull = self.github.pull(5)
         self.assertEqual((pull['title'], pull['body']),
-                         ('fix: Do the thing', 'Why it matters.\nKeep this, Claude Code wrote nothing here.'))
+                         ('fix: Do the thing', 'Why it matters.\nKeep this, Claude Code wrote nothing here.\n\n\nNo migrations.'))
 
     def test_later_stages_see_the_items_already_recorded_and_a_rerun_never_sees_its_own(self):
         owes = {'owed': ['before merge: reseed staging'], 'deferred': ['a wider rename']}
@@ -2579,7 +2618,7 @@ class PublishTest(RunnerCase):
                                    ('GET', '/repos/acme/shop/pulls/5'),
                                    ('GET', f'/repos/acme/shop/commits/{sha}/check-runs')])
         created = [body for method, path, _, body in self.github.calls if method == 'POST' and path.endswith('/pulls')][0]
-        self.assertEqual(created, {'title': 'fix: Do the thing', 'head': BRANCH, 'base': 'main', 'body': 'Why it matters.',
+        self.assertEqual(created, {'title': 'fix: Do the thing', 'head': BRANCH, 'base': 'main', 'body': 'Why it matters.\n\nNo migrations.',
                                    'draft': True})
         self.assertEqual({token for _, path, token, _ in self.github.calls
                           if not path.endswith(('/installation', '/access_tokens'))}, {'ghs_test'})
@@ -2602,11 +2641,38 @@ class PublishTest(RunnerCase):
         self.assertEqual(self.origin_branch(), '')
 
     def test_a_token_in_the_pr_text_stops_the_publish(self):
-        respond = {'run': ["printf 'fix: Do the thing\\n\\nghp_0123456789abcdefghijklmnopqrstuv\\n' > {step}/pr.md"]}
+        respond = {'run': ["printf 'fix: Do the thing\\n\\nghp_0123456789abcdefghijklmnopqrstuv\\n\\nNo migrations.\\n' > {step}/pr.md"]}
         self.happy_path(**{'thing-01-respond-1': [respond]})
         self.main(FEATURE)
         self.assertIn('token-shaped string', self.state()['reason'])
         self.assertEqual(self.origin_branch(), '')
+
+    def test_a_pr_text_that_breaks_the_format_resumes_respond_with_the_problems(self):
+        malformed = {'run': ["printf 'fix: Do the thing\\n\\nCalls the `helper` now.\\n' > {step}/pr.md"]}
+        self.published(**{'thing-01-respond-1': [malformed, RESPOND]})
+        first, fix = self.claude_calls('thing-01-respond-1')
+        self.assertEqual(fix['session'], first['session'])
+        self.assertIn('pr.md breaks the pr-text format', fix['prompt'])
+        self.assertIn('line 3: a backtick', fix['prompt'])
+        self.assertIn('line 3: the last paragraph is not the migrations line', fix['prompt'])
+        self.assertEqual(self.github.pull(5)['body'], 'Why it matters.\n\nNo migrations.', 'the fixed pr.md passes')
+
+    def test_a_missing_pr_text_checker_fails_the_respond_gate(self):
+        missing = self.fixture.base / 'no-such-check.py'
+
+        with mock.patch.object(core, 'PR_TEXT_CHECKER', missing):
+            self.happy_path(**{'thing-01-respond-1': [RESPOND] * 3})
+            self.main(FEATURE)
+
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('respond', 'paused'), state['reason'])
+        self.assertIn(f'The PR text checker {missing} could not run', state['reason'])
+        self.assertEqual(self.origin_branch(), '')
+
+    def test_the_pr_text_checker_ships_in_the_kit(self):
+        self.assertEqual(core.PR_TEXT_CHECKER, core.PIPELINE_DIR / 'kit/skills/pr-text/check.py')
+        self.assertTrue(core.PR_TEXT_CHECKER.is_file())
+        self.assertIn('line 1: the title is not', core.check_pr_text('no title')[0])
 
     def test_a_planted_done_notice_symlink_is_replaced_not_written_through(self):
         victim = self.fixture.base / 'victim.txt'
@@ -2619,10 +2685,10 @@ class PublishTest(RunnerCase):
         self.assertIn('## Decisions', done.read_text())
 
     def test_the_pr_title_and_body_are_redacted(self):
-        respond = dict(RESPOND, run=["printf 'fix: Move /home/someone/x\\n\\nAsk someone@example.com.\\n' > {step}/pr.md"])
+        respond = dict(RESPOND, run=["printf 'fix: Move /home/someone/x\\n\\nAsk someone@example.com.\\n\\nNo migrations.\\n' > {step}/pr.md"])
         self.published(**{'thing-01-respond-1': [respond]})
         pull = self.github.pull(5)
-        self.assertEqual((pull['title'], pull['body']), ('fix: Move ~/x', 'Ask [email].'))
+        self.assertEqual((pull['title'], pull['body']), ('fix: Move ~/x', 'Ask [email].\n\nNo migrations.'))
 
     def test_a_pr_that_already_exists_is_reused_and_its_text_resynced(self):
         self.github.pulls[9] = {'number': 9, 'html_url': 'https://example/pull/9', 'node_id': 'PR_9', 'state': 'open',
@@ -2630,7 +2696,7 @@ class PublishTest(RunnerCase):
                                 'head': BRANCH, 'title': 'old', 'body': 'old'}
         state = self.published()
         self.assertEqual(state['pr']['number'], 9)
-        self.assertEqual((self.github.pull(9)['title'], self.github.pull(9)['body']), ('fix: Do the thing', 'Why it matters.'))
+        self.assertEqual((self.github.pull(9)['title'], self.github.pull(9)['body']), ('fix: Do the thing', 'Why it matters.\n\nNo migrations.'))
         self.assertNotIn(('POST', '/repos/acme/shop/pulls'), self.github.methods())
 
     def test_an_env_file_in_the_diff_stops_the_publish(self):
@@ -2690,6 +2756,29 @@ class PublishTest(RunnerCase):
         self.assertEqual(self.state()['status'], 'paused')
         self.assertIn('not at the gate-green', self.state()['reason'])
         self.assertEqual(self.origin_branch(), '')
+
+    def test_a_workflow_change_on_main_after_the_last_rebase_is_rebased_in_before_the_push(self):
+        self.happy_path()
+        self.main(FEATURE, '--until', 'respond')
+        self.assertEqual(self.state()['stage'], 'publish')
+        self.move_main('.github/workflows/ci.yml')
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertOnTopOfRemoteMain()
+        self.assertEqual(git(self.fixture.origin, 'rev-parse', BRANCH), state['published_sha'])
+        self.assertEqual(len(self.claude_calls('thing-01-respond-1')), 1, 'a clean rebase needs no fixer')
+        self.assertTrue(any('rebased onto origin/main' in note for note in state['notes']), state['notes'])
+
+    def test_a_move_on_main_without_a_workflow_change_publishes_without_a_rebase(self):
+        self.happy_path()
+        self.main(FEATURE, '--until', 'respond')
+        green = self.state()['green_head']
+        self.move_main()
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(state['published_sha'], green)
 
     def test_the_app_jwt_is_signed_by_the_key(self):
         app = adapter.load_config()['app']
@@ -3237,7 +3326,7 @@ class PullRequestLoopTest(RunnerCase):
         self.assertEqual(self.main('respond', FEATURE), 1, 'nothing new until the round ran')
         self.script({'thing-01-respond-2': [{'run': [
             "echo renamed >> thing.txt && git add -A && git commit -qm 'fix: Rename the helper'",
-            "printf 'fix: Do the thing better\\n\\nNew body.\\n' > {step}/pr.md"]}]})
+            "printf 'fix: Do the thing better\\n\\nNew body.\\n\\nNo migrations.\\n' > {step}/pr.md"]}]})
         self.main(FEATURE)
         state = self.state()
         self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
@@ -3245,7 +3334,7 @@ class PullRequestLoopTest(RunnerCase):
         self.assertTrue(prompt.startswith(f"/review-respond {self.vm_step() / 'plan.md'} 2"))
         self.assertIn("holds the user's own comments on the pull request (PR #5)", prompt)
         self.assertEqual((self.github.pull(5)['title'], self.github.pull(5)['body']),
-                         ('fix: Do the thing better', 'New body.'), 'the PR text is re-synced from pr.md')
+                         ('fix: Do the thing better', 'New body.\n\nNo migrations.'), 'the PR text is re-synced from pr.md')
         self.assertEqual(len(self.github.comments), 1, 'the evidence comment is edited in place')
         self.assertEqual(self.main('respond', FEATURE), 1)
         self.assertIn('no new comments from reviewer1', self.errors)
@@ -3404,10 +3493,16 @@ class FailureSignatureTest(unittest.TestCase):
 
 
 DNS_FAILURE = urllib.error.URLError(socket.gaierror(-3, 'Temporary failure in name resolution'))
+FETCH_500 = ("git fetch --quiet --prune --no-tags in /clone: fatal: unable to access 'https://github.com/acme/shop/': "
+             'The requested URL returned error: 500')
+
+
+def http_error(code, text=b'oops'):
+    return urllib.error.HTTPError('https://api.github.com/x', code, 'status', {}, io.BytesIO(text))
 
 
 class GitHubApiTest(unittest.TestCase):
-    """A network failure is tried twice more; a GitHub status never is."""
+    """A network failure, or a 5xx on a GET, is tried twice more; any other GitHub status never is."""
 
     def setUp(self):
         patch = mock.patch.object(core, 'GITHUB_RETRY_SECONDS', (0, 0))
@@ -3435,15 +3530,35 @@ class GitHubApiTest(unittest.TestCase):
         self.assertEqual(self.calls, 1)
 
     def test_an_http_status_is_not_tried_again(self):
-        bad = urllib.error.HTTPError('https://api.github.com/x', 502, 'Bad Gateway', {}, io.BytesIO(b'oops'))
+        with self.assertRaisesRegex(core.PipelineError, 'GitHub GET /x: 404 oops') as caught:
+            self.call(http_error(404), io.BytesIO(b'{}'))
 
-        with self.assertRaisesRegex(core.PipelineError, 'GitHub GET /x: 502 oops'):
-            self.call(bad, io.BytesIO(b'{}'))
+        self.assertNotIsInstance(caught.exception, core.GitHubUnavailable)
+        self.assertEqual(self.calls, 1)
+
+    def test_a_5xx_get_is_tried_again(self):
+        self.assertEqual(self.call(http_error(502), io.BytesIO(b'{"ok": true}')), {'ok': True})
+        self.assertEqual(self.calls, 2)
+
+    def test_three_5xx_gets_are_github_unavailable(self):
+        with self.assertRaisesRegex(core.GitHubUnavailable, 'GitHub GET /x: 502 oops'):
+            self.call(http_error(502), http_error(502), http_error(502))
+
+        self.assertEqual(self.calls, 3)
+
+    def test_a_5xx_post_is_not_sent_again(self):
+        with self.assertRaisesRegex(core.GitHubUnavailable, 'GitHub POST /x: 502 oops'):
+            self.call(http_error(502), io.BytesIO(b'{}'), method='POST')
 
         self.assertEqual(self.calls, 1)
 
-    def test_three_failed_lookups_are_a_pipeline_error(self):
-        with self.assertRaisesRegex(core.PipelineError, 'GitHub GET /x: .*Temporary failure in name resolution'):
+    def test_a_body_that_is_not_json_is_github_unavailable(self):
+        for body in (b'<html>Unicorn</html>', b'\xff'):
+            with self.assertRaisesRegex(core.GitHubUnavailable, 'not JSON'):
+                self.call(io.BytesIO(body))
+
+    def test_three_failed_lookups_are_github_unavailable(self):
+        with self.assertRaisesRegex(core.GitHubUnavailable, 'GitHub GET /x: .*Temporary failure in name resolution'):
             self.call(DNS_FAILURE, DNS_FAILURE, DNS_FAILURE)
 
         self.assertEqual(self.calls, 3)
@@ -3473,6 +3588,32 @@ class GitHubRawTest(unittest.TestCase):
             self.assertEqual(core.github_raw('/x', 'ghs_test'), 'the log')
 
         self.assertEqual(opener.open.call_count, 2)
+
+    def test_a_5xx_on_either_request_is_tried_again_then_github_unavailable(self):
+        opener = mock.Mock()
+        redirect = urllib.error.HTTPError('https://api.github.com/x', 302, 'Found', {'Location': 'https://logs/x'}, None)
+        opener.open.side_effect = [http_error(502), redirect]
+
+        with mock.patch.object(core.urllib.request, 'build_opener', return_value=opener), \
+                mock.patch.object(core.urllib.request, 'urlopen', side_effect=[http_error(503), io.BytesIO(b'the log')]):
+            self.assertEqual(core.github_raw('/x', 'ghs_test'), 'the log')
+
+        opener.open.side_effect = [http_error(502), http_error(502), http_error(502)]
+
+        with mock.patch.object(core.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(core.GitHubUnavailable, 'GitHub GET /x: 502'):
+                core.github_raw('/x', 'ghs_test')
+
+    def test_a_404_is_asked_once_and_is_no_outage(self):
+        opener = mock.Mock()
+        opener.open.side_effect = [http_error(404)]
+
+        with mock.patch.object(core.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(core.PipelineError, 'GitHub GET /x: 404') as caught:
+                core.github_raw('/x', 'ghs_test')
+
+        self.assertNotIsInstance(caught.exception, core.GitHubUnavailable)
+        self.assertEqual(opener.open.call_count, 1)
 
 
 # The failed step of shop job 113602765777 (2026-10-09), when the runner host's DNS stalled, then the job's teardown.
@@ -3571,7 +3712,7 @@ class CiInfraTest(RunnerCase):
                       'rerun-failed-jobs: 403', state['reason'])
         self.assertIn(f'the App needs Actions: write; re-run it on GitHub, then `pipeline {FEATURE}`.', state['reason'])
         self.assertEqual((state['ci']['fixes'], state['ci']['reruns']), (0, 0))
-        self.github.refuse_rerun = '500 oops'
+        self.github.refuse_rerun = '422 oops'
         self.main(FEATURE)
         self.assertNotIn('Actions: write', self.state()['reason'])
 
@@ -3755,6 +3896,441 @@ class CiInfraTest(RunnerCase):
         self.assertEqual(self.reruns(), [])
 
 
+class GitHubDownTest(RunnerCase):
+    """GitHub not answering heals by itself: a polling step waits unpinged up to 45 min, a stage step retries. Real
+    refusals behave as before. Through the real github_api and github_raw, with only the network mocked."""
+
+    timed_out = CiInfraTest.timed_out
+    reruns = CiInfraTest.reruns
+
+    def setUp(self):
+        super().setUp()
+        self.pings = []
+
+        def notify(state, message, click=None, priority='default'):
+            self.pings.append((message, priority))
+            self.notifications.append(message)
+
+        for patch in (mock.patch.object(core, 'GITHUB_RETRY_SECONDS', (0, 0)), mock.patch.object(core, 'notify', notify)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    @staticmethod
+    def answer(what):
+        if isinstance(what, int):
+            raise http_error(what)
+
+        if isinstance(what, Exception):
+            raise what
+
+        return io.BytesIO(what)
+
+    def down(self, path, answer, method=None):
+        """Calls to a path holding `path` (with this method) reach the real github_api, whose network answers `answer`
+        (a status, an exception or a body); the rest stay with FakeGitHub."""
+        def route(verb, target, token, body=None):
+            if path not in target or method not in (None, verb):
+                return self.github(verb, target, token, body)
+
+            self.github.calls.append((verb, target, token, body))
+
+            with mock.patch.object(core.urllib.request, 'urlopen', side_effect=lambda *_, **__: self.answer(answer)):
+                return GITHUB_API(verb, target, token, body)
+
+        core.github_api = route
+
+    def log_down(self, answer):
+        opener = mock.Mock()
+        opener.open.side_effect = lambda *_, **__: self.answer(answer)
+
+        def raw(path, token):
+            with mock.patch.object(core.urllib.request, 'build_opener', return_value=opener):
+                return GITHUB_RAW(path, token)
+
+        core.github_raw = raw
+
+    def up(self):
+        core.github_api = self.github
+
+    def since(self, minutes):
+        """The last history entry (the first failure) happened `minutes` ago."""
+        state = self.state()
+        state['history'][-1]['at'] = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(time.time() - minutes * 60))
+        self.save(state)
+
+    def assertWaiting(self):
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertTrue(state['reason'].startswith(core.GITHUB_DOWN), state['reason'])
+
+        return state
+
+    def assertRetrying(self, tries, stage='publish'):
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), (stage, 'ready'), state['reason'])
+        self.assertTrue(state['reason'].startswith(f'retrying ({tries}/3) after: '), state['reason'])
+
+        return state
+
+    def green_pings(self):
+        return [message for message, _ in self.pings if message.startswith('✅')]
+
+    def posts(self, ending):
+        return [path for method, path, _, _ in self.github.calls if method == 'POST' and path.endswith(ending)]
+
+    # ------------------------------------------------------------------------------------------ polling steps
+
+    def test_a_poll_without_an_answer_waits_unpinged_and_heals(self):
+        self.published()
+
+        for answer in (500, TimeoutError('timed out'), DNS_FAILURE, b'<html>Unicorn</html>', b'\xff'):
+            with self.subTest(answer=answer):
+                before, pings = len(self.state()['history']), len(self.pings)
+                self.down('/check-runs', answer)
+                self.main(FEATURE)
+                self.assertWaiting()
+                self.main(FEATURE)
+                self.assertWaiting()
+                self.assertEqual(len(self.state()['history']), before + 1, 'only the first failure marks: the clock runs')
+                self.spawned.clear()
+                self.main('tick')
+                self.assertEqual(self.spawned, [(REPO, FEATURE)], 'tick keeps polling it')
+                self.up()
+                self.main(FEATURE)
+                state = self.state()
+                self.assertEqual(state['status'], 'done')
+                self.assertIn('GitHub answers again', state['reason'])
+                self.assertEqual(len(self.pings), pings, 'a blip pings nobody')
+
+    def test_still_failing_after_45_min_pauses_loudly_and_a_resume_starts_over(self):
+        self.published()
+        self.down('/check-runs', 503)
+        self.main(FEATURE)
+        self.since(44)
+        self.main(FEATURE)
+        self.assertWaiting()
+        self.since(46)
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual(state['status'], 'paused', state['reason'])
+        self.assertIn('503', state['reason'])
+        self.assertIn(f'pipeline {FEATURE} --detach', state['reason'])
+        self.assertEqual(self.pings[-1], ('paused: GitHub unavailable', 'high'))
+        self.main(FEATURE)
+        self.assertWaiting()
+        self.since(44)
+        self.main(FEATURE)
+        self.assertWaiting()
+        self.up()
+        self.main(FEATURE)
+        self.assertEqual(self.state()['status'], 'done')
+
+    def test_a_setup_failure_counts_for_a_poller(self):
+        self.published()
+        core.TOKEN_CACHE.clear()
+        self.down('/installation', 500)
+        self.assertEqual(self.main(FEATURE), 1)
+        self.assertIn('/installation: 500', self.errors)
+        history = len(self.assertWaiting()['history'])
+        self.assertEqual(self.main(FEATURE), 1)
+        self.assertEqual(len(self.assertWaiting()['history']), history)
+        self.since(46)
+        self.assertEqual(self.main(FEATURE), 1)
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertEqual(self.pings[-1], ('paused: GitHub unavailable', 'high'))
+
+    def test_a_setup_failure_changes_nothing_on_a_stage_step(self):
+        before = self.state()
+        self.down('/installation', 500)
+        self.assertEqual(self.main(FEATURE), 1)
+        self.assertIn('/installation: 500', self.errors)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(self.pings, [])
+
+    def test_a_setup_failure_changes_nothing_on_a_paused_or_waiting_poller(self):
+        self.published()
+        core.TOKEN_CACHE.clear()
+        self.down('/installation', 500)
+
+        for status in ('paused', 'awaiting-approval'):
+            with self.subTest(status=status):
+                state = self.state()
+                state['status'], state['reason'] = status, 'yours'
+                self.save(state)
+                self.assertEqual(self.main(FEATURE), 1)
+                self.assertEqual(self.state(), state)
+
+    # ------------------------------------------------------------------------------------------ stage steps
+
+    def test_a_failed_publish_retries_three_times_then_pauses(self):
+        self.happy_path()
+        self.down('/pulls', 503, method='POST')
+        self.main(FEATURE)
+        state = self.assertRetrying(1)
+        self.assertAlmostEqual(state['not_before'], time.time() + core.TRANSIENT_WAIT_SECONDS, delta=30)
+        self.assertEqual(self.pings[-1][1], 'low')
+        self.assertTrue(self.pings[-1][0].startswith('GitHub unavailable, retrying in 15 min: '), self.pings[-1])
+        pings = len(self.pings)
+
+        for tries in (2, 3):
+            self.main(FEATURE)
+            self.assertRetrying(tries)
+
+        self.assertEqual(len(self.pings), pings, 'pings on the first retry and the pause')
+        self.main(FEATURE)
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertEqual(self.pings[-1], ('paused: GitHub unavailable', 'high'))
+        self.up()
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(len(self.github.pulls), 1)
+        self.assertEqual(len(self.claude_calls('thing-01-respond-1')), 1)
+
+    def test_a_publish_that_heals_opens_one_pull_request(self):
+        self.happy_path()
+        self.down('/pulls', 503, method='POST')
+        self.main(FEATURE)
+        self.assertRetrying(1)
+        self.github('POST', f'/repos/{REPO}/pulls', 'ghs_test', {'title': 't', 'head': BRANCH, 'base': 'main', 'body': 'b',
+                                                                 'draft': True})  # the failed one landed after all
+        self.up()
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(state['pr']['number'], 5)
+        self.assertEqual(len(self.github.pulls), 1)
+
+    def test_a_failed_read_of_the_branch_rules_retries_and_a_404_still_pauses(self):
+        self.happy_path()
+        self.down('/rules/branches/', 503)
+        self.main(FEATURE)
+        state = self.assertRetrying(1)
+        self.assertNotIn('rules unknown', self.notifications)
+        self.assertNotIn('cannot read the rules', state['reason'])
+        self.down('/rules/branches/', 404)
+        self.main(FEATURE)
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertEqual(self.notifications[-1], 'paused: rules unknown')
+
+    def test_a_failed_bot_identity_retries(self):
+        self.happy_path()
+        self.down('/users/', 500)
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual(state['status'], 'ready', state['reason'])
+        self.assertTrue(state['reason'].startswith('retrying (1/3) after: '), state['reason'])
+
+    def test_a_sync_failing_four_times_after_a_stage_ran_pauses(self):
+        self.happy_path()
+        real = adapter.clean_clone
+        calls = []
+
+        def clean_clone(repo, environment):
+            calls.append(repo)
+
+            if len(calls) % 2 == 0:  # setup's passes, the sync's fails
+                raise adapter.AdapterError(FETCH_500)
+
+            return real(repo, environment)
+
+        with mock.patch.object(adapter, 'clean_clone', clean_clone):
+            for tries in (1, 2, 3):
+                self.main(FEATURE)
+                self.assertRetrying(tries, 'rebase')
+
+            self.main(FEATURE)
+
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertEqual(len(self.claude_calls('thing-01-plan')), 1)
+
+    def second_fetch_fails(self, message):
+        """Setup's fetch passes, the next one (the stage's) answers `message`."""
+        real = adapter.clean_clone
+        calls = []
+
+        def clean_clone(repo, environment):
+            calls.append(repo)
+
+            if len(calls) == 2:
+                raise adapter.AdapterError(message)
+
+            return real(repo, environment)
+
+        return mock.patch.object(adapter, 'clean_clone', clean_clone)
+
+    def to_publish(self):
+        self.happy_path()
+        self.main(FEATURE, '--until', 'respond')
+        self.assertEqual(self.state()['stage'], 'publish')
+
+    def test_a_failed_fetch_in_publish_retries_and_another_git_error_pauses(self):
+        self.to_publish()
+
+        with self.second_fetch_fails(FETCH_500):
+            self.main(FEATURE)
+
+        self.assertRetrying(1)
+
+        with self.second_fetch_fails('git fetch --quiet: fatal: bad object'):
+            self.main(FEATURE)
+
+        state = self.state()
+        self.assertEqual(state['status'], 'paused')
+        self.assertIn('bad object', state['reason'])
+
+    def test_a_failed_fetch_in_setup_counts_for_a_poller_and_another_git_error_changes_nothing(self):
+        self.published()
+        state = self.state()
+
+        with mock.patch.object(adapter, 'clean_clone', side_effect=adapter.AdapterError('git fetch: fatal: bad object')):
+            self.assertEqual(self.main(FEATURE), 1)
+
+        self.assertEqual(self.state(), state)
+
+        with mock.patch.object(adapter, 'clean_clone', side_effect=adapter.AdapterError(FETCH_500)):
+            self.assertEqual(self.main(FEATURE), 1)
+
+        self.assertWaiting()
+
+    def hook(self, text):
+        write(self.fixture.origin / 'hooks/pre-receive', f"#!/bin/sh\necho '{text}' >&2\nexit 1\n", 0o755)
+
+    def test_a_push_github_failed_retries_and_heals(self):
+        self.happy_path()
+        self.hook('Internal Server Error')
+        self.main(FEATURE)
+        self.assertIn('remote: Internal Server Error', self.assertRetrying(1)['reason'])
+        (self.fixture.origin / 'hooks/pre-receive').unlink()
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(git(self.fixture.origin, 'rev-parse', BRANCH), state['published_sha'])
+
+    def test_a_push_the_remote_rejects_still_pauses(self):
+        self.happy_path()
+        self.hook('pre-receive hook timed out')
+        self.main(FEATURE)
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertEqual(self.notifications[-1], 'paused: push refused')
+
+    # ------------------------------------------------------------------------------------------ wrong verdicts
+
+    def test_failed_jobs_read_spends_no_ci_fix(self):
+        sha = self.published()['published_sha']
+        self.ci(sha, 'success', 'failure')
+        self.down('/jobs', 502)
+        self.main(FEATURE)
+        self.assertEqual(self.assertWaiting()['ci']['fixes'], 0)
+        self.assertEqual(len(self.claude_calls('thing-01-respond-1')), 1)
+
+    def test_failed_log_read_spends_no_rerun_and_a_404_is_still_a_gone_log(self):
+        sha = self.published()['published_sha']
+        self.ci(sha, 'success', 'failure')
+
+        for run in self.github.check_runs[sha]:
+            run['output'] = {}  # no check output to fall back on: a lost log would read as a gone one
+
+        self.log_down(500)
+        self.main(FEATURE)
+        state = self.assertWaiting()
+        self.assertEqual((state['ci']['fixes'], state['ci'].get('reruns', 0)), (0, 0))
+        self.assertEqual(self.reruns(), [])
+        self.log_down(404)
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual(state['status'], 'done')
+        self.assertIn('its log is gone', state['reason'])
+        self.assertEqual((state['ci']['fixes'], state['ci']['reruns']), (0, 1))
+
+    def test_failed_rerun_post_waits_and_counts_nothing(self):
+        sha = self.published()['published_sha']
+        self.timed_out(sha)
+        self.down('/rerun-failed-jobs', 500, method='POST')
+        self.main(FEATURE)
+        self.assertEqual(self.assertWaiting()['ci'].get('reruns', 0), 0)
+        self.assertEqual(len(self.reruns()), 1, 'one try per poll')
+        self.main(FEATURE)
+        self.assertEqual(self.assertWaiting()['ci'].get('reruns', 0), 0)
+        self.assertEqual(len(self.reruns()), 2)
+
+    # ------------------------------------------------------------------------------------------ the green block
+
+    def green(self, comment=True):
+        state = self.published()
+
+        if not comment:
+            state['evidence_comment'] = None
+            self.save(state)
+
+        self.ci(state['published_sha'], 'success', 'success')
+
+        return state['published_sha']
+
+    def test_failed_evidence_keeps_the_green_ping_for_the_next_poll(self):
+        sha = self.green(comment=False)
+        self.down('/issues/5/comments', 500, method='POST')
+        self.main(FEATURE)
+        self.assertEqual(self.assertWaiting()['ci']['reviewed'], None)
+        self.assertEqual(self.green_pings(), [])
+        self.up()
+        self.main(FEATURE)
+        self.assertEqual(self.state()['ci']['reviewed'], sha)
+        self.assertEqual(len(self.green_pings()), 1)
+        self.assertIn('- green on', self.github.comments[1001])
+        self.main(FEATURE)
+        self.assertEqual(len(self.green_pings()), 1)
+
+    def test_refused_evidence_pauses_and_its_resume_sends_the_ping(self):
+        self.green(comment=False)
+        self.down('/issues/5/comments', 403, method='POST')
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['status'], state['ci']['reviewed']), ('paused', None), state['reason'])
+        self.assertEqual(self.green_pings(), [])
+        self.up()
+        self.main(FEATURE)
+        self.assertEqual(len(self.green_pings()), 1)
+
+    def test_a_failed_evidence_edit_posts_no_second_comment(self):
+        self.green()
+        posts = len(self.posts('/issues/5/comments'))
+        self.down('/issues/comments/', 500, method='PATCH')
+        self.main(FEATURE)
+        self.assertWaiting()
+        self.assertEqual(len(self.posts('/issues/5/comments')), posts)
+        self.assertEqual(self.green_pings(), [])
+
+    def test_a_refused_evidence_edit_still_posts_a_new_comment(self):
+        self.green()
+        posts = len(self.posts('/issues/5/comments'))
+        self.down('/issues/comments/', 404, method='PATCH')
+        self.main(FEATURE)
+        self.assertEqual(len(self.posts('/issues/5/comments')), posts + 1)
+        self.assertEqual(len(self.green_pings()), 1)
+
+    def test_a_failed_review_request_is_tried_again_on_the_next_poll(self):
+        self.green()
+        self.down('/requested_reviewers', 500, method='POST')
+        self.main(FEATURE)
+        state = self.assertWaiting()
+        self.assertEqual((state['ci']['reviewed'], state['notes']), (None, []))
+        self.assertEqual(self.green_pings(), [])
+        self.up()
+        self.main(FEATURE)
+        self.assertEqual(len(self.posts('/requested_reviewers')), 2)
+        self.assertEqual(len(self.green_pings()), 1)
+
+    def test_a_refused_review_request_is_still_noted(self):
+        sha = self.green()
+        self.down('/requested_reviewers', 422, method='POST')
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual(state['ci']['reviewed'], sha)
+        self.assertTrue(any('review request for reviewer1 failed' in note for note in state['notes']), state['notes'])
+        self.assertEqual(len(self.green_pings()), 1)
+
+
 class AdmissionTest(RunnerCase):
     """Admission before every stage, the kill switch, and tick."""
 
@@ -3837,7 +4413,8 @@ class AdmissionTest(RunnerCase):
             memory = self.output.splitlines()[1]
             self.assertEqual(memory, 'memory   VMs use 10.0 GiB of 16.5 soft cap (19.5 hard) · reserved 15.0 GiB: '
                                      'stages 0.0 + CI 15.0 · host free 12.3 GiB (floor 0)', 'stopped VMs hold nothing')
-            self.assertNotIn('[', self.output.splitlines()[0])
+            self.assertTrue(self.output.splitlines()[0].endswith(
+                '   [stages queue: reserved 15.0 + 8.5 GiB > 16.5 (high)]'), "the queued step's VM would not fit")
             write(self.fixture.sbx / 'meta.json', json.dumps({
                 'ci-1-1': {'status': 'running', 'memory_mib': 8192},
                 'pl-shop-thing-01': {'status': 'running', 'memory_mib': 8192},
@@ -3846,7 +4423,7 @@ class AdmissionTest(RunnerCase):
             self.main('status')
             memory = self.output.splitlines()[1]
             self.assertIn('reserved 24.5 GiB: stages 17.0 + CI 7.5 (over 16.5 by 8.0) · host free', memory)
-            self.assertNotIn('[', self.output.splitlines()[0], 'reserved over the budget is no badge')
+            self.assertEqual(self.output.splitlines()[0].count('['), 1, 'reserved over the budget is no badge of its own')
             write(cgroup / 'memory.high', 'max\n')
             self.main('status')
             memory = self.output.splitlines()[1]
@@ -3860,11 +4437,8 @@ class AdmissionTest(RunnerCase):
     def test_low_memory_queues(self):
         self.happy_path()
 
-        with mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=3.5), \
-                mock.patch.dict(adapter.DEFAULT_ADMISSION, {}):
-            config = json.loads(self.fixture.config.read_text())
-            config['admission']['minMemoryGb'] = 10
-            self.fixture.config.write_text(json.dumps(config))
+        with mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=3.5):
+            write(self.fixture.sbx_host_config, json.dumps({'floorGib': 10}))
             self.main(FEATURE)
 
         self.assertEqual(self.state()['reason'], 'queued: 3.5 GiB free < 10 GiB')
@@ -4020,6 +4594,82 @@ class AdmissionTest(RunnerCase):
         self.assertTrue(core.STOP_FLAG.exists())
         self.assertIn('no sandbox runs (sbx.service not active)', self.output)
         self.assertEqual(self.sbx_calls(), [], 'the cutover must not autostart the daemon that blocks the unit')
+
+
+class ReservationTest(RunnerCase):
+    """Stage admission by sbx-host's reservations: each stage's VM must fit the budget beside every other VM's reserve,
+    and the run claims its reserve until it ends."""
+
+    REFUSED = 'queued: reserved 24.3 + 8.0 GiB > 26.5 (max+swap-1G)'
+
+    def test_a_stage_queues_when_reserved_would_pass_the_budget(self):
+        self.budget('pl-shop-other-01', 'pl-shop-another-01', 'ci-1-1')
+        self.happy_path()
+        self.assertEqual(self.main(FEATURE), 0)
+        self.assertEqual(self.state()['reason'], self.REFUSED)
+        self.assertIn(self.REFUSED, self.notifications)
+        self.assertEqual(self.claude_calls(), [])
+        self.assertIsNone(self.sandbox_status(), 'no VM is made')
+        self.assertEqual(self.claims(), [])
+
+    def test_the_ci_lane_is_kept_free(self):
+        self.budget('pl-shop-other-01', 'pl-shop-another-01')
+        self.happy_path()
+
+        with mock.patch.object(core.sbx_host, 'ci_lane', return_value=True):
+            self.main(FEATURE)
+
+        self.assertEqual(self.state()['reason'], self.REFUSED, 'CI slot 1 waits for a job with no VM: its reserve holds')
+        self.published()
+
+    def test_restarting_a_stopped_vm_takes_a_reservation(self):
+        self.budget()
+        self.happy_path()
+        self.main(FEATURE, '--until', 'plan')
+        self.assertEqual(self.sandbox_status(), 'stopped')
+        self.assertEqual(self.claims(), [], 'the run ended: its claim went with it')
+        self.others('pl-shop-other-01', 'pl-shop-another-01', 'ci-1-1')
+        self.main(FEATURE)
+        self.assertEqual(self.state()['reason'], self.REFUSED)
+        self.assertEqual(self.sandbox_status(), 'stopped', 'a stopped VM reserves nothing: it starts once admitted')
+        self.others('pl-shop-other-01')
+        self.happy_path(**{'thing-01-implement': [self.seeing(IMPLEMENT)]})
+        self.main(FEATURE)
+        self.assertEqual(self.seen(), [SANDBOX])
+        self.assertEqual((self.state()['stage'], self.state()['status']), ('done', 'done'), self.state()['reason'])
+
+    def test_a_runs_next_stage_does_not_count_its_own_claim(self):
+        self.budget('pl-shop-other-01', 'pl-shop-another-01')  # 16.0 + 8.0 of 26.5: room for this one stage
+        self.published()
+
+    def test_the_claim_lives_until_the_run_ends(self):
+        self.budget()
+        between = []
+        quiesce = core.backend.quiesce
+
+        def recorded(name):
+            quiesce(name)
+            between.append([name for name, _, _ in core.sbx_host.reservations()])
+
+        with mock.patch.object(core.backend, 'quiesce', recorded):
+            self.published()
+
+        self.assertGreaterEqual(len(between), 3)
+        self.assertEqual({tuple(names) for names in between}, {(SANDBOX,)},
+                         'stopped between stages, the VM still reserves its memory')
+        self.assertEqual(self.claims(), [])
+
+    def test_moving_to_the_next_step_moves_the_claim(self):
+        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
+        self.published(**{'thing-02-plan': [self.seeing(
+            {'run': ["printf '# Plan 2\\n' > $HOME/plans/thing/02-other/plan.md"]})]})
+        self.github.pull(5)['merged'] = True
+        self.budget('pl-shop-other-01', 'pl-shop-another-01')
+        self.assertTrue(core.claim_memory(SANDBOX)[0], "step 01's claim, as its last stage left it")
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0)
+        self.assertEqual(self.state('02')['stage'], 'implement', self.state('02')['reason'])
+        self.assertEqual(self.seen(), ['pl-shop-thing-02'])
+        self.assertEqual(self.claims(), [])
 
 
 class FakeTerminal(io.StringIO):
@@ -4391,11 +5041,8 @@ class ViewTest(RunnerCase):
                         self.output)
 
     def test_stages_queue_badge_only_with_queued_rows_and_no_duplicate(self):
-        with mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=9.99), \
-                mock.patch.dict(adapter.DEFAULT_ADMISSION, {}):
-            config = json.loads(self.fixture.config.read_text())
-            config['admission']['minMemoryGb'] = 10
-            self.fixture.config.write_text(json.dumps(config))
+        with mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=9.99):
+            write(self.fixture.sbx_host_config, json.dumps({'floorGib': 10}))
             core.mark(self.state(), 'paused', 'x')
             self.main('status')
             self.assertNotIn('stages queue', self.output, 'nothing queued')
@@ -4470,13 +5117,28 @@ class QueueTest(RunnerCase):
         self.slots(0)
         self.main('tick')
         self.assertEqual(self.spawned, [(REPO, 'a')], 'two slots, one held: one start')
-        self.assertIn('tick: 3 queued (1 free slots)', self.output)
+        self.assertIn('tick: 3 queued (1 free slots, room for any)', self.output)
         self.spawned.clear()
         self.assertEqual(self.main('order', 'c', FEATURE), 0, self.errors)
         self.assertEqual(core.global_control()['order'], [f'{REPO}/c', f'{REPO}/{FEATURE}'])
         self.assertRegex(self.output, rf'QUEUED\n 1 c +01/01  plan · x\n 2 {FEATURE} +01/01  plan · x\n 3 a ')
         self.main('tick')
         self.assertEqual(self.spawned, [(REPO, 'c')])
+
+    def test_tick_starts_only_what_fits(self):
+        self.three_queued()
+        self.budget('pl-shop-other-01')
+
+        with mock.patch.object(core.sbx_host, 'ci_lane', return_value=True):
+            self.main('tick')
+            self.assertEqual(self.spawned, [(REPO, 'a')], '8.0 + the CI lane 8.3 leave room for one stage of 8.0')
+            self.assertIn('tick: 3 queued (2 free slots, room for 1)', self.output)
+            self.spawned.clear()
+            self.hold(self.fixture.base / 'logs/run-shop-a.lock')
+            self.main('tick')
+
+        self.assertEqual(self.spawned, [], "a's run, about to claim, takes that room")
+        self.assertIn('tick: 3 queued (1 free slots, room for 0)', self.output)
 
     def test_a_run_still_fetching_counts_as_busy_and_pollers_always_start(self):
         self.three_queued()

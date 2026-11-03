@@ -17,7 +17,8 @@ these win.
   clean, migrate, seed, nuke, drop. The runner fetches only your branch's commits out of it.
 - **Never:** push or touch remotes; try to reach the network beyond Anthropic; dependency changes (→ `blocked` with the
   exact command and the package evidence: the registry is unreachable anyway); edit the repo's protected files
-  (supply chain, CI; the runner's gate lists them); contact anyone. A classifier denial carries a reason: adapt, never
+  (supply chain, CI; the runner's gate lists them): when the work needs a change there, add one `after merge:` owed
+  line naming the file and the exact change, then carry on (not `blocked`); contact anyone. A classifier denial carries a reason: adapt, never
   route around it.
 - **Migrations**: follow the repo's rules (CLAUDE.md, its docs, memory). When the block below names a generator, use
   it (`python3 ~/.claude/pipeline/drizzle-generate.py` with the plan's declared renames). Never edit a migration that

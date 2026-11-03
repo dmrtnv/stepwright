@@ -28,8 +28,9 @@ you: pipeline <name> [--detach]   (or wait: the tick timer starts it within 5 mi
 you: pipeline status [--watch]    (what needs you, runs, queues; `pipeline help` lists every command)
 
 each step (one PR, one sandbox pl-<repo>-<name>-NN):
-  admit       not held, sbx.service up, a free stage slot (`pipeline parallel`, ≤2 by default), ≥10 GiB free, weekly <80 % and
-              5-hour <70 % usage (defaults) — else queued
+  admit       not held, sbx.service up, a free stage slot (`pipeline parallel`, ≤2 by default), room for its VM (`sbx-host
+              fits pl`), weekly <80 % and 5-hour <70 % usage (defaults), then its VM's reserve claimed until the run
+              ends — else queued
   provision   template built if missing, sandbox cloned from the runner's clean clone, kit copied, branch from
               origin/<base>, repo setup (an sbx/VM-git/fetch/setup failure retries 3× 15 min apart, then pauses)
   plan        Claude writes plan.md            → waits if it has questions for you (autonomy auto: takes its
@@ -126,13 +127,16 @@ a run holds the feature. Ctrl+C, SIGTERM and
   global `~/.local/state/pipeline/control.json` `{parallel, drain, order}`. A hold or an unmerged `--after` stops the next stage (also
   the next step after a merge; a PR poll still runs), and an explicit `pipeline <name>`, `--detach` or `respond`
   refuses. Tick starts PR polls always, stage work only into free slots (`parallel` − max(slots held, runs holding a
-  feature lock)), in `order` then oldest-queued order, and none while the host would refuse it (kill switch, sbx,
-  memory, usage).
+  feature lock)) and the stage VMs sbx-host has room for (`sbx_host.room`, less the runs about to claim), in `order`
+  then oldest-queued order, and none while the host would refuse it (kill switch, sbx, memory, usage).
 - **Admission** before every stage: not held or drained, `sbx.service` active (the capped daemon; never an uncapped one), a slot
   (`~/.local/state/pipeline/slot-<n>.lock`, at most `pipeline parallel` held (ceiling `admission.slots`, default 2), held until the run
-  exits), `MemAvailable` ≥10 GiB (`admission.minMemoryGb`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
+  exits), room for the stage's VM (`sbx-host fits pl <vm>`: every reserve within the budget, the host's `floorGib`
+  free; `~/.config/sbx-host/config.json`), weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %)
   (from `~/.local/state/pipeline/usage.json`, written from every stage's `rate_limit_event`; older than 30 min ⇒ a one-token Haiku probe
-  refreshes it, so your manual use counts). Failing ⇒ step `ready`, "queued: <why>"
+  refreshes it, so your manual use counts). Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM
+  is stopped between stages, moved to the next step's VM, given back when the run ends, so a CI VM never takes a
+  stage's memory between its stages. Failing ⇒ step `ready`, "queued: <why>"
   (pinged once per reason, low priority; never for busy stage slots), the run ends, tick retries oldest first. Never waits in-process.
 - **Template**: the target is `pipeline-sandbox:claude-<v>-node-<host node>`, `<v>` the host's `claude --version`
   (`"claude": "host"`) or the pin. Missing before a create: `auto` builds it (`build-template.sh`, ~1 min, one build
@@ -203,6 +207,8 @@ code). A re-run after the fixer reported `blocked` asks CI again first (rerun th
 runner note), 📱 "✅ PR #n · CI green · confidence X · +Y weekly pts" (once per commit). No required check 30 min after a
 push, or one still queued while no `ci-runner@` unit is active (a companion self-hosted PR runner; a busy runner never
 pings) ⇒ one ping.
+GitHub not answering (a 5xx, the network, a body that is not JSON) spends no fix or rerun
+and loses no ping: the step stays `done`, unpinged, and tick asks again every 5 min; 45 min after the first failure it pauses.
 
 ## When it stops
 
@@ -230,6 +236,7 @@ shows the queue).
 | `ready`, "… limit until <time>" | nothing: tick resumes after the reset |
 | `ready`, "stopped by the kill switch" | `pipeline stop --clear` |
 | `ready`, "retrying (n/3) after: …" | nothing: tick retries 15 min later; after the 3rd retry it pauses with the cause |
+| `done`, "GitHub not answering, tick asks again: …" (`pipeline show`); `paused`, "GitHub has not answered for 45 min" | nothing while `done`; once paused it does not resume by itself: check githubstatus.com, then `pipeline <name> --detach` |
 | `ready`, "waiting for template …: build failed (n): …" | nothing (tick retries the build every 15 min), or fix the cause (`fix:` line) and `pipeline template build` |
 | `ready`, "template … missing" (`build: manual`) | `pipeline template build` (tick resumes the steps within 5 min) |
 | "budget" / "timeout" | read the stage log; usually the step is too big: split the brief |
@@ -290,8 +297,10 @@ mid-step.
 
 Every lookup on the box, sbx VMs' and a self-hosted CI runner's included (sbx is Go and asks `127.0.0.53`), goes
 through the host's resolver. A stalling upstream shows as `getaddrinfo ENOTFOUND` in CI logs: the runner reruns such a
-job (`CI_NETWORK`), and its GitHub calls retry a failed connect or a broken GET answer twice (`GITHUB_RETRY_SECONDS`).
-If it happens often, give systemd-resolved public fallback resolvers and serve stale answers (`StaleRetentionSec`).
+job (`CI_NETWORK`), and its GitHub calls retry a failed connect, a broken GET answer or a GET's 5xx twice
+(`GITHUB_RETRY_SECONDS`), never a POST or PATCH that may have landed; what still fails heals at the step's level (When
+it stops). If it happens often, give systemd-resolved public fallback resolvers and serve stale answers
+(`StaleRetentionSec`).
 
 ## Recovery
 

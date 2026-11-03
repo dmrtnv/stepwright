@@ -1,7 +1,8 @@
 """Host concerns every sbx user on this box shares: the pipeline's stage VMs (pl-*) and ci-runner's job VMs (ci-*) run
 in one capped daemon, sbx.service. This module owns that daemon's guard, which VMs exist and what each reserves of the
-unit's memory, one admission rule for both users, and the peak samples that size the reserves. CLI: sbx-host (beside
-this file). Config: ~/.config/sbx-host/config.json (DEFAULT_CONFIG's keys).
+unit's memory, one admission rule for both users (fits; claim takes the reservation, release gives it back), and the
+peak samples that size the reserves. CLI: sbx-host (beside this file). Config: ~/.config/sbx-host/config.json
+(DEFAULT_CONFIG's keys).
 """
 import contextlib
 import fcntl
@@ -15,14 +16,15 @@ from pathlib import Path
 HOME = Path.home()
 UNIT = 'sbx.service'
 CONFIG = HOME / '.config/sbx-host/config.json'
-STATE = HOME / '.local/state/sbx-host'  # peaks.jsonl, pending/<name>, lock
+STATE = HOME / '.local/state/sbx-host'  # peaks.jsonl, pending/<name> (claim), lock
 PIPELINE_SHARE = HOME / '.local/share/pipeline'  # stage VMs hold an fd in here (their clone): the kind's fallback
 CGROUP_ROOT = Path('/sys/fs/cgroup')
 PROC = Path('/proc')
 SHIM = b'containerd-shim-nerdbox-v1'  # one per running VM; its cwd is the VM's bundle (config.json names the VM)
 CI_LANE_UNIT = 'ci-runner@1.service'  # its slot always takes a job, so its VM's reserve is kept free while it waits
-# A VM's host memory past its allotment (sbx has no balloon: the guest keeps what it touched until the VM is removed).
-# Low for CI VMs: host peaks 2026-10-19 were 0.1-0.9 GiB past their 7 GiB (stage VMs stayed under 8): peaks().
+# A VM's host memory past its allotment. Memory the guest frees goes back to the host (libkrun free page reporting:
+# a shim at HWM 6.0 GiB held 1.9 anon, 2026-10-26); the host peak is mostly the guest's page cache. CI VMs peaked 0.1-0.9
+# GiB past their 7 GiB, stage VMs under their 8 (peaks()).
 VM_OVERHEAD_MIB = 512
 GIB = 2**30
 MIB = 2**20
@@ -155,8 +157,8 @@ def shims():
 
 
 def reading():
-    """sbx.service's memory in bytes (inf: no cap, None: unreadable), OOM kills, memory pressure (PSI full avg60, %),
-    and how many VM shims sit in the unit (fewer than all ⇒ a VM escaped the caps: a daemon started by hand)."""
+    """sbx.service's memory in bytes (inf: no cap, None: unreadable), OOM kills, swap-outs refused at the swap cap,
+    memory pressure (PSI full avg60, %), and how many VM shims sit in the unit (fewer than all ⇒ a VM escaped the caps: a daemon started by hand)."""
     group = cgroup()
     pressure = next((line for line in read_cgroup(group, 'memory.pressure').splitlines() if line.startswith('full ')), '')
     avg60 = next((part.partition('=')[2] for part in pressure.split() if part.startswith('avg60=')), None)
@@ -168,6 +170,7 @@ def reading():
             'swap': number(read_cgroup(group, 'memory.swap.current')),
             'swap_max': number(read_cgroup(group, 'memory.swap.max')),
             'anon': number(field(stat_text, 'anon') or ''), 'oom': number(field(events, 'oom_kill') or ''),
+            'swap_fail': number(field(read_cgroup(group, 'memory.swap.events'), 'fail') or ''),
             'high_events': number(field(events, 'high') or ''),
             'avg60': float(avg60) if avg60 and avg60.replace('.', '', 1).isdigit() else None,
             'inside': sum(1 for _, path in found if group is not None and CGROUP_ROOT / path.lstrip('/') == group),
@@ -207,18 +210,39 @@ def pid_alive(pid):
     return True
 
 
+def process_start(pid):
+    """A process's start time (clock ticks since boot), so a reused pid never keeps a dead holder's claim; None when
+    unreadable."""
+    try:
+        return int((PROC / str(pid) / 'stat').read_text().rpartition(')')[2].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def holder(path):
+    """A pending file's {pid, kind, start} while its process lives, else None."""
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+    pid = value.get('pid') if isinstance(value, dict) else None
+
+    if not isinstance(pid, int) or not pid_alive(pid) or value.get('start') != process_start(pid):
+        return None
+
+    return value
+
+
 def pending():
-    """[(name, kind)] reservations taken for a VM being created or started (removed once it is up); a dead holder's
-    file counts for nothing."""
+    """[(name, kind)] claims (claim): a VM about to start, or one a run keeps between its stages (a stopped VM counts
+    only through its claim); a dead holder's file counts for nothing."""
     found = []
 
     for path in sorted((STATE / 'pending').glob('*')):
-        try:
-            value = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
+        value = holder(path)
 
-        if isinstance(value.get('pid'), int) and pid_alive(value['pid']):
+        if value:
             found.append((path.name, value.get('kind') or kind(path.name)))
 
     return found
@@ -255,18 +279,23 @@ def reservations(config=None, listed=None, exclude=None):
     return counted
 
 
-def fits(vm_kind, name=None, config=None):
+def headroom(vm_kind, name, config, listed, memory=None):
+    """(reserved MiB without `name`, this kind's reserve, budget MiB or None, host free GiB). `listed` and `memory`
+    reuse an `sbx ls` and a reading() already taken."""
+    counted = reservations(config, listed, exclude=name)
+
+    return (sum(mib for _, _, mib in counted), config['reserve'].get(vm_kind, 0),
+            budget_mib(config, memory or reading()), mem_available_gib())
+
+
+def fits(vm_kind, name=None, config=None, listed=None, memory=None):
     """(ok, why) for starting a VM of this kind now: every reservation plus its own stays within the budget, and the
     host keeps floorGib free. `why` says what failed or, when it fits, what it fits in."""
     config = config or load_config()
-    counted = reservations(config, exclude=name)
-    reserved = sum(mib for _, _, mib in counted)
-    need = config['reserve'].get(vm_kind, 0)
-    budget = budget_mib(config, reading())
-    free = mem_available_gib()
+    reserved, need, budget, free = headroom(vm_kind, name, config, listed, memory)
 
     if free < config['floorGib']:
-        return False, f"{free:.1f} GiB free < {config['floorGib']} GiB"
+        return False, f"{floor_tenth(free)} GiB free < {config['floorGib']} GiB"
 
     if budget is not None and reserved + need > budget:
         return False, f'reserved {gib(reserved)} + {gib(need)} GiB > {gib(budget)} ({config["budget"]})'
@@ -274,8 +303,65 @@ def fits(vm_kind, name=None, config=None):
     return True, f'reserved {gib(reserved)} + {gib(need)} GiB' + (f' of {gib(budget)}' if budget is not None else '')
 
 
+def room(vm_kind, config=None, listed=None):
+    """How many more VMs of this kind fit now, one beside the other (inf: no budget to fill)."""
+    config = config or load_config()
+    reserved, need, budget, free = headroom(vm_kind, None, config, listed)
+
+    if free < config['floorGib']:
+        return 0
+
+    if budget is None or not need:
+        return math.inf
+
+    return max(0, int((budget - reserved) // need))
+
+
+def claim(vm_kind, name, always=False, config=None):
+    """(ok, why) of fits, taking the VM's reservation (pending/<name>) when it fits, or anyway with `always` (the CI
+    lane). Kept until release(name) or the process ends. One claim per process: its claim on another VM goes first, and
+    dead holders' files are deleted."""
+    config = config or load_config()
+    directory = STATE / 'pending'
+
+    with lock():
+        directory.mkdir(parents=True, exist_ok=True)
+
+        for path in directory.glob('*'):
+            value = holder(path)
+
+            if value is None or (value['pid'] == os.getpid() and path.name != name):
+                path.unlink(missing_ok=True)
+
+        ok, why = fits(vm_kind, name, config)
+
+        if ok or always:
+            temporary = STATE / f'pending-{name}.tmp'
+            temporary.write_text(json.dumps({'pid': os.getpid(), 'kind': vm_kind,
+                                             'start': process_start(os.getpid())}))
+            os.replace(temporary, directory / name)
+
+    return ok, why
+
+
+def release(name):
+    """Gives back this process's claim on the VM (claim), if it holds one."""
+    path = STATE / 'pending' / name
+
+    with lock():
+        value = holder(path)
+
+        if value and value['pid'] == os.getpid():
+            path.unlink(missing_ok=True)
+
+
 def gib(mib):
     return f'{mib / 1024:.1f}'
+
+
+def floor_tenth(value):
+    """One decimal, rounded down: 9.99 GiB free is below a 10 GiB floor and must not read 10.0."""
+    return f'{int(value * 10) / 10:.1f}'
 
 
 @contextlib.contextmanager

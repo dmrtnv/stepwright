@@ -14,6 +14,7 @@ import contextlib
 import difflib
 import fcntl
 import http.client
+import importlib.util
 import io
 import json
 import os
@@ -57,6 +58,7 @@ SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (README "What r
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
 PRESSURE_BADGE_PERCENT = 1.0  # PSI full avg60 of sbx.service (memory.high throttling counts) that badges the status
 PROJECTS = HOME / '.claude/projects'
+PR_TEXT_CHECKER = PIPELINE_DIR / 'kit/skills/pr-text/check.py'  # the pr-text skill's format lock; the respond gate runs it
 CLAUDE = 'claude'
 PYTHON = '/usr/bin/python3'
 GITHUB_API = 'https://api.github.com'
@@ -105,6 +107,7 @@ MAX_LISTED_FILES = 50
 CI_LOG_CHARACTERS = 12_000
 TRANSIENT_RETRIES = 3
 TRANSIENT_WAIT_SECONDS = 15 * 60
+GITHUB_DOWN = 'GitHub not answering, tick asks again: '
 TEMPLATE_PINGS = (1, 3)
 TAR_STALE_SECONDS = 3600
 NTFY_CHARACTERS = 1000
@@ -128,6 +131,10 @@ TEST_OR_DOC = re.compile(r'(^|/)(test|tests|e2e|docs)/|\.(test|spec)\.[cm]?[jt]s
 TEST_CASE_LINE = re.compile(r'^[-+]\s*((it|test)(\.\w+)?\(|(async\s+)?def test_)')
 ONLY_LINE = re.compile(r'\b(it|test|describe|suite|context)(\.\w+)*\.only\b')
 ERROR_LINE = re.compile(r'error|fatal|failed|denied|refused', re.IGNORECASE)
+# git could not reach GitHub, or GitHub failed the request (`remote: Internal Server Error` seen live on a push,
+# 2026-10-07). Anchored: a hook's words after `[remote rejected]` are a refusal.
+GIT_UNAVAILABLE = re.compile(r'^remote: Internal Server Error|The requested URL returned error: 5\d\d|'
+                             r'Could not resolve host|Failed to connect|(?:Connection|Operation) timed out', re.MULTILINE)
 SKIP_LINE = re.compile(r'\b(it|test|describe|suite|context)(\.\w+)*\.(skip|todo|fixme)\b|\bx(it|test|describe)\(|'
                        r'\b(unittest|pytest\.mark)\.skip|\bskipTest\(')
 
@@ -159,6 +166,11 @@ PR_COMMENTS = ('{review} holds the user\'s own comments on the pull request (PR 
 
 class PipelineError(Exception):
     pass
+
+
+class GitHubUnavailable(PipelineError):
+    """GitHub gave no answer (a 5xx, the network, a body that is not JSON): it heals by itself (github_unavailable). A
+    subclass, so a site that does not handle it treats it as any error."""
 
 
 ERRORS = (PipelineError, adapter.AdapterError, backend.BackendError)
@@ -311,25 +323,33 @@ def app_jwt(app):
 def github_read(open_request, method, label):
     """The body of one GitHub request, tried again GITHUB_RETRY_SECONDS later after a network failure (the box's DNS
     or WAN stalls): one before GitHub had the request (connect, send) on any method, one while reading its answer only
-    on a GET (a POST may have landed). An HTTP status is the caller's: raised as is."""
+    on a GET (a POST may have landed); a 5xx likewise only on a GET. Any other HTTP status, and the last 5xx, are the
+    caller's: raised as is."""
     for wait in (*GITHUB_RETRY_SECONDS, None):
         try:
             with open_request() as response:
                 return response.read()
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as error:
+            if method != 'GET' or error.code < 500 or wait is None:
+                raise
+
+            failure = error
         except urllib.error.URLError as error:
             failure = error.reason
         except (OSError, http.client.HTTPException) as error:
             if method != 'GET':
-                raise PipelineError(f'GitHub {label}: {error}') from None
+                raise GitHubUnavailable(f'GitHub {label}: {error}') from None
 
             failure = error
 
         if wait is None:
-            raise PipelineError(f'GitHub {label}: {failure}')
+            raise GitHubUnavailable(f'GitHub {label}: {failure}')
 
         time.sleep(wait)
+
+
+def github_status_error(code, message):
+    return (GitHubUnavailable if code >= 500 else PipelineError)(message)
 
 
 def github_api(method, path, token, body=None):
@@ -342,16 +362,17 @@ def github_api(method, path, token, body=None):
     })
 
     try:
-        text = github_read(lambda: urllib.request.urlopen(request, timeout=60), method, f'{method} {path}').decode()
+        text = github_read(lambda: urllib.request.urlopen(request, timeout=60), method,
+                           f'{method} {path}').decode(errors='replace')
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors='replace')[:300]
 
-        raise PipelineError(f'GitHub {method} {path}: {error.code} {detail}') from None
+        raise github_status_error(error.code, f'GitHub {method} {path}: {error.code} {detail}') from None
 
     try:
         return json.loads(text) if text.strip() else {}
     except ValueError:
-        raise PipelineError(f'GitHub {method} {path}: not JSON: {text[:200]}') from None
+        raise GitHubUnavailable(f'GitHub {method} {path}: not JSON: {text[:200]}') from None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -371,7 +392,7 @@ def github_raw(path, token):
         return github_read(lambda: opener.open(request, timeout=60), 'GET', f'GET {path}').decode(errors='replace')
     except urllib.error.HTTPError as error:
         if error.code not in (301, 302, 307, 308) or not error.headers.get('Location'):
-            raise PipelineError(f'GitHub GET {path}: {error.code}') from None
+            raise github_status_error(error.code, f'GitHub GET {path}: {error.code}') from None
 
         location = error.headers['Location']
 
@@ -381,7 +402,7 @@ def github_raw(path, token):
         return github_read(lambda: urllib.request.urlopen(signed, timeout=120), 'GET',
                            f'GET {path} (redirected)').decode(errors='replace')
     except urllib.error.HTTPError as error:
-        raise PipelineError(f'GitHub GET {path} (redirected): {error}') from None
+        raise github_status_error(error.code, f'GitHub GET {path} (redirected): {error}') from None
 
 
 def graphql(token, query, variables):
@@ -618,6 +639,23 @@ def retry_later(state, what, output, fix, short):
                f'{short}, retrying in {TRANSIENT_WAIT_SECONDS // 60} min: {line}' if tries == 0 else None)
 
 
+def github_unavailable(state, error):
+    """GitHub gave no answer. A stage step retries like any environment failure. A step that only polls its PR stays
+    `done`, unpinged, and tick asks again every 5 min; only the first failure marks, so its history entry is the clock:
+    TRANSIENT_RETRIES * TRANSIENT_WAIT_SECONDS later it pauses for you. Not retry_later: tick never polls a `ready` step."""
+    with contextlib.suppress(Stop):
+        if not polls_pr(state):
+            retry_later(state, 'asking GitHub', str(error), 'nothing: tick retries; if it lasts, githubstatus.com',
+                        'GitHub unavailable')
+        elif not state['reason'].startswith(GITHUB_DOWN):
+            mark(state, 'done', f'{GITHUB_DOWN}{error}')
+        elif time.time() - (history_seconds(state['history'][-1]) or 0) > TRANSIENT_RETRIES * TRANSIENT_WAIT_SECONDS:
+            pause(state, f"GitHub has not answered for {TRANSIENT_RETRIES * TRANSIENT_WAIT_SECONDS // 60} min.\n"
+                         f"first: {state['reason'].removeprefix(GITHUB_DOWN)}\nlatest: {error}\n"
+                         f"fix: check githubstatus.com, then `pipeline {state['feature']} --detach`",
+                  'GitHub unavailable')
+
+
 # ---------------------------------------------------------------------------------------------- notifications
 
 
@@ -685,6 +723,15 @@ def base_sha(context):
 
 def changed_files(context, base, *arguments):
     names = git(context['clone'], 'diff', '--name-only', '--no-renames', *arguments, base, context['ref']).splitlines()
+
+    return [name for name in names if name]
+
+
+def base_workflow_changes(context):
+    """Workflow files origin/<base> changed since the branch left it. The App has no workflows permission, and GitHub
+    refuses its push of a branch that would carry such a file at an older version."""
+    names = git(context['clone'], 'diff', '--name-only', '--no-renames', merge_base(context), context['origin_base'],
+                '--', '.github/workflows').splitlines()
 
     return [name for name in names if name]
 
@@ -942,6 +989,7 @@ def run_setup(state, context):
 
 
 SLOT_HANDLES = []
+CLAIMS = []  # the VM this run's memory claim names (sbx_host.claim): one per run, moved per step, kept with its slot
 
 
 def stop_flag():
@@ -981,9 +1029,30 @@ def take_slot(parallel, ceiling):
     return False
 
 
+def release_claim():
+    while CLAIMS:
+        with contextlib.suppress(OSError):
+            sbx_host.release(CLAIMS.pop())
+
+
 def release_slot():
+    release_claim()
+
     while SLOT_HANDLES:
         SLOT_HANDLES.pop().close()
+
+
+def claim_memory(name):
+    """(ok, why) of sbx_host.claim for the stage's VM: its reservation, held from the stage's admission until the run
+    ends (stopped between stages, the VM itself reserves nothing), so a CI VM never takes its memory between stages."""
+    try:
+        ok, why = sbx_host.claim('pl', name)
+    except sbx_host.HostError as error:
+        ok, why = False, str(error)
+
+    CLAIMS[:] = [name] if ok else []
+
+    return ok, why
 
 
 def slots_held():
@@ -1078,26 +1147,35 @@ def gib(value):
     return '?' if value is None else 'max' if value == float('inf') else f'{value / 2**30:.1f}'
 
 
-def floor_tenth(value):
-    """One decimal, rounded down: 9.99 GiB free is below a 10 GiB floor and must not read 10.0."""
-    return f'{int(value * 10) / 10:.1f}'
-
-
-def memory_reading(limits):
-    """sbx.service's memory (sbx_host.reading), the VMs, every reservation and the budget they are summed against
-    (sbx_host), and the host's free memory against admission.minMemoryGb. Only while the unit is active: `vms` and
-    `reservations` are None when sbx can't tell."""
-    memory = dict(sbx_host.reading(), free=sbx_host.mem_available_gib(), floor=limits['minMemoryGb'], vms=None,
-                  reservations=None, budget=None, budget_name=None)
+def memory_reading():
+    """sbx.service's memory (sbx_host.reading), the VMs, every reservation and the budget they are summed against, the
+    host's free memory against sbx-host's floorGib, and why a stage would not fit now (`problem`, sbx_host.fits). Only
+    while the unit is active: `vms` and `reservations` are None when sbx can't tell."""
+    memory = dict(sbx_host.reading(), free=sbx_host.mem_available_gib(), floor=None, vms=None, reservations=None,
+                  budget=None, budget_name=None, problem=None)
 
     try:
         config = sbx_host.load_config()
+        memory['floor'] = config['floorGib']
         memory.update(vms=sbx_host.vms(), budget=sbx_host.budget_mib(config, memory), budget_name=config['budget'])
         memory['reservations'] = sbx_host.reservations(config, memory['vms'])
-    except sbx_host.HostError:
-        pass
+        memory['problem'] = memory_problem(listed=memory['vms'], memory=memory)
+    except sbx_host.HostError as error:
+        memory['problem'] = str(error)
 
     return memory
+
+
+def memory_problem(name=None, listed=None, memory=None):
+    """Why a stage's VM would not fit now (sbx_host.fits: the reserves against the budget, the host's floor), or
+    None. `name` is the stage's VM: its own claim never counts against it. `listed` and `memory` reuse an `sbx ls`
+    and a cgroup reading."""
+    try:
+        ok, why = sbx_host.fits('pl', name, listed=listed, memory=memory)
+    except sbx_host.HostError as error:
+        return str(error)
+
+    return None if ok else why
 
 
 def is_number(text):
@@ -1139,9 +1217,10 @@ def reserved_summary(memory):
     return ' · '.join([head] + [f'{name} {mib / 1024:.1f}' for name, _, mib in counted])
 
 
-def admission_problem(slot=True, probe=True):
+def admission_problem(slot=True, probe=True, name=None, listed=None, memory=None):
     """Why no stage may start now, or None. With `slot` a run slot is taken (and kept); tick asks without one. Without
-    `probe` (the status) a stale usage reading is not refreshed."""
+    `probe` (the status) a stale usage reading is not refreshed. Memory is sbx-host's rule (memory_problem, for the
+    stage's VM `name`, over `listed`), or a status's cached reading's verdict (`memory`)."""
     limits = adapter.load_config()['admission']
 
     if stop_flag():
@@ -1155,30 +1234,42 @@ def admission_problem(slot=True, probe=True):
     if slot and not take_slot(parallel, limits['slots']):
         return f'all {parallel} stage slots busy'
 
-    free = sbx_host.mem_available_gib()
+    problem = memory['problem'] if memory is not None else memory_problem(name, listed)
 
-    if free < limits['minMemoryGb']:
-        return f"{floor_tenth(free)} GiB free < {limits['minMemoryGb']} GiB"
+    if problem:
+        return problem
 
     return usage_problem(limits, probe)
 
 
 def admit(state):
     """Checked before every stage: your hold (before the slot this run may already hold, so a hold also stops the next
-    step after a merge), the capped sbx daemon, a slot, free memory, and room in both usage windows (your manual work
-    comes first). Never waits in-process: the step is queued, the run ends, tick retries."""
+    step after a merge), the capped sbx daemon, a slot, room for the stage's VM (sbx-host), and room in both usage
+    windows (your manual work comes first); then the VM's memory is claimed. Never waits in-process: the step is queued,
+    the run ends, tick retries."""
     held = hold_reason(state['repo'], state['feature'])
 
     if held:
         wait_ready(state, f'queued: {held}', None)
 
-    problem = admission_problem()
+    name = step_context(state)['name']
+
+    if CLAIMS and CLAIMS[0] != name:
+        # The run moved to its next step: the old step's claim must not count against the new one.
+        release_claim()
+
+    problem = admission_problem(name=name)
 
     if problem:
         # All slots busy is routine (status shows the queue); anything else is worth a ping, sbx down is yours.
         routine = problem.startswith('all ') and problem.endswith(' stage slots busy')
         wait_ready(state, f'queued: {problem}', None if routine else f'queued: {problem}',
                    'high' if problem.startswith(SBX_UNIT) else 'low')
+
+    claimed, why = claim_memory(name)
+
+    if not claimed:
+        wait_ready(state, f'queued: {why}', f'queued: {why}')
 
     usage = read_usage() or {}
     seven_day = (usage.get('seven_day') or {}).get('utilization')
@@ -1979,7 +2070,7 @@ def gate_tamper(state, context):
     return failures
 
 
-def gate_file(file_name, what, stage_key):
+def gate_file(file_name, what, stage_key, check=None):
     def gate(state, context):
         step = step_of(state)
         path = step.directory / file_name
@@ -1995,11 +2086,35 @@ def gate_file(file_name, what, stage_key):
         if int(result.stdout.strip() or 0) < state['started'].get(stage_key, 0):
             return [f'{what} was not updated by this stage (it predates the stage): {step.vm_path(path)}']
 
+        if check:
+            try:
+                return check(read_step_file(path) or '')
+            except PipelineError as error:
+                return [str(error)]
+
         return []
 
     gate.__name__ = f'gate_file({file_name})'
 
     return gate
+
+
+def check_pr_text(text):
+    """The pr-text skill's checker: the repo squash-merges with the PR body, so pr.md keeps its format."""
+    try:
+        spec = importlib.util.spec_from_file_location('pr_text_check', PR_TEXT_CHECKER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        found = module.problems(text)
+    except Exception as error:
+        return [f'The PR text checker {PR_TEXT_CHECKER} could not run ({type(error).__name__}: {error}). It is the '
+                'pr-text skill in the kit dir; restore it, then re-run.']
+
+    if not found:
+        return []
+
+    return ['pr.md breaks the pr-text format (read ~/.claude/skills/pr-text/SKILL.md, then rewrite pr.md until '
+            '`python3 ~/.claude/skills/pr-text/check.py <pr.md>` prints nothing):\n' + '\n'.join(found)]
 
 
 BRANCH_GATES = [gate_tree, gate_checks, gate_commits, gate_trailer, gate_protected, gate_migrations, gate_tamper]
@@ -2172,7 +2287,15 @@ def unique_ref(clone, name):
 
 
 def refresh_clone(repo):
-    adapter.clean_clone(repo, token_environment(installation_token(repo)))
+    environment = token_environment(installation_token(repo))
+
+    try:
+        adapter.clean_clone(repo, environment)
+    except adapter.AdapterError as error:
+        if GIT_UNAVAILABLE.search(str(error)):
+            raise GitHubUnavailable(str(error)) from None
+
+        raise
 
 
 def sync_with_main(state, context, fixer_key, fixer_prompt):
@@ -2299,7 +2422,8 @@ def step_respond(state, options):
     if final:
         sync_with_main(state, context, stage_key, prompt)
 
-    gates_loop(state, stage_key, context, BRANCH_GATES + [gate_file('pr.md', 'The PR text', stage_key)], prompt)
+    gates_loop(state, stage_key, context, BRANCH_GATES + [gate_file('pr.md', 'The PR text', stage_key, check_pr_text)],
+               prompt)
     state['green_head'] = context['head']
 
     if final:
@@ -2375,6 +2499,8 @@ def branch_rules(repo, branch):
     """The rules GitHub enforces on a branch, read with the App token; None when GitHub can't answer."""
     try:
         rules = github_api('GET', f'/repos/{repo}/rules/branches/{urllib.parse.quote(branch)}', installation_token(repo))
+    except GitHubUnavailable:
+        raise
     except PipelineError:
         return None
 
@@ -2410,6 +2536,9 @@ def push_branch(state, context, sha):
                         f"{sha}:refs/heads/{state['branch']}", env=token_environment(installation_token(repo)))
 
     if result.returncode != 0:
+        if GIT_UNAVAILABLE.search(result.stderr):
+            raise GitHubUnavailable(f"push of {state['branch']}: {tail(result.stderr, 10)}")
+
         pause(state, f"push of {state['branch']} refused:\n{tail(result.stderr, 10)}", 'push refused')
 
 
@@ -2505,6 +2634,8 @@ def upsert_evidence(state):
         try:
             github_api('PATCH', f'/repos/{repo}/issues/comments/{comment}', token, {'body': body})
             return
+        except GitHubUnavailable:
+            raise
         except PipelineError:
             comment = None
 
@@ -2525,6 +2656,16 @@ def step_publish(state, options):
     if state['pr'] and state['published_sha'] == sha:
         state['stage'] = 'done'
         mark(state, 'done', f"PR #{state['pr']['number']} {state['pr']['url']}")
+        return
+
+    refresh_clone(state['repo'])
+    workflows = base_workflow_changes(context)
+
+    if workflows:
+        state['update'] = {'base_moved': True}
+        state['stage'] = 'update'
+        mark(state, 'ready', f"{context['base']} changed {', '.join(workflows)}, which the App may not push: rebasing "
+                             'first')
         return
 
     scan_for_secrets(state, context)
@@ -2660,6 +2801,8 @@ def ci_log(repo, run, token):
     check's output; None when GitHub has neither (a job whose log is gone)."""
     try:
         text = github_raw(f"/repos/{repo}/actions/jobs/{run['id']}/logs", token)
+    except GitHubUnavailable:
+        raise
     except PipelineError:
         text = ''
 
@@ -2744,6 +2887,8 @@ def ci_verdicts(repo, sha, red, token):
     try:
         listed = github_api('GET', f'/repos/{repo}/actions/runs?head_sha={sha}&per_page=100',
                             token).get('workflow_runs') or []
+    except GitHubUnavailable:
+        raise
     except PipelineError:
         return None
 
@@ -2758,6 +2903,8 @@ def ci_verdicts(repo, sha, red, token):
             try:
                 jobs = github_api('GET', f"/repos/{repo}/actions/runs/{run['id']}/attempts/"
                                          f"{run.get('run_attempt') or 1}/jobs?per_page=100", token).get('jobs')
+            except GitHubUnavailable:
+                raise
             except PipelineError:
                 jobs = None
 
@@ -2806,6 +2953,8 @@ def rerun_ci(state, number, infra, repo, token):
     for run_id in dict.fromkeys(verdict['run']['id'] for verdict in infra):
         try:
             github_api('POST', f'/repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs', token, {})
+        except GitHubUnavailable:
+            raise
         except PipelineError as error:
             needs = 'the App needs Actions: write; ' if re.search(r': 403\b', str(error)) else ''
             pause(state, f"PR #{number}: CI {names} ended without a code failure ({why}) and GitHub refused the rerun "
@@ -2851,6 +3000,8 @@ def request_review(state, repo, number, token):
 
     try:
         github_api('POST', path, token, {'reviewers': [reviewer]})
+    except GitHubUnavailable:
+        raise
     except PipelineError as error:
         with contextlib.suppress(PipelineError):
             if reviewer in [user.get('login') for user in github_api('GET', path, token).get('users') or []]:
@@ -2995,8 +3146,15 @@ def poll_pr(state):
 
         request_review(state, repo, number, token)
         state['ci']['reviewed'] = sha
+
+        try:
+            upsert_evidence(state)
+        except PipelineError:
+            # Not reviewed yet: the next poll (or the resume) redoes this block, so the green ping is not lost.
+            state['ci']['reviewed'] = None
+            raise
+
         save_state(state)
-        upsert_evidence(state)
         reviews = [state['results'][key] for key in state['sessions'] if key.startswith('review-') and key in state['results']]
         confidence = reviews[-1].get('confidence', '?') if reviews else '?'
         points = usage_points(state)
@@ -3061,6 +3219,9 @@ def run_step(state, step, options):
     except Stop:
         return False
 
+    if state['reason'].startswith(GITHUB_DOWN):
+        mark(state, 'done', f"PR #{state['pr']['number']} {state['pr']['url']}: GitHub answers again")
+
     if state['status'] == 'closed':
         return True
 
@@ -3087,6 +3248,8 @@ def command_run(repo, options):
         print('kill switch on: `pipeline stop --clear` first', file=sys.stderr)
         return 1
 
+    current = None
+
     try:
         feature_steps = steps(repo, feature)
         held = hold_reason(repo, feature)
@@ -3099,6 +3262,13 @@ def command_run(repo, options):
         check_key(app_settings())
         refresh_clone(repo)
         REPO_CONFIG[repo] = adapter.repo_config(repo)
+    except GitHubUnavailable as error:
+        print(error, file=sys.stderr)
+
+        if current and polls_pr(current) and current['status'] == 'done':
+            github_unavailable(current, error)
+
+        return 1
     except ERRORS as error:
         print(error, file=sys.stderr)
         return 1
@@ -3129,6 +3299,10 @@ def command_run(repo, options):
                     mark(state, 'paused', 'interrupted (Ctrl+C, SIGTERM or a closed terminal); re-run to resume')
 
                 return 130
+            except GitHubUnavailable as error:
+                print(error, file=sys.stderr)
+                github_unavailable(state, error)
+                return 1
             except ERRORS as error:
                 mark(state, 'paused', str(error))
                 notify(state, f'paused: error: {headline(str(error))[:200]}', priority='high')
@@ -3676,7 +3850,7 @@ def host_readings(probes, now, verbose=False):
     autostart an uncapped daemon."""
     if now - probes.get('at', 0) >= PROBE_SECONDS or (verbose and 'template_summary' not in probes):
         active = sbx_service_active()
-        memory = memory_reading(adapter.load_config()['admission']) if active else None
+        memory = memory_reading() if active else None
         probes.update(at=now, active=active, memory=memory, template=template_problem() if active else None,
                       ci=ci_slots(memory and memory['vms']))
 
@@ -3765,7 +3939,7 @@ def status_model(show_all=False, probes=None, now=None):
     # Why queued rows don't start, once (each row says it too); the kill switch and sbx are badges already. The
     # status never probes usage: the last reading decides.
     if host['active'] and not stopped and any(row['group'] == 'queued' for row in rows):
-        problem = admission_problem(slot=False, probe=False)
+        problem = admission_problem(slot=False, probe=False, memory=memory)
 
         if problem:
             badges.append(f'stages queue: {problem}')
@@ -3819,7 +3993,8 @@ def memory_line(memory):
 
         parts.append(text)
 
-    parts.append(f"host free {floor_tenth(memory['free'])} GiB (floor {memory['floor']})")
+    floor = '?' if memory['floor'] is None else memory['floor']
+    parts.append(f"host free {sbx_host.floor_tenth(memory['free'])} GiB (floor {floor})")
 
     return 'memory   ' + ' · '.join(parts), over
 
@@ -4358,8 +4533,25 @@ def command_tick():
             waiting.append(f"{adapter.short(repo)}/{feature} {state['id']} [{state['status']}]")
 
     free = live_parallel(limits, control) - max(slots_held(), busy)
-    problem = admission_problem(slot=False) if stages and free > 0 else None
-    started = [feature for _, _, feature in sorted(stages)[:max(0, free)]] if not problem else []
+    problem, room = None, None
+
+    if stages and free > 0:
+        listed = None
+
+        with contextlib.suppress(sbx_host.HostError):
+            listed = sbx_host.vms()
+
+        problem = admission_problem(slot=False, listed=listed)
+
+        if not problem:
+            # A run with its feature but no slot yet is about to claim a stage's memory too.
+            try:
+                room = sbx_host.room('pl', listed=listed) - max(0, busy - slots_held())
+            except sbx_host.HostError as error:
+                problem = str(error)
+
+    starts = max(0, int(min(free, room))) if room is not None else 0
+    started = [feature for _, _, feature in sorted(stages)[:starts]] if not problem else []
 
     for _, repo, feature in sorted(stages)[:len(started)]:
         spawn_feature_run(repo, feature)
@@ -4367,7 +4559,9 @@ def command_tick():
     print(f"tick: started {', '.join(started + [key.rpartition('/')[2] for key in pollers]) or 'nothing'}", flush=True)
 
     if len(stages) > len(started):
-        print(f"tick: {len(stages) - len(started)} queued ({problem or f'{max(0, free)} free slots'})", flush=True)
+        room_text = '' if room is None else ', room for any' if room == float('inf') else f', room for {max(0, room)}'
+        print(f"tick: {len(stages) - len(started)} queued ({problem or f'{max(0, free)} free slots{room_text}'})",
+              flush=True)
 
     if held:
         print(f"tick: held: {', '.join(held)}", flush=True)

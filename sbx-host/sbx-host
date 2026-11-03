@@ -3,14 +3,30 @@
 Usage: sbx-host status                 the unit's memory, every reservation, the budget and the peaks sampled so far
        sbx-host fits <kind> [<name>]   exit 0 when a VM of this kind (pl, ci) fits now, else 1; prints why either
                                        way (<name>: the VM about to start, never counted twice)
+       sbx-host hold [--always] <kind> <name> -- <command>...
+                                       runs the command (an sbx create) holding the VM's reservation, and gives it
+                                       back after; exits with the command's code. Refused: `sbx-host: refused: <why>`
+                                       on stderr, exit 75. --always: runs anyway (the CI lane), `sbx-host: over:
+                                       <why>` on stderr when it is over.
+                                       No sbx call may run (sbx.service down): exit 1, the command never runs
        sbx-host sample                 appends each running VM's host peak to ~/.local/state/sbx-host/peaks.jsonl
 """
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import sbx_host  # noqa: E402
+
+
+REFUSED = 75  # EX_TEMPFAIL: the VM does not fit now; try again later
+
+
+def paint(code, text):
+    """Colour only on a terminal (https://no-color.org)."""
+    return f'\033[{code}m{text}\033[0m' if sys.stdout.isatty() and not os.environ.get('NO_COLOR') else text
 
 
 def size(value):
@@ -28,7 +44,8 @@ def status():
     memory = sbx_host.reading()
     budget = sbx_host.budget_mib(config, memory)
     print(f"{sbx_host.UNIT}: VMs use {size(memory['current'])} GiB of {size(memory['high'])} soft cap "
-          f"({size(memory['max'])} hard) · swap {size(memory['swap'])} of {size(memory['swap_max'])} · "
+          f"({size(memory['max'])} hard) · swap {size(memory['swap'])} of {size(memory['swap_max'])} (fail "
+          f"{memory['swap_fail'] if memory['swap_fail'] is not None else '?'}) · "
           f"oom {memory['oom'] if memory['oom'] is not None else '?'} · pressure full avg60 "
           f"{memory['avg60'] if memory['avg60'] is not None else '?'}% · shims {memory['inside']}/{memory['total']}")
     print(f"budget: {config['budget']} = {sbx_host.gib(budget) + ' GiB' if budget is not None else 'none (no cap)'} · "
@@ -48,7 +65,45 @@ def status():
         f'{kind} {len(values)} VMs, p95 {sbx_host.gib(sbx_host.p95(values))} max {sbx_host.gib(max(values))} GiB'
         for kind, values in sorted(found.items())) or 'none yet'))
 
+    for kind in ('pl', 'ci'):
+        if found.get(kind):
+            sized = sbx_host.p95(found[kind]) + sbx_host.VM_OVERHEAD_MIB
+            text = f"retune {kind}: reserve {sbx_host.gib(config['reserve'][kind])} · p95+512 {sbx_host.gib(sized)}"
+            print(paint(33, text + ' (raise the reserve)') if sized > config['reserve'][kind] else text)
+
     return 0
+
+
+def hold(argv):
+    always = argv[:1] == ['--always']
+    argv = argv[1:] if always else argv
+
+    if len(argv) < 4 or argv[0] not in sbx_host.DEFAULT_CONFIG['reserve'] or argv[2] != '--':
+        return None
+
+    kind, name, command = argv[0], argv[1], argv[3:]
+    problem = sbx_host.guard()
+
+    if problem:
+        print(f'sbx-host: no sbx call: {problem}', file=sys.stderr)
+        return 1
+
+    ok, why = sbx_host.claim(kind, name, always)
+
+    if not ok and not always:
+        print(f'sbx-host: refused: {why}', file=sys.stderr)
+        return REFUSED
+
+    if not ok:
+        print(f'sbx-host: over: {why}', file=sys.stderr)
+
+    try:
+        return subprocess.run(command).returncode
+    except OSError as error:
+        print(f'sbx-host: {command[0]}: {error}', file=sys.stderr)
+        return 127
+    finally:
+        sbx_host.release(name)
 
 
 def main(argv):
@@ -60,6 +115,12 @@ def main(argv):
             ok, why = sbx_host.fits(argv[1], *argv[2:])
             print(why)
             return 0 if ok else 1
+
+        if argv[:1] == ['hold']:
+            code = hold(argv[1:])
+
+            if code is not None:
+                return code
 
         if argv == ['sample']:
             sbx_host.sample()
