@@ -31,7 +31,9 @@ STAGE_ENV = {
     'CLAUDE_CODE_SUBAGENT_MODEL': 'claude-sonnet-5-5',
     'CLAUDE_CODE_SUBAGENT_MODEL_FORCE': '1',
 }
-KIT_ITEMS = ('CLAUDE.md', 'skills', 'agents')
+KIT = PIPELINE_DIR / 'kit'  # the stage skills and agents every VM gets, so a stage runs the checked-out tag's
+KIT_ITEMS = ('skills', 'agents')
+HOST_ONLY = ('pipeline-feature',)  # host skills never copied into a VM
 KIT_SCRIPTS = ('heavy', 'kill-own.sh', 'drizzle-generate.py', 'transcripts.py')
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 MAX_COPY_OUT_BYTES = 2_000_000
@@ -369,14 +371,40 @@ def copy_out(name, vm_path, limit=MAX_COPY_OUT_BYTES):
             return handle.read().decode(errors='replace')
 
 
+def stage_kit_tree(item, directory):
+    """Builds directory/item (skills or agents) for a VM: every kit entry, then every personal entry whose name the
+    kit lacks, so a kit entry replaces a personal one whole. Links are followed; HOST_ONLY and __pycache__ stay out."""
+    staged = Path(directory) / item
+    staged.mkdir()
+    ignore = shutil.ignore_patterns('__pycache__')
+    personal = HOME / '.claude' / item
+
+    for source in (KIT / item, personal) if personal.is_dir() else (KIT / item,):
+        for entry in sorted(source.iterdir()):
+            # lexists: a personal file and a kit directory with the same name (or the reverse) also resolve to the kit
+            if entry.name in HOST_ONLY or entry.name == '__pycache__' or os.path.lexists(staged / entry.name):
+                continue
+
+            if entry.is_dir():
+                shutil.copytree(entry, staged / entry.name, ignore=ignore)
+            else:
+                shutil.copy2(entry, staged / entry.name)
+
+    return staged
+
+
 def copy_kit(name, memory_source=None):
-    """The kit, fresh on every run: CLAUDE.md, skills and agents; the repo's memory (read-only by convention, the
-    stage's autoMemoryDirectory); the helpers stages call; and the stage settings.json replacing the kit's."""
+    """The kit, fresh on every run: skills and agents from the kit dir plus the user's own (a kit name wins), and the
+    user's CLAUDE.md; the repo's memory (read-only by convention, the stage's autoMemoryDirectory); the helpers
+    stages call; and the stage settings.json replacing the kit's."""
     claude = kit_dir(name)
 
-    for item in KIT_ITEMS:
-        if (HOME / '.claude' / item).exists():
-            copy_in(name, HOME / '.claude' / item, claude)
+    if (HOME / '.claude/CLAUDE.md').exists():
+        copy_in(name, HOME / '.claude/CLAUDE.md', claude)
+
+    with tempfile.TemporaryDirectory(prefix='pipeline-kit-') as directory:
+        for item in KIT_ITEMS:
+            copy_in(name, stage_kit_tree(item, directory), claude)
 
     for script in KIT_SCRIPTS:
         copy_in(name, PIPELINE_DIR / script, f'{claude}/pipeline')
