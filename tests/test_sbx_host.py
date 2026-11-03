@@ -137,6 +137,13 @@ class FitsTest(HostCase):
         self.config(budget='low')
         self.assertRaises(sbx_host.HostError, sbx_host.load_config)
 
+    def test_a_config_of_the_wrong_shape_is_a_host_error(self):
+        for value in ([], {'reserve': 'x'}, {'reserve': [8192]}):
+            (self.base / 'config.json').write_text(json.dumps(value))
+
+            with self.assertRaisesRegex(sbx_host.HostError, 'not a JSON object|reserve is an object', msg=repr(value)):
+                sbx_host.load_config()
+
     def test_the_guard_refuses_a_second_daemon_or_a_stopped_unit(self):
         with mock.patch.dict(os.environ, {'XDG_STATE_HOME': str(self.base / 'elsewhere')}):
             self.assertIn('XDG_STATE_HOME', sbx_host.guard())

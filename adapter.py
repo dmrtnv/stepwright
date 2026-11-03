@@ -53,6 +53,13 @@ def load_config():
     except ValueError as error:
         raise AdapterError(f'{CONFIG}: not JSON ({error})') from None
 
+    if not isinstance(config, dict):
+        raise AdapterError(f'{CONFIG}: not a JSON object')
+
+    for key in ('app', 'admission'):
+        if not isinstance(config.get(key) or {}, dict):
+            raise AdapterError(f'{CONFIG}: {key} is an object, not {config[key]!r}')
+
     app = config.get('app') or {}
     missing = [f'app.{key}' for key in ('id', 'slug', 'privateKey', 'reviewer') if not app.get(key)]
 
