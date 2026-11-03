@@ -5111,7 +5111,7 @@ def doctor_kit(loaded):
             link = linked / entry.name
             label = f'kit {item}/{entry.name}'
 
-            if link.resolve() == entry.resolve():
+            if os.path.realpath(link) == os.path.realpath(entry):  # Path.resolve raises on a loop on 3.12
                 results.append((label, True, f'links to {entry}', ''))
             elif not os.path.lexists(link):
                 results.append((label, False, 'not linked', f'ln -s {entry} {linked}/'))
@@ -5153,8 +5153,9 @@ def doctor_linger(loaded):
     value = result.stdout.strip()
 
     if result.returncode != 0 or not value:
-        return [('linger', False, (result.stderr.strip().splitlines() or [f'loginctl exit {result.returncode}'])[-1],
-                 fix)]
+        return [('linger', False, (result.stderr.strip().splitlines()
+                                   or [f'loginctl exit {result.returncode}' if result.returncode else
+                                       'loginctl gave no Linger value'])[-1], fix)]
 
     return [('linger', value == 'yes', {'yes': 'on', 'no': 'off'}.get(value, value), fix)]
 

@@ -345,6 +345,14 @@ class KitTest(DoctorCase):
                         f'move {link} aside, then ln -s {self.kit}/skills/pr-text {self.home}/.claude/skills/')
 
 
+class KitLoopTest(DoctorCase):
+    def test_a_symlink_loop(self):
+        link = self.home / '.claude/skills/pr-text'
+        link.unlink()
+        link.symlink_to(link)
+        self.assertFail('kit skills/pr-text', f'links to {link}', f'ln -sfn {self.kit}/skills/pr-text {link}')
+
+
 class UnitsTest(DoctorCase):
     NO_FILE = {'stderr': 'Failed to get unit file state for x: No such file or directory'}
     NO_BUS = {'stderr': 'Failed to connect to bus: No medium found'}
@@ -423,6 +431,10 @@ class LingerTest(DoctorCase):
     def test_off(self):
         self.change(linger='no')
         self.assertFail('linger', 'off', self.FIX)
+
+    def test_no_value(self):
+        self.change(linger='')
+        self.assertFail('linger', 'loginctl gave no Linger value', self.FIX)
 
     def test_loginctl_fails(self):
         self.change(linger=None)
