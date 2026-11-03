@@ -36,6 +36,8 @@ MISSING = 'pl-gate-missing'
 FORBIDDEN_URLS = ('https://example.com', 'https://github.com', 'https://registry.npmjs.org/', 'https://openrouter.ai',
                   'https://api.openai.com', 'https://pypi.org/simple/')
 HOST_PORTS = (5432, 6543)
+PROBE_HOST = 'registry.npmjs.org'  # test 5's own rule; blocked by default (FORBIDDEN_URLS): test 4 re-proves removal
+PROBE_URL = f'https://{PROBE_HOST}/'
 STAGE_ENV = backend.STAGE_ENV
 VM_MEMORY = backend.memory_dir(SANDBOX_A)
 STAGE_SETTINGS = backend.stage_settings(SANDBOX_A)
@@ -219,29 +221,33 @@ def test_3_coexistence(listeners_before):
     record(3, 'MemAvailable', 'INFO', f'{mem_available_gb():.1f} GB with sandboxes up')
 
 
-def test_5_rules(setup_hosts):
-    ok_before, detail_before = reachable(SANDBOX_A, 'https://registry.npmjs.org/')
+def test_5_rules():
+    ok_before, detail_before = reachable(SANDBOX_A, PROBE_URL)
     expect(5, 'npm blocked before allow', not ok_before, detail_before)
-    policy(5, 'allow', 'network', '--sandbox', SANDBOX_A, ','.join(setup_hosts))
-    ok_a, detail_a = reachable(SANDBOX_A, 'https://registry.npmjs.org/')
+    allowed = policy(5, 'allow', 'network', '--sandbox', SANDBOX_A, PROBE_HOST)
+    ok_a, detail_a = reachable(SANDBOX_A, PROBE_URL)
     expect(5, 'allow is live without restart', ok_a, detail_a)
-    ok_b, detail_b = reachable(SANDBOX_B, 'https://registry.npmjs.org/')
+    ok_b, detail_b = reachable(SANDBOX_B, PROBE_URL)
     expect(5, 'other sandbox still blocked', not ok_b, detail_b)
 
+    if allowed:
+        policy(5, 'rm', 'network', '--sandbox', SANDBOX_A, '--resource', PROBE_HOST)
 
-def test_4_setup_and_checks(config, setup_hosts, skip_checks):
-    for command in config['setup']:
-        result = sh(SANDBOX_A, command, timeout=1800)
+    ok_after, detail_after = reachable(SANDBOX_A, PROBE_URL)
+    expect(5, 'rule removed, live without restart', not ok_after, detail_after)
 
-        if not expect(4, f'setup: {command[:60]}', result.returncode == 0, tail(result.stderr or result.stdout, 8)):
-            log = run(['sbx', 'policy', 'log', SANDBOX_A, '--limit', '30'])
-            record(4, 'policy log', 'INFO', tail(log.stdout, 30))
-            break
 
-    for host in setup_hosts:
-        policy(4, 'rm', 'network', '--sandbox', SANDBOX_A, '--resource', host)
+def test_4_setup_and_checks(config, workspace, skip_checks):
+    """The runner's own setup path (backend.setup): setup hosts allowed only while setup runs, then sealed again."""
+    failures, seal = backend.setup(SANDBOX_A, workspace, config['setup'], config['setupEgress'],
+                                   lambda text: record(4, text.splitlines()[0], 'INFO'))
 
-    ok, detail = reachable(SANDBOX_A, 'https://registry.npmjs.org/')
+    if not expect(4, 'setup', not failures, tail('\n\n'.join(failures), 8)):
+        log = run(['sbx', 'policy', 'log', SANDBOX_A, '--limit', '30'])
+        record(4, 'policy log', 'INFO', tail(log.stdout, 30))
+
+    expect(4, 'setup egress sealed', not seal, tail('\n'.join(seal), 8))
+    ok, detail = reachable(SANDBOX_A, PROBE_URL)
     expect(4, 'setup egress removed', not ok, detail)
 
     if skip_checks:
@@ -494,7 +500,6 @@ def main():
     with open(os.path.join(repo, '.claude', 'pipeline.json')) as handle:
         config = json.load(handle)
 
-    setup_hosts = config['setupEgress']
     os.makedirs(WORK_ROOT, exist_ok=True)
     work = tempfile.mkdtemp(prefix='run-', dir=WORK_ROOT)
     clone = os.path.join(work, os.path.basename(repo))
@@ -522,7 +527,8 @@ def main():
         lock_egress(0, SANDBOX_A)
         lock_egress(0, SANDBOX_B)
         record(0, 'workspace', 'INFO', sh(SANDBOX_A, 'pwd; git log --oneline -1').stdout.strip().replace('\n', ' | '))
-        pointed = backend.configure_git(SANDBOX_A, sh(SANDBOX_A, 'pwd').stdout.strip(), 'pipeline-gate',
+        workspace = sh(SANDBOX_A, 'pwd').stdout.strip()
+        pointed = backend.configure_git(SANDBOX_A, workspace, 'pipeline-gate',
                                         'pipeline-gate@users.noreply.github.com')
         listed = sh(SANDBOX_A, 'git ls-remote origin HEAD')
         expect(0, 'origin re-pointed at the source mount, reachable (as the runner does)',
@@ -531,8 +537,8 @@ def main():
         copy_kit(SANDBOX_A, memory_dir)
         claude_ok = test_2_claude(sys.stdin.isatty())
         test_3_coexistence(listeners_before)
-        test_5_rules(setup_hosts)
-        test_4_setup_and_checks(config, setup_hosts, args.skip_checks)
+        test_5_rules()
+        test_4_setup_and_checks(config, workspace, args.skip_checks)
 
         if args.full and claude_ok:
             test_6_full()

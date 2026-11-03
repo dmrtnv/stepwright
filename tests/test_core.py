@@ -289,8 +289,13 @@ elif command == 'policy':
             if verb == 'allow' and os.environ.get('FAKE_POLICY_ALLOW_FAIL'):
                 fail('error: allow failed')
 
+            resources = [resource for resource in args[-1].split(',') if resource]
+
+            if not resources:
+                fail('ERROR: RESOURCES must contain at least one non-empty value')
+
             name = args[args.index('--sandbox') + 1]
-            meta[name]['rules'].append([verb, args[-1]])
+            meta[name]['rules'] += [[verb, resource] for resource in resources]
             save(meta)
         elif verb == 'rm':
             if os.environ.get('FAKE_POLICY_RM_FAIL'):
