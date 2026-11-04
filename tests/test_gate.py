@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ sys.path.insert(0, str(TESTS.parent))
 sys.path.insert(0, str(TESTS.parent / 'sandbox'))
 
 import backend  # noqa: E402
+import core  # noqa: E402
 import gate  # noqa: E402
 from test_core import FAKE_SBX, REAL_KIT, fixture_kit, relative_files  # noqa: E402
 
@@ -173,6 +175,29 @@ class GateEgressCase(unittest.TestCase):
         self.assertEqual(self.status('setup'), ['PASS'])
         self.assertEqual(self.status('setup egress sealed'), ['FAIL'])
 
+    def test_a_visible_host_path_fails_and_a_hidden_one_passes(self):
+        present = self.base / 'present'
+        present.write_text('secret')
+        gate.expect_hidden(8, {'present': str(present), 'absent': str(self.base / 'absent')})
+
+        self.assertEqual(self.status('present invisible'), ['FAIL'])
+        self.assertEqual(self.status('absent invisible'), ['PASS'])
+
+    def test_a_failed_exec_fails_every_hidden_probe(self):
+        meta = json.loads((self.root / 'meta.json').read_text())
+        del meta[gate.SANDBOX_A]
+        (self.root / 'meta.json').write_text(json.dumps(meta))
+        gate.expect_hidden(8, {'present': str(self.base), 'absent': str(self.base / 'absent')})
+
+        self.assertEqual(self.status('present invisible'), ['FAIL'])
+        self.assertEqual(self.status('absent invisible'), ['FAIL'])
+
+    def test_a_path_under_the_vm_home_is_not_checked(self):
+        gate.expect_hidden(8, {'vm home': f'{backend.HOME_TEMPLATE}/.ssh'})
+
+        self.assertEqual(self.status('vm home invisible'), ['INFO'])
+        self.assertEqual([call for call in self.calls() if call[:1] == ['exec']], [])
+
     def test_fake_sbx_rejects_an_empty_resource(self):
         result = subprocess.run(['sbx', 'policy', 'allow', 'network', '--sandbox', gate.SANDBOX_A, ''],
                                 capture_output=True, text=True, env=os.environ)
@@ -274,24 +299,59 @@ class KitCopyCase(unittest.TestCase):
         (self.home / '.claude/rules/__pycache__/a.pyc').write_text('bytecode')
         self.captured = self.base / 'captured'
         self.captured.mkdir()
+        self.checkout = self.base / 'checkout'
+        self.checkout.mkdir()
+        self.projects = self.home / '.claude/projects'
+        self.make_memory_code = 0
+        self.settings = ''
+        self.argvs = []
         self.results = []
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.object(gate, 'HOME', str(self.home)))
         stack.enter_context(mock.patch.object(gate, 'results', self.results))
         stack.enter_context(mock.patch.object(gate, 'run', self.fake_run))
+        stack.enter_context(mock.patch.object(core, 'PROJECTS', self.projects))
         stack.enter_context(mock.patch.multiple(backend, HOME=self.home, KIT=fixture_kit(self.base)))
         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
 
     def fake_run(self, argv, timeout=120, check=False, **kwargs):
+        self.argvs.append(argv)
+
         if argv[:3] == ['sbx', 'cp', '-L']:
             source = Path(argv[3])
             (shutil.copytree if source.is_dir() else shutil.copy)(source, self.captured / source.name)
 
+        script = argv[-1] if argv[:2] == ['sbx', 'exec'] else ''
+
+        if script == f'ls {gate.VM_MEMORY} | wc -l':
+            memory = self.captured / 'memory'
+            count = len(os.listdir(memory)) if memory.is_dir() else 0
+
+            return subprocess.CompletedProcess(argv, 0, f'{count}\n', '')
+
+        if script == f'rm -rf {gate.VM_MEMORY} && mkdir -p {gate.VM_MEMORY}':
+            return subprocess.CompletedProcess(argv, self.make_memory_code, '', '')
+
+        if script.startswith("cat > /home/agent/.claude/settings.json <<'EOF'\n"):
+            self.settings = script.split('\n')[1]
+
+        if script == 'cat /home/agent/.claude/settings.json':
+            return subprocess.CompletedProcess(argv, 0, self.settings, '')
+
         return subprocess.CompletedProcess(argv, 0, '', '')
 
+    def scripts(self):
+        return [argv[-1] for argv in self.argvs if argv[:2] == ['sbx', 'exec']]
+
+    def status(self, check):
+        return [result['status'] for result in self.results if result['check'] == check]
+
+    def failures(self):
+        return [result for result in self.results if result['status'] == 'FAIL']
+
     def test_the_gate_copies_the_runners_kit(self):
-        gate.copy_kit(gate.SANDBOX_A, None)
+        gate.copy_kit(gate.SANDBOX_A, self.checkout)
         skills = self.captured / 'skills'
         self.assertNotIn('pipeline-feature', {path.name for path in skills.iterdir()})
         self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
@@ -309,7 +369,7 @@ class KitCopyCase(unittest.TestCase):
 
     def test_the_gate_copies_no_rules_without_a_rules_dir(self):
         shutil.rmtree(self.home / '.claude/rules')
-        gate.copy_kit(gate.SANDBOX_A, None)
+        gate.copy_kit(gate.SANDBOX_A, self.checkout)
         checks = [result['check'] for result in self.results]
         self.assertEqual([check for check in checks if check.startswith('sbx cp rules')], [])
         self.assertFalse((self.captured / 'rules').exists())
@@ -317,6 +377,42 @@ class KitCopyCase(unittest.TestCase):
                   if result['check'].startswith('sbx cp ') and result['status'] == 'FAIL']
         self.assertEqual(failed, [])
 
+
+    def test_no_claude_md_is_info_and_not_copied(self):
+        (self.home / '.claude/CLAUDE.md').unlink()
+        gate.copy_kit(gate.SANDBOX_A, self.checkout)
+
+        self.assertEqual(self.status('CLAUDE.md'), ['INFO'])
+        self.assertNotIn('sbx cp CLAUDE.md', [result['check'] for result in self.results])
+        self.assertFalse((self.captured / 'CLAUDE.md').exists())
+        self.assertEqual(self.failures(), [])
+
+    def test_no_memory_dir_makes_an_empty_vm_memory_dir(self):
+        gate.copy_kit(gate.SANDBOX_A, self.checkout)
+
+        self.assertIn('rm -rf /home/agent/memory && mkdir -p /home/agent/memory', self.scripts())
+        self.assertEqual(self.status('repo memory'), ['INFO'])
+        self.assertEqual(self.failures(), [])
+
+    def test_a_failed_empty_memory_dir_fails(self):
+        self.make_memory_code = 1
+        gate.copy_kit(gate.SANDBOX_A, self.checkout)
+
+        self.assertEqual([result['check'] for result in self.failures()], ['make empty VM memory dir'])
+
+    def test_a_checkout_with_a_dot_and_an_underscore_finds_its_memory(self):
+        checkout = self.base / 'my.repo_x'
+        checkout.mkdir()
+        key = re.sub(r'[^A-Za-z0-9]', '-', str(self.base.resolve())) + '-my-repo-x'
+        memory = self.projects / key / 'memory'
+        memory.mkdir(parents=True)
+        (memory / 'MEMORY.md').write_text('- one\n')
+        (memory / 'one.md').write_text('one\n')
+        gate.copy_kit(gate.SANDBOX_A, checkout)
+
+        self.assertEqual(relative_files(self.captured / 'memory'), {'MEMORY.md', 'one.md'})
+        self.assertEqual(self.status('sbx cp repo memory'), ['PASS'])
+        self.assertEqual(self.failures(), [])
 
 if __name__ == '__main__':
     unittest.main()
