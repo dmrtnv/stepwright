@@ -5,10 +5,21 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
-**Rerun the gate:** no.
+## v0.7 - 2026-11-04
+
+**Rerun the gate:** yes (its kit test copies your ~/.claude/rules/).
+
+### Added
+
+- Stage VMs and the gate's sandbox get your `~/.claude/rules/`, with links followed and `__pycache__` left out. If
+  you delete your rules dir, the next run removes it from a reused VM too.
 
 ### Fixed
 
+- Stage VMs are created with `sbx create --skills off`. sbx's default mounted its shared skills store read-only over
+  the VM's skills dir, so every claude stage failed with "Device or resource busy". Your sbx must list `--skills` in
+  `sbx create --help`; if it does not, update the `docker-sbx` package. If a stage still fails that way, remove its
+  VM with `sbx rm --force <name>` and the runner creates a new one.
 - The kit's `plan-harden` standards state the values again (simplicity, DRY, YAGNI, a fully featured UX, verify
   every claim), so a stage has them without your `~/.claude/CLAUDE.md`. Your CLAUDE.md adds to them.
 - INSTALL's manual setup sets `vm.cpus` on a box with fewer than 12 threads at any RAM size, as `pipeline init` does.

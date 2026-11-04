@@ -287,6 +287,7 @@ def copy_kit(name, memory_dir):
         items = [os.path.join(HOME, '.claude', 'CLAUDE.md')]
         items += [str(backend.stage_kit_tree(item, directory)) for item in backend.KIT_ITEMS]
         items += [path for path in (str(backend.PIPELINE_DIR / 'system.md'),) if os.path.exists(path)]
+        items += [str(rules) for rules in (backend.stage_rules(directory),) if rules]  # only with a rules dir
 
         for item in items:
             result = run(['sbx', 'cp', '-L', item, f'{name}:/home/agent/.claude/'], timeout=300)
