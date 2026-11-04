@@ -190,8 +190,8 @@ class FreshTest(InitCase):
         self.assertEqual(len(warning), 1, '\n'.join(lines))
         self.assertIn('8 GiB of RAM and 4 CPU threads', warning[0])
         self.assertIn('at least 16 GiB and 8 threads', warning[0])
-        self.assertIn(f'sbx-host starts no VM while less than 10 GiB of RAM is free (floorGib in {self.host_config})',
-                      warning[0])
+        self.assertIn('By default sbx-host starts no VM while less than 10 GiB of RAM is free '
+                      f'(floorGib in {self.host_config})', warning[0])
         self.assertEqual(self.caps(self.units / 'sbx.service'), ['MemoryHigh=1G', 'MemoryMax=1G', 'CPUQuota=100%'])
         self.assertTrue(all(path.exists() for path in self.files()))
 
@@ -276,6 +276,15 @@ class RerunTest(InitCase):
         _, lines = self.init()
         self.assertIn('Your config keeps vm.memoryGb 8; this box would get 4.', lines)
         self.assertEqual(json.loads(self.host_config.read_text()), {'reserve': {'pl': 8704}})
+
+    def test_a_kept_sbx_host_config_is_named(self):
+        self.host_config.parent.mkdir(parents=True)
+        self.host_config.write_text('{"reserve": {"pl": 99999}, "floorGib": 2}')
+        code, lines = self.init()
+        self.assertEqual(code, 0, '\n'.join(lines))
+        self.assertEqual(self.host_config.read_text(), '{"reserve": {"pl": 99999}, "floorGib": 2}')
+        kept = [line for line in lines if line.startswith('Kept')]
+        self.assertEqual(kept, [f'Kept your {self.host_config}: its values are the ones to check, not the ones above.'])
 
     def test_an_unloadable_kept_config_falls_back_to_the_computed_vm(self):
         self.box(16, 8)

@@ -5133,9 +5133,9 @@ def command_init():
 
     if sizes['ramGb'] < INIT_MIN_RAM_GB or sizes['threads'] < INIT_MIN_THREADS:
         print(f"Warning: This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads; stepwright needs "
-              f'at least {INIT_MIN_RAM_GB} GiB and {INIT_MIN_THREADS} threads. sbx-host starts no VM while less than '
-              f"{sbx_host.DEFAULT_CONFIG['floorGib']} GiB of RAM is free (floorGib in {sbx_host.CONFIG}), and these "
-              f'caps may not fit a stage VM. Check both before you enable {units / SBX_UNIT}.')
+              f'at least {INIT_MIN_RAM_GB} GiB and {INIT_MIN_THREADS} threads. By default sbx-host starts no VM while '
+              f"less than {sbx_host.DEFAULT_CONFIG['floorGib']} GiB of RAM is free (floorGib in {sbx_host.CONFIG}), "
+              f'and these caps may not fit a stage VM. Check both before you enable {units / SBX_UNIT}.')
 
     results = [init_item(HOME / '.local/bin/pipeline', link=PIPELINE_DIR / 'pipeline'),
                init_item(HOME / '.local/bin/sbx-host', link=PIPELINE_DIR / 'sbx-host/sbx-host')]
@@ -5160,9 +5160,10 @@ def command_init():
         print(f"Your config keeps vm.memoryGb {memory_gb}; this box would get {sizes['memoryGb']}.")
 
     reserve = {'reserve': {'pl': memory_gb * 1024 + sbx_host.VM_OVERHEAD_MIB}}
-    results.append(init_item(sbx_host.CONFIG, content=json.dumps(reserve, indent=2) + '\n'))
+    host = init_item(sbx_host.CONFIG, content=json.dumps(reserve, indent=2) + '\n')
+    results.append(host)
 
-    for path, result in ((units / SBX_UNIT, unit), (adapter.CONFIG, config)):  # the two files the sizing goes into
+    for path, result in ((units / SBX_UNIT, unit), (adapter.CONFIG, config), (sbx_host.CONFIG, host)):  # sized files
         if result == 'skipped':
             print(f'Kept your {path}: its values are the ones to check, not the ones above.')
 
