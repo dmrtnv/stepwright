@@ -378,7 +378,6 @@ class KitCopyCase(unittest.TestCase):
                   if result['check'].startswith('sbx cp ') and result['status'] == 'FAIL']
         self.assertEqual(failed, [])
 
-
     def test_no_claude_md_is_info_and_not_copied(self):
         (self.home / '.claude/CLAUDE.md').unlink()
         gate.copy_kit(gate.SANDBOX_A, self.checkout)
@@ -414,6 +413,7 @@ class KitCopyCase(unittest.TestCase):
         self.assertEqual(relative_files(self.captured / 'memory'), {'MEMORY.md', 'one.md'})
         self.assertEqual(self.status('sbx cp repo memory'), ['PASS'])
         self.assertEqual(self.failures(), [])
+
 
 if __name__ == '__main__':
     unittest.main()

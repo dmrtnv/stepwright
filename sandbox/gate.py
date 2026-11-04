@@ -283,13 +283,14 @@ def test_4_setup_and_checks(config, workspace, skip_checks):
 def copy_kit(name, checkout):
     sh(name, 'mkdir -p /home/agent/.claude')
     claude_md = os.path.join(HOME, '.claude', 'CLAUDE.md')
+    has_claude_md = os.path.exists(claude_md)
 
-    if not os.path.exists(claude_md):
+    if not has_claude_md:
         record(6, 'CLAUDE.md', 'INFO', f'none at {claude_md}: stages run without your global instructions')
 
     with tempfile.TemporaryDirectory(prefix='gate-kit-') as directory:
         # the runner's own build (backend.stage_kit_tree), so this proves the kit that stages get
-        items = [claude_md] if os.path.exists(claude_md) else []
+        items = [claude_md] if has_claude_md else []
         items += [str(backend.stage_kit_tree(item, directory)) for item in backend.KIT_ITEMS]
         items += [path for path in (str(backend.PIPELINE_DIR / 'system.md'),) if os.path.exists(path)]
         items += [str(rules) for rules in (backend.stage_rules(directory),) if rules]  # only with a rules dir
