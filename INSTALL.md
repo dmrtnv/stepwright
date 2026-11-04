@@ -87,6 +87,8 @@ steps FAIL until you do those steps; each FAIL has a `fix:` line under it.
 
 **Check:** in `pipeline doctor`, the `unit sbx.service` and `linger` lines PASS; `sbx-host status` prints the memory
 budget.
+`sbx create --help` lists `--skills`. Stage VMs are created with `--skills off`, and an older sbx fails every create:
+update the `docker-sbx` package.
 
 ## 4. Create your GitHub App
 

@@ -37,6 +37,9 @@ pipeline template build                        # the target template (config.jso
 - Verified by gate 2026-09-30 (sbx 0.46.0): base must be `claude-code-docker` (label `start-docker=true`), else no
   dockerd; `sbx policy rm` needs `--force` without a TTY; rule changes apply live; a per-sandbox deny beats a kit allow.
 - The proxy accepts every TCP connect and then drops denied ones ⇒ test reachability by protocol reply, not connect.
+- sbx 0.51.0 (`sbx create --help` and a failed run, 2026-11-04): `create` mounts a shared skills store read-only over
+  the agent's `~/.claude/skills` by default (`--skills readonly`, or the `skills.defaultMode` setting), so removing
+  that dir fails with "Device or resource busy". The runner passes `--skills off` because it builds that dir itself.
 - Claude login is a global host-side sbx secret; the VM only holds `…proxy-managed` placeholders, and the proxy swaps
   any Anthropic key for yours. Kit writes `settings.json` with `bypassPermissions` ⇒ the runner replaces it.
 - Docker Hub layers come from `production.cloudfront.docker.com`; the auto-start banner goes to stderr.

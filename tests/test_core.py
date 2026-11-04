@@ -1373,6 +1373,12 @@ class RunnerTest(RunnerCase):
 
         self.assertFalse(rules.exists(), 'a rules dir the user deleted leaves the reused VM')
 
+    def test_stage_vms_are_created_without_the_shared_skills_store(self):
+        self.happy_path()
+        self.main(FEATURE, '--until', 'plan')
+        create = next(call for call in self.sbx_calls() if call[0] == 'create')
+        self.assertEqual(create[create.index('--skills') + 1], 'off')
+
     def test_a_plan_with_questions_waits_for_the_answer(self):
         self.happy_path(**{'thing-01-plan': [PLAN_ASKS]})
         self.assertEqual(self.main(FEATURE), 0)

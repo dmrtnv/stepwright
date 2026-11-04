@@ -253,7 +253,8 @@ def remove_template(tag):
 
 
 def create(name, tag, source=None, clone=False, *, cpus, memory_gb):
-    argv = ['create', '--name', name, '-t', tag, '--pull', 'never', '--cpus', str(cpus), '-m', f'{memory_gb}g']
+    argv = ['create', '--name', name, '-t', tag, '--pull', 'never', '--cpus', str(cpus), '-m', f'{memory_gb}g',
+            '--skills', 'off']  # sbx's default mounts a read-only store over ~/.claude/skills
 
     if clone:
         argv.append('--clone')
