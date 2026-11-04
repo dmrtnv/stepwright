@@ -80,7 +80,7 @@ Step by step: [INSTALL.md](INSTALL.md). Notes for later:
 
 **New repo**: install the App on it; rulesets: base branch requires a PR with 1 code-owner
 approval and the CI checks, non-admins may push only `agent/**`; `CODEOWNERS`; CI running on `pull_request` (drafts
-included); commit `.claude/pipeline.json` (template: `sandbox/pipeline.node-pnpm.json`); add
+included); commit `.claude/pipeline.json` (template: `examples/pipeline.node-pnpm.json`); add
 `"<owner>/<repo>": "<checkout>"` to `~/.config/pipeline/config.json`; `pipeline prove-app --repo …`, `pipeline prove-gate --repo …`.
 
 `pipeline.json` keys: `base`, `setup` (commands, run in the VM with only `setupEgress` reachable, then egress is

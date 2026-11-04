@@ -139,11 +139,13 @@ or job logs may still FAIL; step 6 fixes them.
 Do this in your checkout, then commit and push it to the default branch.
 
 1. **`.claude/pipeline.json`** tells the pipeline how to set up and check the repo. Start from a preset:
-   - `sandbox/pipeline.python.json` for Python;
-   - `sandbox/pipeline.node-pnpm.json` for a pnpm monorepo.
+   - `examples/pipeline.python.json` for Python;
+   - `examples/pipeline.node-pnpm.json` for pnpm.
 
    Adjust `setup` (install commands), `setupEgress` (hosts setup may reach), `checkFast` (the commands that must
-   pass) and `ci.requiredChecks` (your CI job names). The README lists every key.
+   pass) and `ci.requiredChecks` (your CI job names). The README lists every key. With drizzle-kit, add
+   `"migrations": {"dir": "<out>", "journal": "<out>/meta/_journal.json", "generate": "drizzle-generate.py"}`,
+   where `<out>` is your drizzle-kit `out` dir.
 2. **`.github/CODEOWNERS`** with one line, `* @<your-login>`, so every PR needs your approval.
 3. **A CI workflow** that runs on `pull_request`, with job names matching `ci.requiredChecks`.
 4. **`.gitignore`**: add `.claude/plans/`, where your feature briefs and plans live.

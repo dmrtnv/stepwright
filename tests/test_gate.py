@@ -247,7 +247,7 @@ class PreflightCase(unittest.TestCase):
         self.assertNotIn('create', [argv[1] for argv in self.argvs if argv[0] == 'sbx'])
 
     def test_a_recipe_the_runner_rejects_fails_preflight(self):
-        recipe = json.loads((TESTS.parent / 'sandbox' / 'pipeline.python.json').read_text())
+        recipe = json.loads((TESTS.parent / 'examples' / 'pipeline.python.json').read_text())
         del recipe['ci']
         self.write(json.dumps(recipe))
 
@@ -255,7 +255,7 @@ class PreflightCase(unittest.TestCase):
                          ([f'{self.repo} .claude/pipeline.json: missing key ci'], None))
 
     def test_a_valid_recipe_passes_preflight_validated(self):
-        preset = (TESTS.parent / 'sandbox' / 'pipeline.python.json').read_text()
+        preset = (TESTS.parent / 'examples' / 'pipeline.python.json').read_text()
         self.write(preset)
         problems, config = gate.preflight(self.repo, 'pipeline:1')
 
@@ -274,7 +274,8 @@ class PreflightCase(unittest.TestCase):
     def test_a_missing_recipe_still_names_the_presets(self):
         problems, config = gate.preflight(self.repo, 'pipeline:1')
 
-        self.assertEqual(problems, [f'{self.repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)'])
+        self.assertEqual(problems, [f'{self.repo} has no .claude/pipeline.json '
+                                    f'(presets: {backend.PIPELINE_DIR}/examples/pipeline.*.json)'])
         self.assertIsNone(config)
 
 

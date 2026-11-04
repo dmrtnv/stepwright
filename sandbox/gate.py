@@ -521,7 +521,7 @@ def preflight(repo, tag):
     config = None
 
     if not os.path.exists(recipe):
-        problems.append(f'{repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)')
+        problems.append(f'{repo} has no .claude/pipeline.json (presets: {backend.PIPELINE_DIR}/examples/pipeline.*.json)')
     else:
         try:
             with open(recipe, 'rb') as handle:
