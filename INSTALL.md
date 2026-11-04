@@ -58,8 +58,8 @@ stage VMs get them from there, so a stage runs the skills of the checked-out tag
 on the host too: for `/pipeline-feature` and your own sessions. If you already have a skill or agent with a kit
 name, init skips it, and `pipeline doctor` reports it as a FAIL until you replace it with the kit's link. Stage VMs
 always use the kit's either way.
-Stage VMs also get your `~/.claude/CLAUDE.md` and your other skills and agents. A skill or agent with a kit name is
-replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets out of them.
+Stage VMs also get your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and your other skills and agents. A skill
+or agent with a kit name is replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets out of them.
 
 **Check:** `pipeline help` lists the commands. If you get "command not found", add `~/.local/bin` to your `PATH`.
 Then run `pipeline doctor`: the `tool`, `kvm group`, `docker`, `runner` and `kit` lines PASS. The lines for later

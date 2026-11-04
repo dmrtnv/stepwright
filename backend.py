@@ -393,10 +393,21 @@ def stage_kit_tree(item, directory):
     return staged
 
 
+def stage_rules(directory):
+    """directory/rules: the user's ~/.claude/rules with links followed and __pycache__ left out; None without one."""
+    rules = HOME / '.claude/rules'
+
+    if not rules.is_dir():
+        return None
+
+    return Path(shutil.copytree(rules, Path(directory) / 'rules', ignore=shutil.ignore_patterns('__pycache__')))
+
+
 def copy_kit(name, memory_source=None):
-    """The kit, fresh on every run: skills and agents from the kit dir plus the user's own (a kit name wins), and the
-    user's CLAUDE.md; the repo's memory (read-only by convention, the stage's autoMemoryDirectory); the helpers
-    stages call; and the stage settings.json replacing the kit's."""
+    """The kit, fresh on every run: skills and agents from the kit dir plus the user's own (a kit name wins), the
+    user's CLAUDE.md and rules (a rules dir the user deleted leaves the VM too); the repo's memory (read-only by
+    convention, the stage's autoMemoryDirectory); the helpers stages call; and the stage settings.json replacing the
+    kit's."""
     claude = kit_dir(name)
 
     if (HOME / '.claude/CLAUDE.md').exists():
@@ -405,6 +416,16 @@ def copy_kit(name, memory_source=None):
     with tempfile.TemporaryDirectory(prefix='pipeline-kit-') as directory:
         for item in KIT_ITEMS:
             copy_in(name, stage_kit_tree(item, directory), claude)
+
+        rules = stage_rules(directory)
+
+        if rules:
+            copy_in(name, rules, claude)
+        else:
+            removed = sh(name, f'rm -rf {quote(claude + "/rules")}')
+
+            if removed.returncode != 0:
+                raise BackendError(f'{name}: removing {claude}/rules: {removed.stderr.strip()[-300:]}')
 
     for script in KIT_SCRIPTS:
         copy_in(name, PIPELINE_DIR / script, f'{claude}/pipeline')

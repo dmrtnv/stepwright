@@ -566,6 +566,25 @@ def relative_files(directory):
     return {str(path.relative_to(directory)) for path in Path(directory).rglob('*') if path.is_file()}
 
 
+def write_rules(base, rules_link):
+    """A ~/.claude/rules that is a link to a dotfiles dir holding a linked file, a linked dir and __pycache__.
+    Returns {relative path: content} of what a VM must get."""
+    base = Path(base)
+    dotfiles = base / 'dotfiles/rules'
+    write(dotfiles / 'code.md', '# code\n')
+    write(dotfiles / 'sub/typescript.md', '# typescript\n')
+    write(dotfiles / '__pycache__/a.pyc', 'bytecode')
+    write(base / 'outside/linked.md', '# linked\n')
+    write(base / 'outside/shared/x.md', '# x\n')
+    (dotfiles / 'linked.md').symlink_to(base / 'outside/linked.md')
+    (dotfiles / 'shared').symlink_to(base / 'outside/shared')
+    rules_link.parent.mkdir(parents=True, exist_ok=True)
+    rules_link.symlink_to(dotfiles)
+
+    return {'code.md': '# code\n', 'sub/typescript.md': '# typescript\n', 'linked.md': '# linked\n',
+            'shared/x.md': '# x\n'}
+
+
 def write(path, content, mode=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1321,6 +1340,38 @@ class RunnerTest(RunnerCase):
         self.assertEqual({path.name for path in (claude / 'skills').iterdir()}, kit_skills - {'pipeline-feature'})
         self.assertEqual({path.name for path in (claude / 'agents').iterdir()}, {'web-researcher.md'})
         self.assertFalse((claude / 'CLAUDE.md').exists())
+
+    def test_your_rules_reach_the_sandbox_fresh_each_run(self):
+        kit = fixture_kit(self.fixture.base)
+        rules_link = self.fixture.home / '.claude/rules'
+        expected = write_rules(self.fixture.base, rules_link)
+        self.happy_path()
+
+        with mock.patch.object(backend, 'KIT', kit):
+            self.main(FEATURE, '--until', 'plan')
+
+        home = self.fixture.sbx / SANDBOX / 'home'
+        rules = home / '.claude/rules'
+        self.assertEqual(relative_files(rules), set(expected))
+
+        for relative, content in expected.items():
+            self.assertEqual((rules / relative).read_text(), content, relative)
+
+        self.assertEqual([str(path) for path in rules.rglob('*') if path.is_symlink()], [])
+        self.assertEqual([str(path) for path in rules.rglob('__pycache__')], [])
+        self.assertFalse((rules / 'rules').exists(), 'the rules dir lands in .claude, not inside an old copy')
+        target = f'{SANDBOX}:{home}/.claude/'
+        copied = [call for call in self.sbx_calls() if call[:1] == ['cp'] and call[-1] == target
+                  and Path(call[-2]).name == 'rules']
+        self.assertEqual(len(copied), 1, 'one sbx cp of the rules dir')
+
+        rules_link.unlink()
+        core.KIT_COPIED.clear()  # a new tick is a new process
+
+        with mock.patch.object(backend, 'KIT', kit):
+            self.main(FEATURE, '--until', 'implement')
+
+        self.assertFalse(rules.exists(), 'a rules dir the user deleted leaves the reused VM')
 
     def test_a_plan_with_questions_waits_for_the_answer(self):
         self.happy_path(**{'thing-01-plan': [PLAN_ASKS]})
@@ -2392,6 +2443,52 @@ class RunnerTest(RunnerCase):
         self.assertIn('sbx.service not active', self.errors)
         self.assertEqual(self.sbx_calls(), [], 'no sbx call autostarts an uncapped daemon')
 
+
+
+class RulesStagingTest(unittest.TestCase):
+    """backend.stage_rules and the rules part of backend.copy_kit, without a sandbox."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='rules-test-'))
+        self.addCleanup(shutil.rmtree, self.base)
+        self.home = self.base / 'home'
+        (self.home / '.claude').mkdir(parents=True)
+        patcher = mock.patch.object(backend, 'HOME', self.home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_stage_rules_follows_links_and_leaves_out_pycache(self):
+        expected = write_rules(self.base, self.home / '.claude/rules')
+        staging = self.base / 'staging'
+        staging.mkdir()
+        staged = backend.stage_rules(staging)
+        self.assertEqual(staged, staging / 'rules')
+        self.assertEqual([str(path) for path in staged.rglob('*') if path.is_symlink()], [])
+        self.assertEqual([str(path) for path in staged.rglob('__pycache__')], [])
+        self.assertEqual(relative_files(staged), set(expected))
+
+        for relative, content in expected.items():
+            self.assertEqual((staged / relative).read_text(), content, relative)
+
+        (self.home / '.claude/rules').unlink()
+        self.assertIsNone(backend.stage_rules(self.base / 'none'), 'no rules dir')
+        write(self.home / '.claude/rules', 'not a dir\n')
+        self.assertIsNone(backend.stage_rules(self.base / 'file'), 'a file named rules counts as none')
+
+    def test_a_failed_rules_removal_stops_the_kit_copy(self):
+        def fake_sh(name, script, **kwargs):
+            if '.claude/rules' in script:
+                return subprocess.CompletedProcess(['bash'], 1, '', 'rm: cannot remove: Permission denied\n')
+
+            return subprocess.CompletedProcess(['bash'], 0, '', '')
+
+        with mock.patch.multiple(backend, copy_in=mock.DEFAULT, write_file=mock.DEFAULT, sh=fake_sh,
+                                 KIT=fixture_kit(self.base)):
+            with self.assertRaises(backend.BackendError) as raised:
+                backend.copy_kit('pl-x')
+
+        self.assertIn('rules', str(raised.exception))
+        self.assertIn('Permission denied', str(raised.exception))
 
 
 class TemplateTest(RunnerCase):

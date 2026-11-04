@@ -21,7 +21,7 @@ sys.path.insert(0, str(TESTS.parent / 'sandbox'))
 
 import backend  # noqa: E402
 import gate  # noqa: E402
-from test_core import FAKE_SBX, REAL_KIT, fixture_kit  # noqa: E402
+from test_core import FAKE_SBX, REAL_KIT, fixture_kit, relative_files  # noqa: E402
 
 # 200 when the calling sandbox holds an allow rule for the URL's host, else what a blocked sbx proxy gives curl.
 RULE_CURL = r'''#!/usr/bin/python3
@@ -267,6 +267,11 @@ class KitCopyCase(unittest.TestCase):
         (self.home / '.claude/agents').mkdir()
         (self.home / '.claude/agents/web-researcher.md').write_text('# stale\n')
         (self.home / '.claude/CLAUDE.md').write_text('# rules\n')
+        (self.home / '.claude/rules/sub').mkdir(parents=True)
+        (self.home / '.claude/rules/code.md').write_text('# code\n')
+        (self.home / '.claude/rules/sub/b.md').write_text('# b\n')
+        (self.home / '.claude/rules/__pycache__').mkdir()
+        (self.home / '.claude/rules/__pycache__/a.pyc').write_text('bytecode')
         self.captured = self.base / 'captured'
         self.captured.mkdir()
         self.results = []
@@ -296,7 +301,21 @@ class KitCopyCase(unittest.TestCase):
         self.assertEqual((self.captured / 'CLAUDE.md').read_text(), '# rules\n')
         copies = {result['check']: result['status'] for result in self.results if result['check'].startswith('sbx cp ')}
         self.assertEqual(copies, {'sbx cp CLAUDE.md': 'PASS', 'sbx cp skills': 'PASS', 'sbx cp agents': 'PASS',
-                                  'sbx cp system.md': 'PASS'})
+                                  'sbx cp system.md': 'PASS', 'sbx cp rules': 'PASS'})
+        rules = self.captured / 'rules'
+        self.assertEqual(relative_files(rules), {'code.md', 'sub/b.md'})
+        self.assertEqual((rules / 'code.md').read_text(), '# code\n')
+        self.assertEqual((rules / 'sub/b.md').read_text(), '# b\n')
+
+    def test_the_gate_copies_no_rules_without_a_rules_dir(self):
+        shutil.rmtree(self.home / '.claude/rules')
+        gate.copy_kit(gate.SANDBOX_A, None)
+        checks = [result['check'] for result in self.results]
+        self.assertEqual([check for check in checks if check.startswith('sbx cp rules')], [])
+        self.assertFalse((self.captured / 'rules').exists())
+        failed = [result['check'] for result in self.results
+                  if result['check'].startswith('sbx cp ') and result['status'] == 'FAIL']
+        self.assertEqual(failed, [])
 
 
 if __name__ == '__main__':
