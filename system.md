@@ -21,8 +21,7 @@ these win.
   line naming the file and the exact change, then carry on (not `blocked`); contact anyone. A classifier denial carries a reason: adapt, never
   route around it.
 - **Migrations**: follow the repo's rules (CLAUDE.md, its docs, memory). When the block below names a generator, use
-  it (`python3 ~/.claude/pipeline/drizzle-generate.py` with the plan's declared renames). Never edit a migration that
-  exists on the base branch.
+  it with the plan's declared renames. Never edit a migration that exists on the base branch.
 - **Checks**: run targeted tests while you work; the runner runs the repo's full checks after you (the block below
   lists them), then its git gates (clean tree, commits, no AI trailer or personal text in commit messages, protected
   files, migrations, weakened tests) and resumes you with any failure; it drops an AI attribution line from `pr.md`.

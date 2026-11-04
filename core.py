@@ -745,9 +745,14 @@ def json_at(context, revision, path):
     return parse_json(result.stdout) if result.returncode == 0 else {}
 
 
+def project_memory(checkout):
+    """A checkout's local memory: Claude keys projects by the resolved checkout path, each non-alphanumeric → -."""
+    return PROJECTS / re.sub(r'[^A-Za-z0-9]', '-', str(Path(checkout).resolve())) / 'memory'
+
+
 def memory_source(repo):
-    """The repo's local memory (the workflow overlay): Claude keys projects by the checkout path, / → -."""
-    return PROJECTS / re.sub(r'[^A-Za-z0-9]', '-', str(adapter.checkout(repo))) / 'memory'
+    """The repo's local memory (the workflow overlay)."""
+    return project_memory(adapter.checkout(repo))
 
 
 def sync_ref(state, context):

@@ -1,0 +1,17 @@
+{
+  "base": "main",
+  "setup": [
+    "pnpm install --frozen-lockfile --fetch-timeout=600000 --config.fetch-retries=3",
+    "if find node_modules/.pnpm -mindepth 3 -maxdepth 4 -xtype l | grep -q .; then pnpm install --frozen-lockfile --fetch-timeout=600000 --config.fetch-retries=3; fi",
+    "test -d node_modules/.pnpm && ! find node_modules/.pnpm -mindepth 3 -maxdepth 4 -xtype l | grep ."
+  ],
+  "setupEgress": ["registry.npmjs.org"],
+  "checkFast": [
+    {"name": "lint", "run": "pnpm lint"},
+    {"name": "test", "run": "pnpm test"}
+  ],
+  "protected": ["pnpm-workspace.yaml", ".npmrc", "pnpm-lock.yaml", ".pnpmfile.cjs", ".github/**", ".claude/**"],
+  "gateConfig": ["turbo.json", "vitest.config.*", "vitest.workspace.*", "playwright.config.*", "eslint.config.*", "tsconfig*.json", ".syncpackrc*", ".prettierrc*", ".prettierignore"],
+  "dependencyFields": ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "pnpm", "overrides", "resolutions", "packageManager", "engines"],
+  "ci": {"requiredChecks": ["lint", "test"]}
+}

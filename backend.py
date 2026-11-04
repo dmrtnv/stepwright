@@ -584,7 +584,7 @@ def configure_git(name, workdir, user, email):
     resets origin's URL to it: rewrite that URL to the source mount instead (an insteadOf survives the reset). The
     runner keeps the mount's base branch on origin's tip, so repo tools that ask origin see it too. The VM's
     ~/.gitconfig carries your git identity: a repo-local user.name/user.email (the App's bot) overrides it for every
-    agent commit and survives a restart too (pilot 2026-10-01)."""
+    agent commit and survives a restart too."""
     script = ('url=$(git config --get remote.origin.url) && git config "url.$0.insteadOf" "$url" && '
               'git config user.name "$1" && git config user.email "$2"')
 

@@ -7,7 +7,6 @@ deny-by-default. This folder holds the template and the gate that proves it; the
 |---|---|
 | `Dockerfile` + `build-template.sh` | template = `docker/sandbox-templates:claude-code-docker` (pinned digest) + host Node + host Claude Code or the given version (`build-template.sh [<x.y.z>]`); `docker image save` → `sbx template load`. The runner calls it (`config.json` `"template"`, `pipeline template build`); `pipeline template prune` removes old ones |
 | `gate.py` | tests 1–9 (9: the runner's real stage argv + `--resume`); imports `../backend.py` |
-| `pipeline.node-pnpm.json` | a `.claude/pipeline.json` preset for a pnpm/turbo monorepo with drizzle migrations (validated by `tests/test_adapter.py`) |
 
 ## Run order
 ```

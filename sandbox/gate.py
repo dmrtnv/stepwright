@@ -39,6 +39,7 @@ HOST_PORTS = (5432, 6543)
 PROBE_HOST = 'registry.npmjs.org'  # test 5's own rule; blocked by default (FORBIDDEN_URLS): test 4 re-proves removal
 PROBE_URL = f'https://{PROBE_HOST}/'
 STAGE_ENV = backend.STAGE_ENV
+MODEL = core.STAGES['plan']['model']
 VM_MEMORY = backend.memory_dir(SANDBOX_A)
 STAGE_SETTINGS = backend.stage_settings(SANDBOX_A)
 PLACEHOLDER = re.compile(r'proxy-?managed', re.I)  # sbx puts placeholders in the VM; its proxy injects the real token
@@ -130,8 +131,8 @@ def lock_egress(test, name):
 
 def claude_probe(name, prompt='Reply with OK only.', effort='low', budget='0.50', timeout=600):
     command = [
-        'claude', '-p', prompt, '--model', 'claude-opus-5-5', '--effort', effort,
-        '--fallback-model', 'claude-sonnet-5-5', '--max-budget-usd', budget,
+        'claude', '-p', prompt, '--model', MODEL, '--effort', effort,
+        '--fallback-model', core.FALLBACK_MODEL, '--max-budget-usd', budget,
         '--permission-mode', 'auto', '--permission-prompts', 'none', '--settings', STAGE_SETTINGS,
         '--output-format', 'stream-json', '--verbose',
     ]
@@ -157,7 +158,7 @@ def check_probe(test, probe, label):
     init, final = probe['init'], probe['result']
     expect(test, f'{label}: result success', probe['ok'],
            f'rc={probe["rc"]} {final.get("subtype")} {str(final.get("result"))[:120]!r} {tail(probe["stderr"], 3)}')
-    expect(test, f'{label}: init model claude-opus-5-5', init.get('model') == 'claude-opus-5-5', str(init.get('model')))
+    expect(test, f'{label}: init model {MODEL}', init.get('model') == MODEL, str(init.get('model')))
     expect(test, f'{label}: init permissionMode auto', init.get('permissionMode') == 'auto', str(init.get('permissionMode')))
     seven = ((probe['windows'] or {}).get('seven_day') or {}).get('utilization')
     expect(test, f'{label}: rate_limit_event unifiedWindows', seven is not None, f'windows={probe["windows"]}')
@@ -279,12 +280,17 @@ def test_4_setup_and_checks(config, workspace, skip_checks):
                tail(result.stdout + result.stderr, 12) if result.returncode else '')
 
 
-def copy_kit(name, memory_dir):
+def copy_kit(name, checkout):
     sh(name, 'mkdir -p /home/agent/.claude')
+    claude_md = os.path.join(HOME, '.claude', 'CLAUDE.md')
+    has_claude_md = os.path.exists(claude_md)
+
+    if not has_claude_md:
+        record(6, 'CLAUDE.md', 'INFO', f'none at {claude_md}: stages run without your global instructions')
 
     with tempfile.TemporaryDirectory(prefix='gate-kit-') as directory:
         # the runner's own build (backend.stage_kit_tree), so this proves the kit that stages get
-        items = [os.path.join(HOME, '.claude', 'CLAUDE.md')]
+        items = [claude_md] if has_claude_md else []
         items += [str(backend.stage_kit_tree(item, directory)) for item in backend.KIT_ITEMS]
         items += [path for path in (str(backend.PIPELINE_DIR / 'system.md'),) if os.path.exists(path)]
         items += [str(rules) for rules in (backend.stage_rules(directory),) if rules]  # only with a rules dir
@@ -293,14 +299,21 @@ def copy_kit(name, memory_dir):
             result = run(['sbx', 'cp', '-L', item, f'{name}:/home/agent/.claude/'], timeout=300)
             expect(6, f'sbx cp {os.path.basename(item)}', result.returncode == 0, tail(result.stderr, 3))
 
-    if memory_dir and os.path.isdir(memory_dir):
+    memory_dir = str(core.project_memory(checkout))
+
+    if os.path.isdir(memory_dir):
         # a directory lands inside an existing destination directory, so this makes VM_MEMORY
         result = run(['sbx', 'cp', '-L', memory_dir, f'{name}:{os.path.dirname(VM_MEMORY)}/'], timeout=300)
         count = sh(name, f'ls {VM_MEMORY} | wc -l').stdout.strip()
         expect(6, 'sbx cp repo memory', result.returncode == 0 and count == str(len(os.listdir(memory_dir))),
                f'{count} files in {VM_MEMORY} {tail(result.stderr, 3)}')
     else:
-        record(6, 'repo memory', 'FAIL', f'{memory_dir} absent')
+        made = sh(name, f'rm -rf {VM_MEMORY} && mkdir -p {VM_MEMORY}')
+
+        if made.returncode == 0:
+            record(6, 'repo memory', 'INFO', f'none at {memory_dir}: stages get an empty memory dir')
+        else:
+            record(6, 'make empty VM memory dir', 'FAIL', tail(made.stderr, 3))
 
     kit_settings = sh(name, 'cat /home/agent/.claude/settings.json').stdout
     record(6, 'kit settings.json (replaced)', 'INFO', ' '.join(kit_settings.split()))
@@ -318,7 +331,7 @@ def test_6_full():
     written = sh(SANDBOX_A, 'test -s /tmp/plans/01-probe/plan.md && echo yes').stdout.strip()
     expect(6, '/plan-harden wrote plan.md (foreground agents returned)', written == 'yes')
     usage = list((probe['result'].get('modelUsage') or {}).keys())
-    record(6, 'models used', 'INFO', f'{usage} (subagents should be claude-sonnet-5-5)')
+    record(6, 'models used', 'INFO', f'{usage} (subagents should be {STAGE_ENV["CLAUDE_CODE_SUBAGENT_MODEL"]})')
     expect(6, 'no Fable used', not any('fable' in model for model in usage), str(usage))
 
 
@@ -383,8 +396,8 @@ def test_8_exfil(repo):
     expect(8, 'no .env under /run/sandbox/source', not envs.stdout.strip(), envs.stdout.strip()[:200])
     write = sh(SANDBOX_A, 'touch /run/sandbox/source/pl-gate-probe')
     expect(8, '/run/sandbox/source read-only', write.returncode != 0)
-    host_checkout = sh(SANDBOX_A, f'ls {repo}/apps/api/.env {HOME}/.ssh {HOME}/.claude/.credentials.json 2>&1')
-    expect(8, 'host checkout, ~/.ssh, host credentials invisible', host_checkout.returncode != 0, tail(host_checkout.stdout, 3))
+    expect_hidden(8, {'host checkout': repo, '~/.ssh': f'{HOME}/.ssh',
+                      'host credentials': f'{HOME}/.claude/.credentials.json'})
     # Tokens in the VM must all be sbx placeholders (sk-ant-oat01-proxy-managed, gho_sbxproxymanaged000…).
     found = sh(SANDBOX_A, "{ env; cat /home/agent/.claude/.credentials.json /home/agent/.claude.json 2>/dev/null; } | "
                           "grep -oE '(sk-ant-[a-z0-9]+-[A-Za-z0-9_-]+|gh[opsu]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)' | sort -u")
@@ -393,12 +406,24 @@ def test_8_exfil(repo):
     expect(8, 'only placeholder tokens in VM', not real, f'placeholders {len(tokens) - len(real)}, real {real or "none"}')
     foreign = sh(SANDBOX_A, "curl -sS -m 20 https://api.anthropic.com/v1/messages -H 'x-api-key: sk-ant-api03-plgate-foreign' "
                             "-H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' "
-                            """-d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"x"}]}' """
+                            f"""-d '{{"model":"{core.USAGE_PROBE_MODEL}","max_tokens":1,"messages":[{{"role":"user","content":"x"}}]}}' """
                             "-w '\\nHTTP %{http_code}'", timeout=60)
     reached = 'invalid x-api-key' in foreign.stdout or 'authentication_error' in foreign.stdout
     expect(8, 'foreign Anthropic key does not reach the API', not reached, tail(foreign.stdout, 1)[-40:])
     record(8, 'Anthropic credential injection', 'INFO', 'the proxy swaps any key for yours: any VM process can spend your '
                                                         'plan, none can use a foreign account' if not reached else '')
+
+
+def expect_hidden(test, probes):
+    """Each host path must be absent in the VM, proven by the VM's own answer: a failed `sbx exec` prints nothing."""
+    for label, path in probes.items():
+        if path == backend.HOME_TEMPLATE or path.startswith(backend.HOME_TEMPLATE + '/'):
+            record(test, f'{label} invisible', 'INFO', f"{path}: same path as the VM's home: not checked")
+            continue
+
+        result = sbx_exec(SANDBOX_A, ['bash', '-c', 'test -e "$1" && echo visible || echo hidden', '_', path])
+        answer = result.stdout.strip()
+        expect(test, f'{label} invisible', answer == 'hidden', f'{path}: {answer or tail(result.stderr, 2)}')
 
 
 def stream(stdout):
@@ -497,7 +522,7 @@ def preflight(repo, tag):
     config = None
 
     if not os.path.exists(recipe):
-        problems.append(f'{repo} has no .claude/pipeline.json (presets: sandbox/pipeline.*.json)')
+        problems.append(f'{repo} has no .claude/pipeline.json (presets: {backend.PIPELINE_DIR}/examples/pipeline.*.json)')
     else:
         try:
             with open(recipe, 'rb') as handle:
@@ -535,7 +560,6 @@ def main():
         print(f'clean clone holds env files, refusing: {stray}', file=sys.stderr)
         return 2
 
-    memory_dir = os.path.join(HOME, '.claude', 'projects', repo.replace('/', '-'), 'memory')
     listeners_before = listening()
     print(f'gate: template {tag}, repo {repo} (clean clone {clone}), config {core.adapter.CONFIG}', flush=True)
 
@@ -559,7 +583,7 @@ def main():
         expect(0, 'origin re-pointed at the source mount, reachable (as the runner does)',
                pointed.returncode == 0 and listed.returncode == 0, tail(listed.stderr or pointed.stderr, 3))
         test_1_exit_codes()
-        copy_kit(SANDBOX_A, memory_dir)
+        copy_kit(SANDBOX_A, repo)
         claude_ok = test_2_claude(sys.stdin.isatty())
         test_3_coexistence(listeners_before)
         test_5_rules()

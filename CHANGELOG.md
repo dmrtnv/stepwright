@@ -5,6 +5,25 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** yes (its kit and exfil tests changed).
+
+### Changed
+
+- The `.claude/pipeline.json` presets moved from `sandbox/` to `examples/`.
+- The pnpm preset fits any pnpm repo: it installs, then runs `pnpm lint` and `pnpm test`. It no longer copies one
+  project's env files, pulls Docker images or runs that project's scripts. Drizzle users add the `migrations` line
+  INSTALL shows.
+- The Python preset skips the install when there is no `requirements.txt` and the tests when there is no `tests/`
+  dir. An empty `tests/` dir still fails.
+
+### Fixed
+
+- The gate runs without `~/.claude/CLAUDE.md` (an INFO line) and without repo memory (an INFO line and an empty
+  memory dir in the VM, as stages get).
+- The gate finds a checkout's memory when its path holds a `.` or `_`, as the runner does.
+- Gate test 8 checks the host checkout, `~/.ssh` and the host credentials one by one, and each needs the VM's own
+  answer. Before, one missing path passed all three.
+
 ## v0.7 - 2026-11-04
 
 **Rerun the gate:** yes (its kit test copies your ~/.claude/rules/).

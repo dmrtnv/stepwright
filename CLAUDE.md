@@ -3,7 +3,7 @@
 An unattended PR pipeline: the `pipeline` CLI runs each step of a feature (plan → implement → review → respond) in its
 own Docker Sandboxes (`sbx`) microVM, gates the result and opens a PR through a GitHub App. `sbx-host/` decides whether
 one more VM fits the box. `kit/` holds the stage skills users link into their Claude config, `systemd/` the unit
-templates, `examples/` the config and ruleset starters. See `README.md`, `INSTALL.md` and `sandbox/README.md`.
+templates, `examples/` the config, recipe and ruleset starters. See `README.md`, `INSTALL.md` and `sandbox/README.md`.
 
 ## Rules
 - Python ≥ 3.12, standard library only. No new dependency.

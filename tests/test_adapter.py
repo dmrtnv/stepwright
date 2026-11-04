@@ -259,13 +259,31 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(config['migrations']['dir'], 'packages/db/drizzle/')
 
     def test_the_node_pnpm_preset_is_valid(self):
-        draft = json.loads((Path(adapter.__file__).parent / 'sandbox/pipeline.node-pnpm.json').read_text())
+        draft = json.loads((Path(adapter.__file__).parent / 'examples/pipeline.node-pnpm.json').read_text())
         config = adapter.validate('acme/shop', draft)
-        self.assertIn('one-migration', [check['name'] for check in config['checkFast']])
+        self.assertEqual([check['name'] for check in config['checkFast']], ['lint', 'test'])
+        self.assertIsNone(config['migrations'])
 
     def test_the_python_preset_is_valid(self):
-        draft = json.loads((Path(adapter.__file__).parent / 'sandbox/pipeline.python.json').read_text())
+        draft = json.loads((Path(adapter.__file__).parent / 'examples/pipeline.python.json').read_text())
         self.assertEqual([check['name'] for check in adapter.validate('acme/shop', draft)['checkFast']], ['test'])
+
+    def run_python_preset(self, key, directory):
+        draft = json.loads((Path(adapter.__file__).parent / 'examples/pipeline.python.json').read_text())
+        commands = draft[key] if key == 'setup' else [check['run'] for check in draft[key]]
+
+        return [subprocess.run(['bash', '-c', command], cwd=directory, capture_output=True).returncode
+                for command in commands]
+
+    def test_the_python_preset_passes_in_an_empty_repo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.run_python_preset('setup', directory), [0])
+            self.assertEqual(self.run_python_preset('checkFast', directory), [0])
+
+    def test_the_python_preset_fails_on_an_empty_tests_dir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            os.mkdir(os.path.join(directory, 'tests'))
+            self.assertEqual(self.run_python_preset('checkFast', directory), [5])
 
 
 class GlobTest(unittest.TestCase):
