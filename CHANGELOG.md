@@ -5,15 +5,21 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
-**Rerun the gate:** yes (its preflight now validates the recipe, and its kit test copies the runner's kit).
+**Rerun the gate:** no.
+
+### Fixed
+
+- The kit's `plan-harden` standards state the values again (simplicity, DRY, YAGNI, a fully featured UX, verify
+  every claim), so a stage has them without your `~/.claude/CLAUDE.md`. Your CLAUDE.md adds to them.
+- INSTALL's manual setup sets `vm.cpus` on a box with fewer than 12 threads at any RAM size, as `pipeline init` does.
+- This changelog's headings match the tags.
+
+## v0.6 - 2026-11-04
+
+**Rerun the gate:** no.
 
 ### Added
 
-- This changelog. INSTALL's Update section points at it.
-- `pipeline doctor` checks the install without the network or `sbx`: tools on PATH, the kvm group, Docker, the
-  runner's tag, the kit links, `sbx.service` and linger, the App key, the config, the sbx-host reserve and the tick
-  units. It prints a PASS or FAIL line per check, a fix under each FAIL, and `N checks, K FAIL`; it exits 1 on any
-  FAIL. INSTALL's Check lines use it. A feature folder can no longer be named `doctor`.
 - `pipeline init` sets up an install: the `pipeline` and `sbx-host` links, a link per kit skill and agent, the three
   user units with `sbx.service`'s caps sized from `/proc/meminfo` and the CPU count, and the pipeline and sbx-host
   config skeletons with `vm`, `admission.slots` and `reserve.pl` sized to match. It never replaces an existing file
@@ -26,9 +32,43 @@ What changed for you in each release, newest first. Each release says whether to
   appendix. Update now reruns `pipeline init` to link kit entries a new tag adds.
 - `pipeline doctor`'s fixes name `pipeline init` for a missing unit or config and follow the new step numbers. Its
   `config` check fails while the config still holds the example's `app.id`, `app.slug`, `app.reviewer` or repo.
+
+## v0.5 - 2026-11-04
+
+**Rerun the gate:** no.
+
+### Added
+
+- `pipeline doctor` checks the install without the network or `sbx`: tools on PATH, the kvm group, Docker, the
+  runner's tag, the kit links, `sbx.service` and linger, the App key, the config, the sbx-host reserve and the tick
+  units. It prints a PASS or FAIL line per check, a fix under each FAIL, and `N checks, K FAIL`; it exits 1 on any
+  FAIL. INSTALL's Check lines use it. A feature folder can no longer be named `doctor`.
+
+### Fixed
+
+- A `config.json` or sbx-host `config.json` that is not a JSON object, or whose `app`, `admission` or `reserve` is
+  not an object, now gives a message naming the file instead of a traceback.
+
+## v0.4 - 2026-11-03
+
+**Rerun the gate:** yes (its kit test copies the runner's kit).
+
+### Changed
+
 - Stage VMs get the stage skills and agents from the runner's kit dir, so a stage runs the checked-out tag's skills.
   Your CLAUDE.md, skills and agents are still copied; one with a kit name is replaced whole. `pipeline-feature` is
   no longer copied into VMs.
+- `plan-harden` runs on every plan, including one that looks trivial. `plan-implement`'s pre-review step no longer
+  names a host path for the stage rules. `pipeline-feature` writes the folder from an approved plan-mode plan
+  without planning again, and checks its paths and line numbers against the default branch.
+
+## v0.3 - 2026-11-03
+
+**Rerun the gate:** yes (its preflight now validates the recipe).
+
+### Added
+
+- This changelog. INSTALL's Update section points at it.
 
 ### Fixed
 
@@ -41,13 +81,26 @@ What changed for you in each release, newest first. Each release says whether to
 - The "required checks queued" ping names `ci-runner status` only when a ci-runner unit exists.
 - INSTALL's gate check now reads "`gate.py` ends with `N checks, 0 FAIL`" instead of asking for PASS lines (the
   gate also prints INFO lines).
-- A `config.json` or sbx-host `config.json` that is not a JSON object, or whose `app`, `admission` or `reserve` is
-  not an object, now gives a message naming the file instead of a traceback.
 - README quotes the Claude Code legal page as it reads now: "Pro, Max, and Ultra plans".
 
 ## v0.2 - 2026-11-03
 
 **Rerun the gate:** yes.
+
+### Changed
+
+- The gate runs setup through the runner's own setup and adds a `setup egress sealed` check.
+
+### Fixed
+
+- The gate passes on a repo with an empty `setupEgress`.
+
+## v0.1 - 2026-11-03
+
+**Run the gate:** yes.
+
+First release: the `pipeline` runner, sbx-host, the stage kit, systemd unit templates, the step-by-step
+[INSTALL.md](INSTALL.md) and an MIT licence. If you ran the untagged 2026-10-20 snapshot, these changed since:
 
 ### Changed
 
@@ -57,7 +110,6 @@ What changed for you in each release, newest first. Each release says whether to
   and keeps its reserve until the run ends; tick starts only as many stages as sbx-host has room for.
 - Publishing rebases the step first when main changed a workflow file.
 - The respond gate checks `pr.md` with the PR-text checker from the kit dir.
-- The gate runs setup through the runner's own setup and adds a `setup egress sealed` check.
 
 ### Added
 
@@ -67,14 +119,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ### Fixed
 
-- The gate passes on a repo with an empty `setupEgress`.
 - The gate prints its config path instead of failing on an undefined name.
 
 ### Removed
 
 - `admission.minMemoryGb`: now a config error. Set `floorGib` in the sbx-host config instead.
-
-## v0.1 - 2026-10-20
-
-First release: the `pipeline` runner, sbx-host, the stage kit, systemd unit templates, the step-by-step
-[INSTALL.md](INSTALL.md) and an MIT licence.
