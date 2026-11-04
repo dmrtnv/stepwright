@@ -5054,14 +5054,18 @@ def render_sbx_unit(sizes):
     return text
 
 
-def render_pipeline_config(sizes):
+def example_config():
+    """examples/config.example.json, parsed; PipelineError when it is missing or not JSON."""
     example = PIPELINE_DIR / 'examples/config.example.json'
 
     try:
-        config = json.loads(example.read_text())
+        return json.loads(example.read_text())
     except (OSError, ValueError) as error:
         raise PipelineError(f'{example}: unreadable ({error})') from None
 
+
+def render_pipeline_config(sizes):
+    config = example_config()
     config['admission'] = {'slots': sizes['slots']}
     config['vm'] = {'cpus': sizes['cpus'], 'memoryGb': sizes['memoryGb']}
 
@@ -5070,38 +5074,41 @@ def render_pipeline_config(sizes):
 
 def init_item(path, link=None, content=None):
     """Create path as a link to `link` or a file holding `content`, never replacing anything: open(..., 'x') and
-    symlink refuse an existing path (a dangling link included), so there is no check-then-write race. Prints one line;
-    False when it failed. A write error removes the file this call created, so a rerun is not stuck on a stub."""
+    symlink refuse an existing path (a dangling link included), so there is no check-then-write race. Prints one line
+    and returns its first word: linked, wrote, skipped or failed. A write error removes the file this call created, so
+    a rerun is not stuck on a stub."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:  # FileExistsError here is a file where a directory should be: a failure, not "exists"
         print(f'failed   {path}: cannot create {error.filename or path.parent} ({error.strerror or error})')
-        return False
+        return 'failed'
 
     try:
         if link is not None:
             os.symlink(link, path)
             print(f'linked   {path} -> {link}')
-            return True
+            return 'linked'
 
         handle = open(path, 'x')
     except FileExistsError:
         print(f'skipped  {path} (exists)')
-        return True
+        return 'skipped'
     except OSError as error:
         print(f'failed   {path}: {error.strerror or error}')
-        return False
+        return 'failed'
 
     try:
         with handle:
             handle.write(content)
     except OSError as error:
-        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):  # a stub left behind still fails this item, and the rest go on
+            path.unlink(missing_ok=True)
+
         print(f'failed   {path}: {error.strerror or error}')
-        return False
+        return 'failed'
 
     print(f'wrote    {path}')
-    return True
+    return 'wrote'
 
 
 def command_init():
@@ -5119,15 +5126,16 @@ def command_init():
         except OSError as error:
             raise PipelineError(f"{PIPELINE_DIR / 'systemd' / name}: unreadable ({error.strerror})") from None
 
-    print(f"This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads. Stage VMs get "
+    print(f"This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads. For it: stage VMs get "
           f"{sizes['cpus']} CPUs and {sizes['memoryGb']} GiB each; {SBX_UNIT} gets MemoryMax={sizes['memoryMax']}G, "
           f"MemoryHigh={sizes['memoryHigh']}G and CPUQuota={sizes['cpuQuota']}%; admission.slots is {sizes['slots']} "
           f"and reserve.pl {sizes['pl']} MiB.")
 
     if sizes['ramGb'] < INIT_MIN_RAM_GB or sizes['threads'] < INIT_MIN_THREADS:
         print(f"Warning: This box has {sizes['ramGb']} GiB of RAM and {sizes['threads']} CPU threads; stepwright needs "
-              f'at least {INIT_MIN_RAM_GB} GiB and {INIT_MIN_THREADS} threads. These caps may not fit a stage VM: '
-              f'check them in {units / SBX_UNIT} before you enable it.')
+              f'at least {INIT_MIN_RAM_GB} GiB and {INIT_MIN_THREADS} threads. sbx-host starts no VM while less than '
+              f"{sbx_host.DEFAULT_CONFIG['floorGib']} GiB of RAM is free (floorGib in {sbx_host.CONFIG}), and these "
+              f'caps may not fit a stage VM. Check both before you enable {units / SBX_UNIT}.')
 
     results = [init_item(HOME / '.local/bin/pipeline', link=PIPELINE_DIR / 'pipeline'),
                init_item(HOME / '.local/bin/sbx-host', link=PIPELINE_DIR / 'sbx-host/sbx-host')]
@@ -5137,10 +5145,10 @@ def command_init():
             if entry.name != '__pycache__':
                 results.append(init_item(HOME / '.claude' / item / entry.name, link=entry))
 
-    for name in (SBX_UNIT, TICK_UNIT, TICK_TIMER):
-        results.append(init_item(units / name, content=contents[name]))
-
-    results.append(init_item(adapter.CONFIG, content=contents[adapter.CONFIG]))
+    unit = init_item(units / SBX_UNIT, content=contents[SBX_UNIT])
+    results += [unit, *(init_item(units / name, content=contents[name]) for name in (TICK_UNIT, TICK_TIMER))]
+    config = init_item(adapter.CONFIG, content=contents[adapter.CONFIG])
+    results.append(config)
 
     # reserve.pl follows the VM size the runner will use: a kept config's, else this box's.
     try:
@@ -5154,6 +5162,10 @@ def command_init():
     reserve = {'reserve': {'pl': memory_gb * 1024 + sbx_host.VM_OVERHEAD_MIB}}
     results.append(init_item(sbx_host.CONFIG, content=json.dumps(reserve, indent=2) + '\n'))
 
+    for path, result in ((units / SBX_UNIT, unit), (adapter.CONFIG, config)):  # the two files the sizing goes into
+        if result == 'skipped':
+            print(f'Kept your {path}: its values are the ones to check, not the ones above.')
+
     print(f'\nNext (INSTALL step 3 on):\n'
           f'  systemctl --user daemon-reload\n'
           f'  systemctl --user enable --now {SBX_UNIT}\n'
@@ -5163,7 +5175,7 @@ def command_init():
           f'then create your GitHub App (step 4), fill app.id, app.slug, app.reviewer and repos in {adapter.CONFIG} '
           f'(step 5), and run pipeline doctor.')
 
-    return 0 if all(results) else 1
+    return 1 if 'failed' in results else 0
 
 
 # ---------------------------------------------------------------------------------------------- doctor
@@ -5342,14 +5354,12 @@ def example_placeholders(config):
     """The example config's placeholders that config still holds (the skeleton `pipeline init` writes loads, so
     load_config can't tell). privateKey is a real default path, not a placeholder. No example, no check."""
     try:
-        example = json.loads((PIPELINE_DIR / 'examples/config.example.json').read_text())
+        example = example_config()
         app, repos = example['app'], example['repos']
-    except (OSError, ValueError, KeyError, TypeError):
+        kept = [f'app.{key}' for key in ('id', 'slug', 'reviewer') if key in app and config['app'].get(key) == app[key]]
+        return kept + [f'repos {name}' for name in repos if name in config['repos']]
+    except (PipelineError, KeyError, TypeError):
         return []
-
-    kept = [f'app.{key}' for key in ('id', 'slug', 'reviewer') if key in app and config['app'].get(key) == app[key]]
-
-    return kept + [f'repos {name}' for name in repos if name in config['repos']]
 
 
 def doctor_config(loaded):

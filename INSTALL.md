@@ -7,7 +7,9 @@ About an hour, most of it waiting for downloads. Each step ends with a **Check**
 - **Ubuntu 24.04 or newer** (x86_64) with systemd, and hardware virtualization (`/dev/kvm` exists). Tested on
   Ubuntu 26.04.
 - **≥ 24 GiB RAM and ≥ 8 CPU threads.** Each stage runs in a VM with 8 GiB and 6 CPUs by default (`vm` in the config).
-  With less RAM, `pipeline init` gives each stage VM 4 GiB instead of 8, and under 16 GiB it warns.
+  With less RAM, `pipeline init` gives each stage VM 4 GiB instead of 8, and under 16 GiB it warns. sbx-host starts
+  no VM while less than 10 GiB of RAM is free (`floorGib` in `~/.config/sbx-host/config.json`), so a 16 GiB box
+  needs most of its RAM free when a stage starts.
 - **Claude Code** (`claude`) signed in with your own Claude subscription. Max is recommended: stages are long.
 - **A Docker account** (free) for Docker Sandboxes.
 - **A GitHub account** and a repo you want the pipeline to work on.
@@ -65,8 +67,9 @@ steps FAIL until you do those steps; each FAIL has a `fix:` line under it.
 
 ## 3. Start the sandbox daemon
 
-1. Review the caps init printed (`MemoryHigh`, `MemoryMax` and `CPUQuota` in `~/.config/systemd/user/sbx.service`).
-   The comments in the unit explain them.
+1. Review the caps in `~/.config/systemd/user/sbx.service` (`MemoryHigh`, `MemoryMax` and `CPUQuota`). The comments
+   in the unit explain them. If init kept a unit you already had, it says so: that unit's caps are the ones that
+   apply.
 2. Enable it, and let your units run while you are logged out:
 
    ```bash

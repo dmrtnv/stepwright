@@ -524,6 +524,11 @@ class ConfigTest(DoctorCase):
         self.assertFail('config', f"{self.pipeline_config}: still has the example's app.reviewer",
                         f'edit {self.pipeline_config} (INSTALL step 5)')
 
+    def test_a_malformed_example_skips_the_placeholder_check(self):
+        (self.runner / 'examples/config.example.json').write_text(json.dumps({'app': 1, 'repos': 2}))
+        self.pipeline_config.write_text(EXAMPLE.read_text())
+        self.assertPass('config', str(self.pipeline_config))
+
     def test_an_unreadable_example_skips_the_placeholder_check(self):
         (self.runner / 'examples/config.example.json').unlink()
         self.pipeline_config.write_text(EXAMPLE.read_text())

@@ -190,12 +190,15 @@ class FreshTest(InitCase):
         self.assertEqual(len(warning), 1, '\n'.join(lines))
         self.assertIn('8 GiB of RAM and 4 CPU threads', warning[0])
         self.assertIn('at least 16 GiB and 8 threads', warning[0])
+        self.assertIn(f'sbx-host starts no VM while less than 10 GiB of RAM is free (floorGib in {self.host_config})',
+                      warning[0])
         self.assertEqual(self.caps(self.units / 'sbx.service'), ['MemoryHigh=1G', 'MemoryMax=1G', 'CPUQuota=100%'])
         self.assertTrue(all(path.exists() for path in self.files()))
 
     def test_prints_the_sizing_and_the_next_commands_and_runs_none(self):
         _, lines = self.init()
         self.assertIn('32 GiB of RAM and 16 CPU threads', lines[0])
+        self.assertFalse(any(line.startswith('Kept') for line in lines), '\n'.join(lines))
         next_block = lines[lines.index('Next (INSTALL step 3 on):'):]
         self.assertEqual(next_block[1:6], ['  systemctl --user daemon-reload',
                                            '  systemctl --user enable --now sbx.service',
@@ -249,6 +252,9 @@ class RerunTest(InitCase):
             self.assertIn(f'skipped  {path} (exists)', lines)
 
         self.assertTrue((skills / 'pr-text').is_symlink())
+        kept = [line for line in lines if line.startswith('Kept')]
+        self.assertEqual(kept, [f'Kept your {unit}: its values are the ones to check, not the ones above.'])
+        self.assertTrue(lines[0].startswith('This box has 32 GiB of RAM and 16 CPU threads. For it:'), lines[0])
 
     def test_a_kept_config_sizes_the_reserve(self):
         self.pipeline_config.parent.mkdir(parents=True)
@@ -259,6 +265,8 @@ class RerunTest(InitCase):
         self.assertEqual(code, 0, '\n'.join(lines))
         self.assertEqual(json.loads(self.host_config.read_text()), {'reserve': {'pl': 10752}})
         self.assertIn('Your config keeps vm.memoryGb 10; this box would get 8.', lines)
+        self.assertIn(f'Kept your {self.pipeline_config}: its values are the ones to check, not the ones above.',
+                      lines)
 
     def test_a_kept_config_without_vm_on_a_16_gib_box(self):
         self.box(16, 8)
@@ -321,6 +329,35 @@ class FailureTest(InitCase):
         self.assertFalse(os.path.lexists(target))
         self.assertIn(f'failed   {target}: {os.strerror(errno.ENOSPC)}', lines)
         self.assertTrue((self.units / 'pipeline-tick.service').exists())
+
+    def test_a_failed_cleanup_still_reports_the_item_and_the_rest_go_on(self):
+        target = self.units / 'pipeline-tick.service'
+        real_open, real_unlink = open, Path.unlink
+
+        def fake_open(path, *arguments, **options):
+            handle = real_open(path, *arguments, **options)
+
+            if Path(path) == target:
+                handle.close()
+                handle = real_open(path)  # read-only: write() raises
+
+            return handle
+
+        def fake_unlink(path, *arguments, **options):
+            if path == target:
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+
+            return real_unlink(path, *arguments, **options)
+
+        with mock.patch.object(core, 'open', fake_open, create=True), mock.patch.object(Path, 'unlink', fake_unlink):
+            code, lines = self.init()
+
+        self.assertEqual(code, 1, '\n'.join(lines))
+        failed = [line for line in lines if line.startswith('failed')]
+        self.assertEqual(len(failed), 1, '\n'.join(lines))
+        self.assertTrue(failed[0].startswith(f'failed   {target}: '), failed[0])
+        self.assertTrue((self.units / 'pipeline-tick.timer').exists())
+        self.assertTrue(self.host_config.exists())
 
     def test_a_drifted_template_fails_loudly_and_writes_no_unit(self):
         runner = self.base / 'runner'
