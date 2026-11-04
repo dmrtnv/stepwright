@@ -219,9 +219,10 @@ rounded up to a whole GiB, and threads is `nproc`:
 - `MemoryHigh` = `MemoryMax` − 3 GiB.
 - `CPUQuota` = (threads − 4) × 100 %, for example 1200% with 16 threads.
 
-Under 24 GiB of RAM, set `"vm": {"cpus": 4, "memoryGb": 4}` in the config (`cpus` is half the threads, at most 6),
-and `{"reserve": {"pl": 4608}}` in `~/.config/sbx-host/config.json` (the VM's MiB plus 512). `admission.slots` is
-`MemoryHigh` in MiB divided by `reserve.pl`, at least 1.
+With fewer than 12 threads, set `vm.cpus` in the config to half the threads, for example `"vm": {"cpus": 4}` with 8
+threads (the default is 6). Under 24 GiB of RAM, also set `vm.memoryGb` to 4, and `{"reserve": {"pl": 4608}}` in
+`~/.config/sbx-host/config.json` (the VM's MiB plus 512). `admission.slots` is `MemoryHigh` in MiB divided by
+`reserve.pl`, at least 1.
 
 ## Uninstall
 
