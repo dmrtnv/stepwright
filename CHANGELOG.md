@@ -14,9 +14,18 @@ What changed for you in each release, newest first. Each release says whether to
   runner's tag, the kit links, `sbx.service` and linger, the App key, the config, the sbx-host reserve and the tick
   units. It prints a PASS or FAIL line per check, a fix under each FAIL, and `N checks, K FAIL`; it exits 1 on any
   FAIL. INSTALL's Check lines use it. A feature folder can no longer be named `doctor`.
+- `pipeline init` sets up an install: the `pipeline` and `sbx-host` links, a link per kit skill and agent, the three
+  user units with `sbx.service`'s caps sized from `/proc/meminfo` and the CPU count, and the pipeline and sbx-host
+  config skeletons with `vm`, `admission.slots` and `reserve.pl` sized to match. It never replaces an existing file
+  or link and never enables or starts a unit; it prints the next commands. Under 24 GiB of RAM it gives each stage
+  VM 4 GiB, and under 16 GiB or 8 threads it warns. A feature folder can no longer be named `init`.
 
 ### Changed
 
+- INSTALL uses `pipeline init` for its setup steps, which are now 9 instead of 10; the manual commands moved to an
+  appendix. Update now reruns `pipeline init` to link kit entries a new tag adds.
+- `pipeline doctor`'s fixes name `pipeline init` for a missing unit or config and follow the new step numbers. Its
+  `config` check fails while the config still holds the example's `app.id`, `app.slug`, `app.reviewer` or repo.
 - Stage VMs get the stage skills and agents from the runner's kit dir, so a stage runs the checked-out tag's skills.
   Your CLAUDE.md, skills and agents are still copied; one with a kit name is replaced whole. `pipeline-feature` is
   no longer copied into VMs.

@@ -27,6 +27,7 @@ from backend import sbx_host  # noqa: E402
 from test_core import fixture_kit  # noqa: E402
 
 REAL_GIT = shutil.which('git')
+EXAMPLE = TESTS.parent / 'examples/config.example.json'
 # Each fake answers from state.json beside its bin dir; sbx only records that it was called.
 FAKES = {
     'systemctl': r'''
@@ -113,6 +114,8 @@ class DoctorCase(unittest.TestCase):
         git(self.runner, 'init', '-q', '-b', 'main')
         git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'one')
         git(self.runner, 'tag', 'v0.1.0')
+        (self.runner / 'examples').mkdir()
+        shutil.copy(EXAMPLE, self.runner / 'examples')
 
         for item in backend.KIT_ITEMS:
             (self.home / '.claude' / item).mkdir(parents=True)
@@ -381,10 +384,8 @@ class UnitsTest(DoctorCase):
             self.enabled(**{'sbx.service': state})
             self.change(active=False)
             self.assertFail('unit sbx.service', 'not installed, inactive',
-                            f'mkdir -p ~/.config/systemd/user && cp {self.runner}/systemd/sbx.service '
-                            '~/.config/systemd/user/, set MemoryHigh, MemoryMax and CPUQuota in it to fit this box, '
-                            'then systemctl --user daemon-reload && systemctl --user enable --now sbx.service '
-                            '(INSTALL step 4)')
+                            f'{self.runner}/pipeline init, then systemctl --user daemon-reload && '
+                            'systemctl --user enable --now sbx.service (INSTALL step 3)')
 
     def test_no_user_manager_is_not_read_as_not_installed(self):
         for answer in (self.NO_BUS, *self.NO_SOCKET):
@@ -415,8 +416,7 @@ class UnitsTest(DoctorCase):
         for state in ('not-found', '', self.NO_FILE):
             self.enabled(**{'pipeline-tick.service': state})
             self.assertFail('unit pipeline-tick.service', 'not installed',
-                            f'cp {self.runner}/systemd/pipeline-tick.service ~/.config/systemd/user/, then '
-                            'systemctl --user daemon-reload (INSTALL step 9)')
+                            f'{self.runner}/pipeline init, then systemctl --user daemon-reload (INSTALL step 8)')
 
     def test_timer_enabled(self):
         self.assertPass('unit pipeline-tick.timer', 'enabled')
@@ -428,12 +428,12 @@ class UnitsTest(DoctorCase):
     def test_timer_not_found(self):
         self.enabled(**{'pipeline-tick.timer': 'not-found'})
         self.assertFail('unit pipeline-tick.timer', 'not installed',
-                        f'cp {self.runner}/systemd/pipeline-tick.timer ~/.config/systemd/user/, then systemctl --user '
-                        'daemon-reload && systemctl --user enable --now pipeline-tick.timer (INSTALL step 9)')
+                        f'{self.runner}/pipeline init, then systemctl --user daemon-reload && '
+                        'systemctl --user enable --now pipeline-tick.timer (INSTALL step 8)')
 
 
 class LingerTest(DoctorCase):
-    FIX = 'loginctl enable-linger "$USER" (INSTALL step 4)'
+    FIX = 'loginctl enable-linger "$USER" (INSTALL step 3)'
 
     def test_on(self):
         self.assertPass('linger', 'on')
@@ -468,7 +468,7 @@ class AppKeyTest(DoctorCase):
         line, after = self.check('app key')
         self.assertTrue(line.startswith(f'FAIL  app key: the GitHub App key {self.key} is missing'), line)
         self.assertEqual(after, f'      fix: generate a private key in the App settings and save it as {self.key} '
-                                '(INSTALL step 5)')
+                                '(INSTALL step 4)')
 
     def test_the_configured_key_is_checked(self):
         other = self.base / 'keys/other.pem'
@@ -492,25 +492,47 @@ class ConfigTest(DoctorCase):
         self.pipeline_config.unlink()
         self.assertFail('config', f'no {self.pipeline_config}: it names the GitHub App and the repos the pipeline '
                                   'serves',
-                        f'cp {self.runner}/examples/config.example.json {self.pipeline_config}, then edit it '
-                        '(INSTALL step 6)')
+                        f'{self.runner}/pipeline init, then edit {self.pipeline_config} (INSTALL step 5)')
 
     def test_not_json(self):
         self.pipeline_config.write_text('{')
         line, after = self.check('config')
         self.assertTrue(line.startswith(f'FAIL  config: {self.pipeline_config}: not JSON'), line)
-        self.assertEqual(after, f'      fix: edit {self.pipeline_config} (INSTALL step 6)')
+        self.assertEqual(after, f'      fix: edit {self.pipeline_config} (INSTALL step 5)')
 
     def test_a_missing_key(self):
         self.pipeline_config.write_text(json.dumps({'app': {'id': 1}, 'repos': {}}))
         self.assertFail('config', f'{self.pipeline_config} lacks app.slug, app.privateKey, app.reviewer, repos',
-                        f'edit {self.pipeline_config} (INSTALL step 6)')
+                        f'edit {self.pipeline_config} (INSTALL step 5)')
 
 
     def test_not_an_object(self):
         self.pipeline_config.write_text('[]')
         self.assertFail('config', f'{self.pipeline_config}: not a JSON object',
-                        f'edit {self.pipeline_config} (INSTALL step 6)')
+                        f'edit {self.pipeline_config} (INSTALL step 5)')
+
+
+    def test_example_placeholders(self):
+        self.pipeline_config.write_text(EXAMPLE.read_text())
+        self.assertFail('config', f"{self.pipeline_config}: still has the example's app.id, app.slug, app.reviewer, "
+                                  'repos your-github-login/your-repo',
+                        f'edit {self.pipeline_config} (INSTALL step 5)')
+
+    def test_one_placeholder_left(self):
+        example = json.loads(EXAMPLE.read_text())
+        self.config({'app': dict(example['app'], id=1, slug='acme-pipeline', privateKey=str(self.key))})
+        self.assertFail('config', f"{self.pipeline_config}: still has the example's app.reviewer",
+                        f'edit {self.pipeline_config} (INSTALL step 5)')
+
+    def test_a_malformed_example_skips_the_placeholder_check(self):
+        (self.runner / 'examples/config.example.json').write_text(json.dumps({'app': 1, 'repos': 2}))
+        self.pipeline_config.write_text(EXAMPLE.read_text())
+        self.assertPass('config', str(self.pipeline_config))
+
+    def test_an_unreadable_example_skips_the_placeholder_check(self):
+        (self.runner / 'examples/config.example.json').unlink()
+        self.pipeline_config.write_text(EXAMPLE.read_text())
+        self.assertPass('config', str(self.pipeline_config))
 
 
 class ReserveTest(DoctorCase):

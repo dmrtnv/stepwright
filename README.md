@@ -112,6 +112,7 @@ sealed and checked), `checkFast` (`{name, run, flakeReruns?}`: the gate commands
 | Fewer or more at once | `pipeline parallel [N]` (shows / sets 1..`admission.slots`; lowering lets running stages finish) |
 | Stop everything now | `pipeline stop --all` (runs stopped resumable, VMs stopped); `pipeline stop --clear` → tick resumes |
 | Start what has work | `pipeline tick` (the timer does it every 5 min; a run that frees a slot starts it at once) |
+| Set up an install | `pipeline init` (links, config skeletons and user units with caps sized from `/proc`; never overwrites a file or link, never starts a unit; rerun it after an update) |
 | Check the install | `pipeline doctor` (a PASS/FAIL line per check, a fix under each FAIL; exits 1 on any FAIL) |
 | Clean up | `pipeline gc` (orphan sandboxes, refs and logs of merged steps, snapshot refs > 14 days, then `template prune`) |
 | Sandbox templates | `pipeline template` (show), `pipeline template build [<x.y.z>]` (now, foreground), `pipeline template prune` (all but the target and the ones a sandbox uses, from sbx and docker, plus leftover tars) |
