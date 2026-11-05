@@ -26,6 +26,7 @@ SUB_STEP = re.compile(r'^\d+\.\d+\s')
 PROMPT = re.compile(r'^\s*\$ ')
 CD = re.compile(r'(^|[;&|(])\s*cd\s')
 QUOTED = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'')
+XARGS = re.compile(r'\bxargs\b(?! -d \'\\n\')')
 STEP_REFERENCE = re.compile(r'INSTALL steps? (\d+)(?:-(\d+))?')
 NAMED_REFERENCE = re.compile(r'INSTALL(?::| ) ?(What you need|Update)\b')
 
@@ -146,6 +147,8 @@ class InstallSteps(unittest.TestCase):
                     problems.append(f'cd: {line}')
                 if any('~' in quoted for quoted in QUOTED.findall(line)):
                     problems.append(f'~ inside quotes: {line}')
+                if XARGS.search(line):
+                    problems.append(f"xargs without -d '\\n' splits names on spaces and quotes: {line}")
 
         self.assertEqual(problems, [])
 

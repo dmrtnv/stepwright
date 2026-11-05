@@ -276,7 +276,7 @@ exist. Rulesets need a public repo, or GitHub Pro or Team for a private one.
 ```bash
 CHECKOUT=$HOME/code/<repo>
 REPO=<owner>/<repo>
-jq -r '.ci.requiredChecks[]' "$CHECKOUT/.claude/pipeline.json" | xargs ~/.local/share/pipeline/runner/examples/rulesets.sh "$REPO"
+jq -r '.ci.requiredChecks[]' "$CHECKOUT/.claude/pipeline.json" | xargs -d '\n' ~/.local/share/pipeline/runner/examples/rulesets.sh "$REPO"
 ```
 
 **Check:** `pipeline prove-app --repo "$REPO"` and `pipeline prove-gate --repo "$REPO"` (prove-gate opens a
