@@ -60,8 +60,8 @@ name, init skips it.
 
 The kit has two kinds of entries:
 - Contract skills: `plan-harden`, `plan-implement`, `review-branch`, `review-respond` and `pipeline-feature`. The
-  runner depends on them, so stage VMs always use the kit's. Your own copy of one is a `pipeline doctor` FAIL until
-  you replace it with the kit's link.
+  runner depends on them: stage VMs always use the kit's four stage skills, and `pipeline-feature` stays on the
+  host. Your own copy of one is a `pipeline doctor` FAIL until you replace it with the kit's link.
 - Convention entries: the skills `commit-message`, `pr-text` and `wrap-up`, and the agent `web-researcher.md`. You
   can replace them with your own: a copy, or a link that resolves outside the kit dir. Stage VMs then use yours,
   and `pipeline doctor` shows it as PASS "your own, stage VMs use it".

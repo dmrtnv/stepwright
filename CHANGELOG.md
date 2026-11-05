@@ -21,7 +21,6 @@ What changed for you in each release, newest first. Each release says whether to
 
 - The respond gate runs the pr-text skill's `check.py` as a command (`python3 check.py <file>`) with a 60 s
   timeout, instead of importing it. A crash or a timeout pauses the step with the path, the cause and the fix.
-
 - The `.claude/pipeline.json` presets moved from `sandbox/` to `examples/`.
 - The pnpm preset fits any pnpm repo: it installs, then runs `pnpm lint` and `pnpm test`. It no longer copies one
   project's env files, pulls Docker images or runs that project's scripts. Drizzle users add the `migrations` line
