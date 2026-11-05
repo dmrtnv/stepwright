@@ -166,7 +166,9 @@ class StepReferences(unittest.TestCase):
         steps = install_steps()
         missing = []
 
-        for name in STEP_CITERS:
+        kit = [str(path.relative_to(ROOT)) for path in sorted((ROOT / 'kit').rglob('*.md'))]
+
+        for name in (*STEP_CITERS, *kit):
             for first, last in STEP_REFERENCE.findall(read(name)):
                 for number in range(int(first), int(last or first) + 1):
                     if number not in steps:
