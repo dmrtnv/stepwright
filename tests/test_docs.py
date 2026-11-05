@@ -193,7 +193,9 @@ class StepReferences(unittest.TestCase):
         self.assertLessEqual(cited, titles)
 
     def test_cited_doc_sections_exist(self):
-        citers = [*sorted(ROOT.glob('*.py')), *sorted((ROOT / 'kit').rglob('*.md'))]
+        sources = sorted(path for path in ROOT.rglob('*.py')
+                         if path.relative_to(ROOT).parts[0] not in {'tests', '.git'})
+        citers = [*sources, *sorted((ROOT / 'kit').rglob('*.md'))]
         cited = [(path.relative_to(ROOT), document, section) for path in citers
                  for document, section in CITED_SECTION.findall(path.read_text())]
         self.assertGreaterEqual(len(cited), 4)
