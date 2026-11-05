@@ -2615,6 +2615,14 @@ class PrTextCheckerTest(unittest.TestCase):
         found = core.check_pr_text(self.GOOD)
         self.assertIn(f'The PR text checker {self.own / "check.py"} could not run (exit 2', found[0])
         self.assertIn('It is your own pr-text skill', found[0])
+        self.assertIn(f'move {self.own} aside, then ln -s {backend.KIT / "skills/pr-text"} {self.own.parent}/', found[0])
+
+    def test_a_missing_checker_in_your_own_linked_skill_could_not_run(self):
+        mine = self.base / 'dotfiles/pr-text'
+        write(mine / 'SKILL.md', '# my pr-text\n')
+        self.own.symlink_to(mine)
+        found = core.check_pr_text(self.GOOD)
+        self.assertIn('It is your own pr-text skill', found[0])
         self.assertIn(f'ln -sfn {backend.KIT / "skills/pr-text"} {self.own}', found[0])
 
     def test_a_crashing_checker_could_not_run(self):

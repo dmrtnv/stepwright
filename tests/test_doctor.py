@@ -379,6 +379,17 @@ class KitTest(DoctorCase):
         (link / 'SKILL.md').write_text('# mine\n')
         self.assertFail('kit skills/pr-text', 'your own, without check.py: the respond gate runs it',
                         f"add check.py to {link} (the kit's: {self.kit}/skills/pr-text/check.py), "
+                        f'or move {link} aside, then ln -s {self.kit}/skills/pr-text {self.home}/.claude/skills/')
+
+    def test_your_own_linked_pr_text_without_check_py_fails(self):
+        mine = self.home / 'dotfiles/pr-text'
+        mine.mkdir(parents=True)
+        (mine / 'SKILL.md').write_text('# mine\n')
+        link = self.home / '.claude/skills/pr-text'
+        link.unlink()
+        link.symlink_to(mine)
+        self.assertFail('kit skills/pr-text', 'your own, without check.py: the respond gate runs it',
+                        f"add check.py to {link} (the kit's: {self.kit}/skills/pr-text/check.py), "
                         f'or ln -sfn {self.kit}/skills/pr-text {link}')
 
 

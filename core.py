@@ -2124,6 +2124,15 @@ def pr_text_checker():
     return backend.kit_source('skills', 'pr-text') / 'check.py'
 
 
+def relink_fix(entry, link):
+    """The command that points ~/.claude/<item>/<name> back at the kit's entry: ln -sfn replaces a link, but makes a
+    nested link inside a real dir, so a copy is moved aside first."""
+    if link.is_symlink():
+        return f'ln -sfn {entry} {link}'
+
+    return f'move {link} aside, then ln -s {entry} {link.parent}/'
+
+
 def pr_text_checker_fix(checker):
     kit_entry, own = backend.KIT / 'skills/pr-text', backend.HOME / '.claude/skills/pr-text'
 
@@ -2131,7 +2140,7 @@ def pr_text_checker_fix(checker):
         return 'It is the pr-text skill in the kit dir; restore it, then re-run.'
 
     return (f'It is your own pr-text skill: fix {checker} so it prints the problems and exits 1, or exits 0, or link '
-            f"the kit's back (ln -sfn {kit_entry} {own}), then re-run.")
+            f"the kit's back ({relink_fix(kit_entry, own)}), then re-run.")
 
 
 def check_pr_text(text):
@@ -5333,14 +5342,13 @@ def doctor_kit(loaded):
             elif backend.kit_source(item, entry.name) != entry:
                 if (item, entry.name) == ('skills', 'pr-text') and not pr_text_checker().is_file():
                     results.append((label, False, 'your own, without check.py: the respond gate runs it',
-                                    f"add check.py to {link} (the kit's: {entry}/check.py), or ln -sfn {entry} {link}"))
+                                    f"add check.py to {link} (the kit's: {entry}/check.py), or {relink_fix(entry, link)}"))
                 else:
                     results.append((label, True, 'your own, stage VMs use it', ''))
             elif link.is_symlink():
-                results.append((label, False, f'links to {os.readlink(link)}', f'ln -sfn {entry} {link}'))
+                results.append((label, False, f'links to {os.readlink(link)}', relink_fix(entry, link)))
             else:
-                results.append((label, False, "your own copy, not the kit's",
-                                f'move {link} aside, then ln -s {entry} {linked}/'))
+                results.append((label, False, "your own copy, not the kit's", relink_fix(entry, link)))
 
     return results
 
