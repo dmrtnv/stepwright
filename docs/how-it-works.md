@@ -141,7 +141,7 @@ Unknown keys are an error.
   - plan questions are answered by the plan's own recommendations and a last review round's blocking findings go
     to respond;
   - each is a `⚑ auto-decided` in the PR's Decisions (never also under Questions) and the ping;
-  - Blocked/failed stages still stop.
+  - blocked/failed stages still stop.
 - Act on your PR comments: `pipeline respond <name>` (your review, inline and conversation comments since the last
   round).
 - See and steer the queue: `pipeline queue` (running, queued in start order, held, waiting, needs you, backlog);

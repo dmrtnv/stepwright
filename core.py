@@ -2,8 +2,7 @@
 """Feature pipeline runner: one feature folder = numbered steps, each a fresh `claude -p` sequence (plan → implement →
 review → respond) on its own branch, in its own Docker Sandboxes VM, gated by the runner and published as a draft PR
 by a GitHub App. A step starts only after the previous one merged. Runbook: README.md and docs/ beside this file.
-Commands:
-`pipeline help` (the COMMANDS table below).
+Commands: `pipeline help` (the COMMANDS table below).
 
 Modules: core (this: state machine, stages, gates, publish, PR loops, admission), backend (sbx), adapter (repos and
 their .claude/pipeline.json).

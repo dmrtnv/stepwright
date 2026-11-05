@@ -2,7 +2,7 @@
 
 What changed for you in each release, newest first. Each release says whether to rerun `sandbox/gate.py`
 ([INSTALL.md](INSTALL.md#update)). Detail lives in [README.md](README.md), [INSTALL.md](INSTALL.md) and
-[docs/](docs/how-it-works.md). Versions follow SemVer from v1.0.0.
+[docs/how-it-works.md](docs/how-it-works.md). Versions follow SemVer from v1.0.0.
 
 ## Unreleased
 
