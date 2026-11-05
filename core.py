@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """Feature pipeline runner: one feature folder = numbered steps, each a fresh `claude -p` sequence (plan → implement →
 review → respond) on its own branch, in its own Docker Sandboxes VM, gated by the runner and published as a draft PR
-by a GitHub App. A step starts only after the previous one merged. Runbook: README.md beside this file. Commands:
+by a GitHub App. A step starts only after the previous one merged. Runbook: README.md and docs/ beside this file.
+Commands:
 `pipeline help` (the COMMANDS table below).
 
 Modules: core (this: state machine, stages, gates, publish, PR loops, admission), backend (sbx), adapter (repos and
@@ -56,7 +57,7 @@ CONTROL = LOGS / 'control.json'  # yours, from the CLI: parallel, drain, order (
 TICK_UNIT = 'pipeline-tick.service'
 TICK_TIMER = 'pipeline-tick.timer'
 TEMPLATE_FAILED = LOGS / 'template-failed.json'
-SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (README "What runs where")
+SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (docs/how-it-works.md "What runs where")
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
 PRESSURE_BADGE_PERCENT = 1.0  # PSI full avg60 of sbx.service (memory.high throttling counts) that badges the status
 PROJECTS = HOME / '.claude/projects'
@@ -2585,7 +2586,8 @@ def require_branch_rules(state, repo, base):
             return
 
     pause(state, f'{base} has no active rule requiring a code-owner-approved pull request, so nothing would stop an '
-                 'unreviewed merge: fix the ruleset (README "New repo"), then re-run.', 'rulesets missing')
+                 'unreviewed merge: fix the ruleset (docs/how-it-works.md "New repo"), then re-run.',
+          'rulesets missing')
 
 
 def push_branch(state, context, sha):
@@ -4726,7 +4728,8 @@ def command_stop(argv):
         time.sleep(0.5)
 
     if not sbx_service_active():
-        # The README's cutover runs this while the unit is down: an sbx call would autostart the daemon that blocks it.
+        # Replacing a hand-started daemon (docs/how-it-works.md "Setup notes") runs this while the unit is down: an sbx
+        # call would autostart the daemon that blocks it.
         print(f'kill switch on: runs stopped, no sandbox runs ({SBX_UNIT} not active); `pipeline stop --clear` resumes')
         return 0
 
@@ -6047,7 +6050,8 @@ def command_help(argv):
         print(f"no command {argv[0]!r}" + suggestion(argv[0]), file=sys.stderr)
         return 2
 
-    print(f'pipeline: unattended feature pipeline, one PR per step (runbook: {PIPELINE_DIR / "README.md"})')
+    print('pipeline: unattended feature pipeline, one PR per step '
+          f'(runbook: {PIPELINE_DIR / "README.md"}, internals: {PIPELINE_DIR / "docs/how-it-works.md"})')
 
     for group, title, example in HELP_GROUPS:
         entries = [(usage, summary) for usage, summary, kind in COMMANDS.values() if kind == group]
