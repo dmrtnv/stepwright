@@ -77,9 +77,9 @@ Step by step: [INSTALL.md](../INSTALL.md). Notes for later:
   host `claude` itself before the next sandbox create; see [Update](../README.md#update).
 - **A daemon started by hand** (`sbx daemon start`, or one any `sbx` command autostarted while `sbx.service` was down)
   sits outside the caps and dies with its terminal; while it holds `sandboxd.lock` the unit refuses to start (retries
-  every 15 s) and stages queue. Cut over once, when no stage runs: `pipeline stop --all`, `sbx daemon stop`,
-  `systemctl --user start sbx.service`, `sandbox/gate.py --repo <checkout>`, `pipeline stop --clear`. Check:
-  `pipeline status -v` shows `shims n/n` (every VM in the unit's cgroup).
+  every 15 s) and stages queue. To hand the VMs back to the unit, when no stage runs: `pipeline stop --all`,
+  `sbx daemon stop`, `systemctl --user start sbx.service`, `sandbox/gate.py --repo <checkout>`,
+  `pipeline stop --clear`. Check: `pipeline status -v` shows `shims n/n` (every VM in the unit's cgroup).
 
 ## New repo
 
@@ -122,8 +122,8 @@ Unknown keys are an error.
   - a `memory` line (the VMs' use against sbx.service's soft cap MemoryHigh and hard cap MemoryMax; `reserved` =
     what every VM not stopped may grow to, by owner, stages + CI (`sbx-host status`), `(over X by Y)` in yellow
     above the budget; host free against the stage floor);
-  - then NEEDS YOU · RUNNING (stage, time, last tool call) · QUEUED (start order) · `CI` (each companion CI runner
-    slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature
+  - then NEEDS YOU · RUNNING (stage, time, last tool call) · QUEUED (start order) · `CI` (each optional companion CI
+    runner slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature
     whose PR waits stays in WAITING with `· held`) · WAITING;
   - `--watch [-n s]` redraws in place (q quits);
   - `--all` adds merged;
@@ -296,7 +296,7 @@ Tick then polls each done step's PR:
 - A re-run after the fixer reported `blocked` asks CI again first (rerun the job on GitHub, then re-run).
 - all green ⇒ ready for review, your review requested (a 422 while CODEOWNERS already requested you is fine;
   another failure is a runner note), 📱 "✅ PR #n · CI green · confidence X · +Y weekly pts" (once per commit).
-- No required check 30 min after a push, or one still queued while no `ci-runner@` unit is active (a companion
+- No required check 30 min after a push, or one still queued while no `ci-runner@` unit is active (an optional companion
   self-hosted PR runner; a busy runner never pings) ⇒ one ping; it names `ci-runner status` only when a ci-runner
   unit exists.
 - GitHub not answering (a 5xx, the network, a body that is not JSON) spends no fix or rerun and loses no ping: the

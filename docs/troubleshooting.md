@@ -34,14 +34,14 @@ Each item is the status or message, then what you do.
   releases itself when the other merges (`next:` says which).
 - `held: …` / `after …` refusing a run: the feature is held: `pipeline start <name>` first.
 - `ready`, "queued: sbx.service not active": `systemctl --user start sbx.service` (if another daemon holds
-  `sandboxd.lock`: the cutover in [Setup notes](how-it-works.md#setup-notes)); tick resumes.
+  `sandboxd.lock`: the hand-started daemon fix in [Setup notes](how-it-works.md#setup-notes)); tick resumes.
   - Never run `sbx …` by hand while it is down: that autostarts the daemon which blocks the unit.
   - After an unattended docker-sbx upgrade (`/var/log/apt/history.log`) the unit restarts itself
     (`Restart=always`); rerun `sandbox/gate.py`.
 - "CI … not a code failure (network: …): rerun n/2": nothing: a failed DNS lookup in the job (CI VMs resolve
   through the host, see [Host DNS](how-it-works.md#host-dns)); GitHub reruns it.
-- `paused`, "respond-N blocked: … e2e … `getaddrinfo ENOTFOUND` / PUT timeout to R2": the reruns were spent, or a
-  timeout left no DNS words in the log: check [Host DNS](how-it-works.md#host-dns), rerun the failed jobs on
+- `paused`, "respond-N blocked: … `getaddrinfo ENOTFOUND` …" or a network timeout in a CI job: the reruns were
+  spent, or a timeout left no DNS words in the log: check [Host DNS](how-it-works.md#host-dns), rerun the failed jobs on
   GitHub, then `pipeline <name> --detach`.
 - `ready`, "… limit until <time>": nothing: tick resumes after the reset.
 - `ready`, "stopped by the kill switch": `pipeline stop --clear`.
@@ -72,7 +72,7 @@ Each item is the status or message, then what you do.
 - "CI … did not run: GitHub Actions billing": fix the org's Actions billing or spending limit, re-run on GitHub,
   then `pipeline <name>`.
 - "CI … GitHub refused the rerun (…)": re-run the job on GitHub, then `pipeline <name>`.
-- "respond-K blocked: … e2e … not caused by this branch": a DNS failure is rerun by itself (≤2×); this one wasn't,
+- "respond-K blocked: … not caused by this branch": a DNS failure is rerun by itself (≤2×); this one wasn't,
   or the reruns were spent: rerun the failed job on GitHub, then `pipeline <name>` (asks CI again).
 - "PR #n now points at …: someone else pushed": review and merge it yourself (tick sees the merge and starts the
   next step), or push the named commit back and re-run.
