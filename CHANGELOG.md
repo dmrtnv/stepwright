@@ -1,8 +1,8 @@
 # Changelog
 
 What changed for you in each release, newest first. Each release says whether to rerun `sandbox/gate.py`
-([INSTALL.md](INSTALL.md#update)). Detail lives in [README.md](README.md) and [INSTALL.md](INSTALL.md). Versions
-follow SemVer from v1.0.0.
+([INSTALL.md](INSTALL.md#update)). Detail lives in [README.md](README.md), [INSTALL.md](INSTALL.md) and
+[docs/how-it-works.md](docs/how-it-works.md). Versions follow SemVer from v1.0.0.
 
 ## Unreleased
 
@@ -36,6 +36,9 @@ follow SemVer from v1.0.0.
   INSTALL shows.
 - The Python preset skips the install when there is no `requirements.txt` and the tests when there is no `tests/`
   dir. An empty `tests/` dir still fails.
+- The README is short. How it works, the config and `pipeline.json` keys, every command in detail and the recovery
+  notes moved to [docs/how-it-works.md](docs/how-it-works.md); what to do when a step stops moved to
+  [docs/troubleshooting.md](docs/troubleshooting.md). Both are lists now.
 
 ### Fixed
 

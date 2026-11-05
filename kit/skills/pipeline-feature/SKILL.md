@@ -7,7 +7,8 @@ argument-hint: "<feature-name> [what it is about]"
 # Create a pipeline feature
 
 **Output:** `<repo>/.claude/plans/<feature>/` holding `00-overview.md` and one `NN-slug/brief.md` per step. Never
-start the pipeline yourself: print the command and stop. The runbook is the `README.md` beside `core.py` (`readlink -f "$(command -v pipeline)"`).
+start the pipeline yourself: print the command and stop. The runbook is the `README.md` beside `core.py`, with the
+internals in `docs/how-it-works.md` (`readlink -f "$(command -v pipeline)"`).
 
 **Rules:** project rules win (CLAUDE.md / AGENTS.md files, their linked docs, memory, and the "Workflow overlay"
 memory entry if the index lists one). Plans stay out of the project's git (the folder is ignored on purpose; back it up yourself). A feature not to start yet goes to `.claude/plans/_backlog/<feature>/` and gets a row in

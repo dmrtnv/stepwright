@@ -270,7 +270,8 @@ def repo_config(repo, revision=None):
     result = git(path, 'show', f'{revision}:.claude/pipeline.json', check=False)
 
     if result.returncode != 0:
-        raise AdapterError(f'{repo}: no .claude/pipeline.json on {revision} (commit one; see README "New repo")')
+        raise AdapterError(f'{repo}: no .claude/pipeline.json on {revision} '
+                           '(commit one; see docs/how-it-works.md "New repo")')
 
     return parse_repo_config(repo, result.stdout)
 

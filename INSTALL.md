@@ -184,7 +184,8 @@ path.write_text(json.dumps(config, indent=2) + "\n")
 `pipeline doctor` reports the config as a FAIL while it still holds the example's values.
 
 init sized the stage VM (`vm`) and how many stages run at once (`admission.slots`) for this machine. The defaults for
-the other limits (`admission`) and the sandbox template (`template`) are described in the README.
+the other limits (`admission`) and the sandbox template (`template`) are in
+[What runs where](docs/how-it-works.md#what-runs-where).
 
 **Check:** `pipeline doctor | grep -E '^(PASS|FAIL)  (config|sbx-host reserve)'` shows two lines, and both read
 PASS. Then run `pipeline prove-app --repo "$REPO"`: every permission line must PASS. Lines about rules, CI runs or
@@ -221,7 +222,8 @@ cp --update=none ~/.local/share/pipeline/runner/examples/pipeline.$PRESET.json "
 ```
 
 Then adjust `setup` (install commands), `setupEgress` (hosts setup may reach), `checkFast` (the commands that must
-pass) and `ci.requiredChecks` (your CI job names). The README lists every key. With drizzle-kit, add
+pass) and `ci.requiredChecks` (your CI job names). [`pipeline.json` keys](docs/how-it-works.md#pipelinejson-keys)
+lists every key. With drizzle-kit, add
 `"migrations": {"dir": "<out>", "journal": "<out>/meta/_journal.json", "generate": "drizzle-generate.py"}`,
 where `<out>` is your drizzle-kit `out` dir.
 
@@ -329,7 +331,8 @@ header without errors, and `pipeline doctor` ends with `N checks, 0 FAIL`.
    pipeline "$NAME" --detach
    ```
 
-3. Watch it with `pipeline status --watch`. The README explains what each state needs from you.
+3. Watch it with `pipeline status --watch`. [Troubleshooting](docs/troubleshooting.md) explains
+   what each state needs from you.
 4. When the PR turns green, review it and merge it. The next step starts on its own.
 
 **Check:** `pipeline show "$NAME"` shows the feature's steps and the current stage.
