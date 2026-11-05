@@ -1,0 +1,12 @@
+name: Bug report
+description: Something in stepwright does not work
+body:
+  - type: input
+    attributes: {label: Version, description: "Output of: git -C ~/.local/share/pipeline/runner describe --tags"}
+    validations: {required: true}
+  - type: textarea
+    attributes: {label: pipeline doctor, description: "Output of: pipeline doctor", render: text}
+    validations: {required: true}
+  - type: textarea
+    attributes: {label: What happened, description: "The reason line from: pipeline show <name>"}
+    validations: {required: true}
