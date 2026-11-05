@@ -6,6 +6,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.8 - 2026-11-05
+
 **Rerun the gate:** yes (its kit and exfil tests changed, and stage VMs now get your own convention skills).
 
 ### Added
@@ -20,6 +22,8 @@ What changed for you in each release, newest first. Each release says whether to
 - README "Before you run it": the terms with dated quotes, the cost caps per session, what the sandbox protects and
   what it doesn't, what leaves your machine, what the GitHub App can do, and the requirements you can't change.
 - SECURITY.md: how to report a vulnerability privately. CONTRIBUTING.md: the rules, tests, commits and public API.
+- GitHub: a bug report form, a PR template and private vulnerability reporting. Blank issues are off; security
+  reports go through the private form.
 
 ### Changed
 
