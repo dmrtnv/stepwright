@@ -5,10 +5,22 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
-**Rerun the gate:** yes (its kit and exfil tests changed).
+**Rerun the gate:** yes (its kit and exfil tests changed, and stage VMs now get your own convention skills).
+
+### Added
+
+- Your own `commit-message`, `pr-text` and `wrap-up` skills and `web-researcher` agent replace the kit's in stage
+  VMs: a copy, or a link that resolves outside the kit dir (INSTALL step 2). `pipeline doctor` shows each as PASS
+  "your own, stage VMs use it". A `pr-text` of your own without `check.py` is a FAIL. The four stage skills and
+  `pipeline-feature` stay the kit's.
+
+  Upgrading: a copy that doctor showed as "your own copy, not the kit's" is now what stage VMs use. To keep the
+  kit's, delete it or replace it with the kit's link.
 
 ### Changed
 
+- The respond gate runs the pr-text skill's `check.py` as a command (`python3 check.py <file>`) with a 60 s
+  timeout, instead of importing it. A crash or a timeout pauses the step with the path, the cause and the fix.
 - The `.claude/pipeline.json` presets moved from `sandbox/` to `examples/`.
 - The pnpm preset fits any pnpm repo: it installs, then runs `pnpm lint` and `pnpm test`. It no longer copies one
   project's env files, pulls Docker images or runs that project's scripts. Drizzle users add the `migrations` line

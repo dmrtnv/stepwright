@@ -93,6 +93,7 @@ class DoctorCase(unittest.TestCase):
                        'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
         for patcher in (mock.patch.dict(os.environ, environment, clear=True),
                         mock.patch.object(core, 'HOME', self.home),
+                        mock.patch.object(backend, 'HOME', self.home),
                         mock.patch.object(core, 'PIPELINE_DIR', self.runner),
                         mock.patch.object(adapter, 'CONFIG', self.pipeline_config),
                         mock.patch.object(sbx_host, 'CONFIG', self.host_config),
@@ -340,12 +341,56 @@ class KitTest(DoctorCase):
         self.assertFail('kit agents/web-researcher.md', 'links to /tmp/elsewhere/web-researcher.md',
                         f'ln -sfn {self.kit}/agents/web-researcher.md {link}')
 
+    def test_your_own_convention_link_passes(self):
+        link = self.home / '.claude/agents/web-researcher.md'
+        link.unlink()
+        dotfiles = self.base / 'dotfiles/web-researcher.md'
+        dotfiles.parent.mkdir()
+        dotfiles.write_text('# mine\n')
+        link.symlink_to(dotfiles)
+        self.assertPass('kit agents/web-researcher.md', 'your own, stage VMs use it')
+
+    def test_a_contract_link_elsewhere_fails(self):
+        link = self.home / '.claude/skills/plan-harden'
+        link.unlink()
+        elsewhere = self.base / 'dotfiles/plan-harden'
+        elsewhere.mkdir(parents=True)
+        link.symlink_to(elsewhere)
+        self.assertFail('kit skills/plan-harden', f'links to {elsewhere}', f'ln -sfn {self.kit}/skills/plan-harden {link}')
+
     def test_your_own_copy(self):
+        link = self.home / '.claude/skills/review-branch'
+        link.unlink()
+        link.mkdir()
+        self.assertFail('kit skills/review-branch', 'your own copy, not the kit\'s',
+                        f'move {link} aside, then ln -s {self.kit}/skills/review-branch {self.home}/.claude/skills/')
+
+    def test_your_own_pr_text_with_check_py_passes(self):
         link = self.home / '.claude/skills/pr-text'
         link.unlink()
         link.mkdir()
-        self.assertFail('kit skills/pr-text', 'your own copy, not the kit\'s',
-                        f'move {link} aside, then ln -s {self.kit}/skills/pr-text {self.home}/.claude/skills/')
+        (link / 'check.py').write_text('import sys\nsys.exit(0)\n')
+        self.assertPass('kit skills/pr-text', 'your own, stage VMs use it')
+
+    def test_your_own_pr_text_without_check_py_fails(self):
+        link = self.home / '.claude/skills/pr-text'
+        link.unlink()
+        link.mkdir()
+        (link / 'SKILL.md').write_text('# mine\n')
+        self.assertFail('kit skills/pr-text', 'your own, without check.py: the respond gate runs it',
+                        f"add check.py to {link} (the kit's: {self.kit}/skills/pr-text/check.py), "
+                        f'or move {link} aside, then ln -s {self.kit}/skills/pr-text {self.home}/.claude/skills/')
+
+    def test_your_own_linked_pr_text_without_check_py_fails(self):
+        mine = self.home / 'dotfiles/pr-text'
+        mine.mkdir(parents=True)
+        (mine / 'SKILL.md').write_text('# mine\n')
+        link = self.home / '.claude/skills/pr-text'
+        link.unlink()
+        link.symlink_to(mine)
+        self.assertFail('kit skills/pr-text', 'your own, without check.py: the respond gate runs it',
+                        f"add check.py to {link} (the kit's: {self.kit}/skills/pr-text/check.py), "
+                        f'or ln -sfn {self.kit}/skills/pr-text {link}')
 
 
 class KitLoopTest(DoctorCase):

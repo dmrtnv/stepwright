@@ -56,10 +56,28 @@ the caps. Then it prints one line per item, and the next commands.
 Stages run Claude Code skills (plan, implement, review, respond). They live in the kit dir of this clone, and
 stage VMs get them from there, so a stage runs the skills of the checked-out tag. The links make them available
 on the host too: for `/pipeline-feature` and your own sessions. If you already have a skill or agent with a kit
-name, init skips it, and `pipeline doctor` reports it as a FAIL until you replace it with the kit's link. Stage VMs
-always use the kit's either way.
-Stage VMs also get your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and your other skills and agents. A skill
-or agent with a kit name is replaced by the kit's, and `pipeline-feature` stays on the host. Keep secrets out of them.
+name, init skips it.
+
+The kit has two kinds of entries:
+- Contract skills: `plan-harden`, `plan-implement`, `review-branch`, `review-respond` and `pipeline-feature`. The
+  runner depends on them: stage VMs always use the kit's four stage skills, and `pipeline-feature` stays on the
+  host. Your own copy of one is a `pipeline doctor` FAIL until you replace it with the kit's link.
+- Convention entries: the skills `commit-message`, `pr-text` and `wrap-up`, and the agent `web-researcher.md`. You
+  can replace them with your own: a copy, or a link that resolves outside the kit dir. Stage VMs then use yours,
+  and `pipeline doctor` shows it as PASS "your own, stage VMs use it".
+
+Your own convention entry must keep what the stages rely on:
+- `commit-message` supports commit mode: plan-implement and review-respond use it to commit.
+- `wrap-up` never asks the user anything: stages run unattended.
+- `pr-text` ships a `check.py`. The respond gate runs `python3 check.py <file>` on pr.md, with a 60 s timeout. It
+  prints one problem per line and exits 1, or exits 0 when there are none. Without `check.py`, doctor FAILs.
+- pr.md keeps the title on line 1, then a blank line and the body.
+- The agent keeps the name `web-researcher`: plan-harden spawns it by name.
+
+No override changes the trailer and personal-text commit gates, or the redaction of pr.md.
+
+Stage VMs also get your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and your other skills and agents.
+`pipeline-feature` stays on the host. Keep secrets out of them.
 
 **Check:** `pipeline help` lists the commands. If you get "command not found", add `~/.local/bin` to your `PATH`.
 Then run `pipeline doctor`: the `tool`, `kvm group`, `docker`, `runner` and `kit` lines PASS. The lines for later

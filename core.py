@@ -15,7 +15,6 @@ import difflib
 import fcntl
 import grp
 import http.client
-import importlib.util
 import io
 import json
 import os
@@ -61,7 +60,6 @@ SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (README "What r
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
 PRESSURE_BADGE_PERCENT = 1.0  # PSI full avg60 of sbx.service (memory.high throttling counts) that badges the status
 PROJECTS = HOME / '.claude/projects'
-PR_TEXT_CHECKER = PIPELINE_DIR / 'kit/skills/pr-text/check.py'  # the pr-text skill's format lock; the respond gate runs it
 CLAUDE = 'claude'
 PYTHON = '/usr/bin/python3'
 GITHUB_API = 'https://api.github.com'
@@ -98,6 +96,8 @@ LIMIT_UNKNOWN_WAIT_SECONDS = 30 * 60
 STOP_GRACE_SECONDS = 120
 KILL_SWITCH_WAIT_SECONDS = 300
 CHECK_TIMEOUT_SECONDS = 3600
+PR_TEXT_TIMEOUT_SECONDS = 60  # the pr-text skill's check.py, run by the respond gate
+STDERR_TAIL_CHARS = 300
 USAGE_STALE_SECONDS = 30 * 60
 CI_SILENT_SECONDS = 30 * 60
 MERGEABLE_RETRY_SECONDS = 5
@@ -2119,19 +2119,60 @@ def gate_file(file_name, what, stage_key, check=None):
     return gate
 
 
+def pr_text_checker():
+    """The pr-text skill's format lock that the respond gate runs: the same check.py the VM got."""
+    return backend.kit_source('skills', 'pr-text') / 'check.py'
+
+
+def relink_fix(entry, link):
+    """The command that points ~/.claude/<item>/<name> back at the kit's entry: ln -sfn replaces a link, but makes a
+    nested link inside a real dir, so a copy is moved aside first."""
+    if link.is_symlink():
+        return f'ln -sfn {entry} {link}'
+
+    return f'move {link} aside, then ln -s {entry} {link.parent}/'
+
+
+def pr_text_checker_fix(checker):
+    kit_entry, own = backend.KIT / 'skills/pr-text', backend.HOME / '.claude/skills/pr-text'
+
+    if checker.parent == kit_entry:
+        return 'It is the pr-text skill in the kit dir; restore it, then re-run.'
+
+    return (f'It is your own pr-text skill: fix {checker} so it prints the problems and exits 1, or exits 0, or link '
+            f"the kit's back ({relink_fix(kit_entry, own)}), then re-run.")
+
+
 def check_pr_text(text):
-    """The pr-text skill's checker: the repo squash-merges with the PR body, so pr.md keeps its format."""
-    try:
-        spec = importlib.util.spec_from_file_location('pr_text_check', PR_TEXT_CHECKER)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        found = module.problems(text)
-    except Exception as error:
-        return [f'The PR text checker {PR_TEXT_CHECKER} could not run ({type(error).__name__}: {error}). It is the '
-                'pr-text skill in the kit dir; restore it, then re-run.']
+    """Runs the pr-text skill's check.py on the text: the repo squash-merges with the PR body, so pr.md keeps its
+    format. A subprocess with a timeout, so a user's own checker can neither exit nor hang the runner."""
+    checker = pr_text_checker()
+
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', suffix='.md', prefix='pipeline-pr-') as handle:
+        handle.write(text)
+        handle.flush()
+
+        try:
+            result = subprocess.run([PYTHON, str(checker), handle.name], capture_output=True, text=True,
+                                    errors='replace', stdin=subprocess.DEVNULL, timeout=PR_TEXT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return [f'The PR text checker {checker} could not run (timed out after {PR_TEXT_TIMEOUT_SECONDS}s). '
+                    f'{pr_text_checker_fix(checker)}']
+        except OSError as error:
+            return [f'The PR text checker {checker} could not run ({error.strerror}). {pr_text_checker_fix(checker)}']
+
+    if result.returncode == 0:
+        return []
+
+    found = [line for line in result.stdout.splitlines() if line.strip()]
+    stderr = ' '.join(result.stderr.split())[-STDERR_TAIL_CHARS:]  # one line, so it never reads as a problem
 
     if not found:
-        return []
+        return [f'The PR text checker {checker} could not run (exit {result.returncode}: {stderr}). '
+                f'{pr_text_checker_fix(checker)}']
+
+    if stderr:
+        found.append(f'check.py stderr: {stderr}')
 
     return ['pr.md breaks the pr-text format (read ~/.claude/skills/pr-text/SKILL.md, then rewrite pr.md until '
             '`python3 ~/.claude/skills/pr-text/check.py <pr.md>` prints nothing):\n' + '\n'.join(found)]
@@ -5280,7 +5321,8 @@ def doctor_runner(loaded):
 
 
 def doctor_kit(loaded):
-    """Each kit skill and agent: ~/.claude/<item>/<name> resolves to it (INSTALL step 2)."""
+    """Each kit skill and agent: ~/.claude/<item>/<name> resolves to it, or is your own convention entry that stage VMs
+    use (INSTALL step 2)."""
     results = []
 
     for item in backend.KIT_ITEMS:
@@ -5297,11 +5339,16 @@ def doctor_kit(loaded):
                 results.append((label, True, f'links to {entry}', ''))
             elif not os.path.lexists(link):
                 results.append((label, False, 'not linked', f'ln -s {entry} {linked}/'))
+            elif backend.kit_source(item, entry.name) != entry:
+                if (item, entry.name) == ('skills', 'pr-text') and not pr_text_checker().is_file():
+                    results.append((label, False, 'your own, without check.py: the respond gate runs it',
+                                    f"add check.py to {link} (the kit's: {entry}/check.py), or {relink_fix(entry, link)}"))
+                else:
+                    results.append((label, True, 'your own, stage VMs use it', ''))
             elif link.is_symlink():
-                results.append((label, False, f'links to {os.readlink(link)}', f'ln -sfn {entry} {link}'))
+                results.append((label, False, f'links to {os.readlink(link)}', relink_fix(entry, link)))
             else:
-                results.append((label, False, "your own copy, not the kit's",
-                                f'move {link} aside, then ln -s {entry} {linked}/'))
+                results.append((label, False, "your own copy, not the kit's", relink_fix(entry, link)))
 
     return results
 

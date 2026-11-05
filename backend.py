@@ -34,6 +34,8 @@ STAGE_ENV = {
 KIT = PIPELINE_DIR / 'kit'  # the stage skills and agents every VM gets, so a stage runs the checked-out tag's
 KIT_ITEMS = ('skills', 'agents')
 HOST_ONLY = ('pipeline-feature',)  # host skills never copied into a VM
+STAGE_SKILLS = ('plan-harden', 'plan-implement', 'review-branch', 'review-respond')  # the runner calls these by name
+CONTRACT = STAGE_SKILLS + HOST_ONLY  # always the kit's; every other kit entry is a convention a user can replace
 KIT_SCRIPTS = ('heavy', 'kill-own.sh', 'drizzle-generate.py', 'transcripts.py')
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 MAX_COPY_OUT_BYTES = 2_000_000
@@ -372,17 +374,45 @@ def copy_out(name, vm_path, limit=MAX_COPY_OUT_BYTES):
             return handle.read().decode(errors='replace')
 
 
+def kit_source(item, name):
+    """Where a VM's item/name (skills or agents) comes from: the user's own entry when it is a convention entry that
+    exists (links followed) and resolves outside the kit dir; else the kit's (a contract entry, a missing, dangling or
+    looping link, or a link into the kit)."""
+    kit_entry = KIT / item / name
+    own = HOME / '.claude' / item / name
+
+    if name in CONTRACT or not os.path.exists(own):
+        return kit_entry
+
+    if Path(os.path.realpath(own)).is_relative_to(os.path.realpath(KIT)):
+        return kit_entry
+
+    return own
+
+
 def stage_kit_tree(item, directory):
-    """Builds directory/item (skills or agents) for a VM: every kit entry, then every personal entry whose name the
-    kit lacks, so a kit entry replaces a personal one whole. Links are followed; HOST_ONLY and __pycache__ stay out."""
+    """Builds directory/item (skills or agents) for a VM: every kit entry from kit_source (your own convention entry,
+    else the kit's), then every personal entry whose name the kit lacks. Links are followed; HOST_ONLY and
+    __pycache__ stay out."""
     staged = Path(directory) / item
     staged.mkdir()
     ignore = shutil.ignore_patterns('__pycache__')
     personal = HOME / '.claude' / item
 
-    for source in (KIT / item, personal) if personal.is_dir() else (KIT / item,):
-        for entry in sorted(source.iterdir()):
-            # lexists: a personal file and a kit directory with the same name (or the reverse) also resolve to the kit
+    for entry in sorted((KIT / item).iterdir()):
+        if entry.name in HOST_ONLY or entry.name == '__pycache__':
+            continue
+
+        origin = kit_source(item, entry.name)
+
+        if origin.is_dir():
+            shutil.copytree(origin, staged / entry.name, ignore=ignore)
+        else:
+            shutil.copy2(origin, staged / entry.name)
+
+    if personal.is_dir():
+        for entry in sorted(personal.iterdir()):
+            # lexists: a personal file and a kit directory with the same name (or the reverse) are already staged
             if entry.name in HOST_ONLY or entry.name == '__pycache__' or os.path.lexists(staged / entry.name):
                 continue
 
@@ -405,7 +435,7 @@ def stage_rules(directory):
 
 
 def copy_kit(name, memory_source=None):
-    """The kit, fresh on every run: skills and agents from the kit dir plus the user's own (a kit name wins), the
+    """The kit, fresh on every run: skills and agents from the kit dir plus the user's own (kit_source), the
     user's CLAUDE.md and rules (a rules dir the user deleted leaves the VM too); the repo's memory (read-only by
     convention, the stage's autoMemoryDirectory); the helpers stages call; and the stage settings.json replacing the
     kit's."""

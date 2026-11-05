@@ -59,7 +59,7 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
 | clean clones | `~/.local/share/pipeline/repos/<owner>/<repo>` (never checked out; holds `refs/pipeline/<feature>/<NN>`) |
 | sandboxes | `sbx ls`: `pl-<repo>-<feature>-<NN>`, stopped between stages, removed on merge |
 | stage rules | `system.md` (appended to every stage's system prompt), `result.schema.json` |
-| kit copied into each VM | kit skills and agents from the kit dir (minus `pipeline-feature`), your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and other skills and agents (a kit name wins), the repo's memory (`~/.claude/projects/<checkout>/memory`), `heavy`, `kill-own.sh`, `drizzle-generate.py`, `transcripts.py`, a stage `settings.json` (no hooks, attribution off) |
+| kit copied into each VM | kit skills and agents from the kit dir (minus `pipeline-feature`), your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and other skills and agents (your own convention entries win: INSTALL step 2), the repo's memory (`~/.claude/projects/<checkout>/memory`), `heavy`, `kill-own.sh`, `drizzle-generate.py`, `transcripts.py`, a stage `settings.json` (no hooks, attribution off) |
 | sbx daemon (owns every VM) | `systemctl --user status sbx.service`: a user unit that caps the VMs (MemoryHigh, MemoryMax, swap, CPUQuota, a low CPUWeight) so manual work wins every contention; stopping, restarting or a crash of the daemon ends every VM (a new daemon never re-adopts them), so restart it only when no stage runs |
 | tick | `systemctl --user list-timers pipeline-tick.timer` (every 5 min; runs are transient units `pipeline-run-*`) |
 

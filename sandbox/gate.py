@@ -43,7 +43,7 @@ MODEL = core.STAGES['plan']['model']
 VM_MEMORY = backend.memory_dir(SANDBOX_A)
 STAGE_SETTINGS = backend.stage_settings(SANDBOX_A)
 PLACEHOLDER = re.compile(r'proxy-?managed', re.I)  # sbx puts placeholders in the VM; its proxy injects the real token
-STAGE_SKILLS = ('plan-harden', 'plan-implement', 'review-branch', 'review-respond')
+STAGE_SKILLS = backend.STAGE_SKILLS
 SBX_ENV = backend.sbx_env()
 
 results = []

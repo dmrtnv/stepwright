@@ -43,8 +43,7 @@ and line numbers against the default branch.
    "the PR names". A fact the reviewer needs is an Owed line or a flag. pr.md follows the pr-text skill, and the
    runner checks it.
 7. **Link to Linear**, only when the main checkout's `.claude/plans/README.md` has a `## Linear` section and the
-   `mcp__linear-write__*` tools are loaded; otherwise skip it and say why in the finish. The `/linear` skill
-   (`~/.claude/skills/linear/SKILL.md`) has the routing, templates and read/write split.
+   `mcp__linear-write__*` tools are loaded; otherwise skip it and say why in the finish.
    - **Home:** an existing outcome project (`mcp__linear__list_projects`), an issue in a standing project, or a new
      outcome project (Feature template, Backlog, draft shown first). Ask once, only if it's unclear. Several features
      can share a home.

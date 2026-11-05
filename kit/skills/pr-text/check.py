@@ -1,7 +1,7 @@
 """Checks a pr.md (title, blank line, body) against the pr-text format: the repo squash-merges with the PR body.
 
 Usage: check.py <pr.md>. Prints one `line N: ...` per problem and exits 1 when there is any.
-The pipeline's respond gate imports problems() from this file.
+The pipeline's respond gate runs this file.
 """
 import re
 import sys
@@ -87,7 +87,7 @@ def main():
 
         return 2
 
-    found = problems(Path(sys.argv[1]).read_text())
+    found = problems(Path(sys.argv[1]).read_text(encoding='utf-8'))
 
     for problem in found:
         print(problem)
