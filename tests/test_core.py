@@ -5153,6 +5153,7 @@ class ViewTest(RunnerCase):
             self.assertIn('DAILY\n', self.output)
             self.assertIn('  e.g. pipeline status --watch', self.output)
             self.assertIn('pipeline <feature> [--repo <o>/<r>]', self.output)
+            self.assertIn('docs/how-it-works.md', self.output)
 
         for command in core.COMMANDS:
             self.assertEqual(self.main(command, '--help'), 0, command)

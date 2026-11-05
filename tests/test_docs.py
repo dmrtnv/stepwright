@@ -1,5 +1,6 @@
 """The docs hold together: links and anchors resolve, every INSTALL step has a command block and a Check, INSTALL's
-commands paste cleanly, the step numbers the code cites exist, and README's cost numbers match the code.
+commands paste cleanly, the step numbers and doc sections the code cites exist, README is short and in order, no
+box's history ships, and README's cost numbers match the code.
 
 Run: python3 -m unittest tests/test_docs.py
 """
@@ -14,9 +15,15 @@ sys.path.insert(0, str(ROOT))
 import adapter  # noqa: E402
 import core  # noqa: E402
 
-LINKED_DOCS = ('README.md', 'INSTALL.md', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md')
-NO_TABLE_DOCS = ('INSTALL.md', 'SECURITY.md', 'CONTRIBUTING.md')
-STEP_CITERS = ('core.py', 'README.md', 'CHANGELOG.md')
+DOCS_PAGES = ('docs/how-it-works.md', 'docs/troubleshooting.md')
+LINKED_DOCS = ('README.md', 'INSTALL.md', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', *DOCS_PAGES,
+               'sandbox/README.md')
+NO_TABLE_DOCS = ('README.md', 'INSTALL.md', 'SECURITY.md', 'CONTRIBUTING.md', *DOCS_PAGES, 'sandbox/README.md')
+STEP_CITERS = ('core.py', 'README.md', 'CHANGELOG.md', *DOCS_PAGES)
+HISTORY_FREE_DOCS = ('README.md', *DOCS_PAGES, 'sandbox/README.md')
+README_SECTIONS = ['Before you run it', 'Requirements', 'Quickstart', 'Usage', 'Troubleshooting', 'Update', 'Uninstall',
+                   'License']
+README_MAX_LINES = 190
 INSTALL_SECTIONS_WITH_STEPS = ('Update', 'Manual setup (without init)', 'Uninstall')
 FENCE = re.compile(r'^\s*```')
 LINK = re.compile(r'\]\(([^)\s]+)\)')
@@ -30,6 +37,8 @@ COMMAND_V = re.compile(r'\$\(command -v ')
 XARGS = re.compile(r'\bxargs\b(?! -d \'\\n\')')
 STEP_REFERENCE = re.compile(r'INSTALL steps? (\d+)(?:-(\d+))?')
 NAMED_REFERENCE = re.compile(r'INSTALL(?::| ) ?(What you need|Update)\b')
+CITED_SECTION = re.compile(r'(?<![\w/])(README(?:\.md)?|docs/[\w-]+\.md|sandbox/README\.md) "([^"]+)"')
+BOX_HISTORY = re.compile(r'cut ?over|\bR2\b|phase 3|pilot|db:squash|\be2e\b', re.I)
 
 
 def read(name):
@@ -109,12 +118,12 @@ class Links(unittest.TestCase):
                     if re.match(r'^[a-z]+:', target):
                         continue
                     path, _, anchor = target.partition('#')
-                    linked = name if not path else path
+                    linked = ((ROOT / name).parent / path).resolve() if path else ROOT / name
 
-                    if not (ROOT / linked).exists():
-                        problems.append(f'{name}: {target} (no file {linked})')
-                    elif anchor and anchor not in {slug(title) for _, title in headings(read(linked))}:
-                        problems.append(f'{name}: {target} (no heading #{anchor} in {linked})')
+                    if not linked.exists():
+                        problems.append(f'{name}: {target} (no file {path})')
+                    elif anchor and anchor not in {slug(title) for _, title in headings(linked.read_text())}:
+                        problems.append(f'{name}: {target} (no heading #{anchor} in {path or name})')
 
         self.assertEqual(problems, [])
 
@@ -182,6 +191,35 @@ class StepReferences(unittest.TestCase):
 
         self.assertEqual(cited, {'What you need', 'Update'})
         self.assertLessEqual(cited, titles)
+
+    def test_cited_doc_sections_exist(self):
+        citers = [*sorted(ROOT.glob('*.py')), *sorted((ROOT / 'kit').rglob('*.md'))]
+        cited = [(path.relative_to(ROOT), document, section) for path in citers
+                 for document, section in CITED_SECTION.findall(path.read_text())]
+        self.assertGreaterEqual(len(cited), 4)
+        missing = []
+
+        for citer, document, section in cited:
+            name = 'README.md' if document.startswith('README') else document
+
+            if section not in {title for _, title in headings(read(name))}:
+                missing.append(f'{citer}: {document} "{section}"')
+
+        self.assertEqual(missing, [])
+
+
+class Readme(unittest.TestCase):
+    def test_readme_is_short_and_in_order(self):
+        text = read('README.md')
+
+        self.assertEqual([title for level, title in headings(text) if level == 2], README_SECTIONS)
+        self.assertLessEqual(len(text.splitlines()), README_MAX_LINES)
+
+    def test_no_box_history(self):
+        found = [f'{name}: {line.strip()}' for name in HISTORY_FREE_DOCS for line in read(name).splitlines()
+                 if BOX_HISTORY.search(line)]
+
+        self.assertEqual(found, [])
 
 
 class Cost(unittest.TestCase):
