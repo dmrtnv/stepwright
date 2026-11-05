@@ -41,7 +41,8 @@ Each user-visible change adds an entry under **Unreleased** in [CHANGELOG.md](CH
 
 A change to any of these is a breaking change for users. Each has one home:
 - commands and flags: `pipeline help` and `pipeline <command> -h`;
-- config keys: `examples/config.example.json` and [INSTALL step 5](INSTALL.md#5-configure);
+- config keys: `examples/config.example.json`, [INSTALL step 5](INSTALL.md#5-configure) and
+  [README.md](README.md);
 - `pipeline.json` keys: [README.md](README.md#setup), and `REQUIRED` and `OPTIONAL` in `adapter.py`;
 - convention entries, what they must keep, and the `check.py` command line:
   [INSTALL step 2](INSTALL.md#2-get-stepwright-and-run-init);

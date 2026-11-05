@@ -265,13 +265,14 @@ git -C "$CHECKOUT" commit -m "chore: Prepare the repo for stepwright"
 git -C "$CHECKOUT" push
 ```
 
-**Check:** `git -C "$CHECKOUT" status --short --branch` shows no `ahead`, and the CI run on the default branch has
-finished on GitHub.
+**Check:** `git -C "$CHECKOUT" status --short --branch` shows the default branch with no `ahead`, and the CI run on
+the default branch has finished on GitHub.
 
 ### 6.5 Add the rulesets
 
 Run this once, after one CI run has finished on the default branch. A second run fails, because the rulesets already
-exist. Rulesets need a public repo, or GitHub Pro or Team for a private one.
+exist. If a run stops partway, delete the rulesets it created (Settings, then Rules), then rerun. Rulesets need a
+public repo, or GitHub Pro or Team for a private one.
 
 ```bash
 CHECKOUT=$HOME/code/<repo>
@@ -302,8 +303,14 @@ once, then starts the timer:
 
 ```bash
 UNIT=~/.config/systemd/user/pipeline-tick.service
-DIRS=$(dirname "$(command -v node)"):$(dirname "$(command -v claude)")
-grep -qF "PATH=$DIRS:" "$UNIT" || sed -i "s|^Environment=PATH=|&$DIRS:|" "$UNIT"
+NODE=$(type -P node)
+CLAUDE=$(type -P claude)
+if [ -n "$NODE" ] && [ -n "$CLAUDE" ]; then
+  DIRS=$(dirname "$NODE"):$(dirname "$CLAUDE")
+  grep -qF "PATH=$DIRS:" "$UNIT" || sed -i "s|^Environment=PATH=|&$DIRS:|" "$UNIT"
+else
+  echo "node or claude is not on your PATH. Finish step 1 first."
+fi
 systemctl --user daemon-reload
 systemctl --user enable --now pipeline-tick.timer
 ```

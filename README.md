@@ -104,9 +104,10 @@ Anyone who knows the topic can read them. Keep it secret.
 - Publish refuses to push unless the base branch requires a PR with at least one code-owner approval. It checks
   before every push.
 - Its private key has no expiry. To revoke it, delete the key under the App's **Private keys**, or delete the App.
-- **Actions write** (optional) lets the App rerun CI that failed without a failed step. It also allows dispatching
-  any workflow on its own branches and deleting runs, logs and caches. Grant it only once deploy environments allow
-  deploys from reviewed branches alone, with the deploy secrets in those environments.
+- **Actions write** (optional) lets the App rerun CI that failed without a failed step. It also lets the App
+  dispatch any workflow on its own branches and delete runs, logs and caches.
+- Grant Actions write only once deploy environments allow deploys from reviewed branches alone, with the deploy
+  secrets in those environments.
 
 ### Requirements you can't change
 
