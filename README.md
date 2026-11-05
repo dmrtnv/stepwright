@@ -80,7 +80,8 @@ It doesn't protect:
 
 To Anthropic, from each stage VM:
 - the repo clone and the step's feature folder;
-- your `~/.claude/CLAUDE.md`, your `~/.claude/rules/`, your other skills and agents, and the repo's Claude memory.
+- your `~/.claude/CLAUDE.md`, your `~/.claude/rules/`, your other skills and agents, and the repo's Claude memory;
+- the tail of a failed CI job's log (up to 12,000 characters), when a CI fixer session runs.
 
 To Anthropic, from the host:
 - the usage probe;

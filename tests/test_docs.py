@@ -203,7 +203,9 @@ class Cost(unittest.TestCase):
                      f'{core.CI_FIXES_MAX} in all.',
                      f"weekly usage is at {admission['weeklyMax']} % or more, or your five-hour usage is at "
                      f"{admission['fiveHourMax']} % or more",
-                     f'up to {core.NTFY_CHARACTERS:,} characters per message')
+                     f'up to {core.NTFY_CHARACTERS:,} characters per message',
+                     f"the tail of a failed CI job's log (up to {core.CI_LOG_CHARACTERS:,} characters), when a CI fixer "
+                     'session runs')
         flat = ' '.join(self.readme.split())
 
         for sentence in sentences:
