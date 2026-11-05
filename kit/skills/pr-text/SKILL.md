@@ -19,7 +19,8 @@ argument-hint: "[plan] [range]"
 - the last five squash bodies on the default branch for this repo's style:
   `git log --first-parent -5 --format='%s%n%n%b' origin/<default>`.
 
-The repo's style wins over this skill's defaults.
+check.py enforces this format, because the pipeline's respond gate runs it. To use another style, replace this
+skill with your own, `check.py` included (INSTALL step 2).
 
 ## Format (plain text: no Markdown, no emoji, no attribution)
 
@@ -54,4 +55,4 @@ Print the title and the body as two separate fenced code blocks, ready to paste.
 
 Run `python3 ~/.claude/skills/pr-text/check.py <pr.md>` (or on a file holding the title, a blank line and the body)
 and fix until it prints nothing. check.py locks this format: the pipeline's respond gate runs it, and every rule it
-checks has a test in the repo's `tests/test_pr_text_check.py`.
+checks has a test in stepwright's `tests/test_pr_text_check.py`.

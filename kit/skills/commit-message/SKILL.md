@@ -57,7 +57,7 @@ If a hook rejects it, fix the cause and commit again. Report the commit in one l
 
 ## Output (message mode)
 
-Output **only** a single fenced code block containing the commit message itself — no `git commit`, no language tag, no preamble, no explanation, no trailing text. The user pastes it into the VSCode commit UI.
+Output **only** a single fenced code block containing the commit message itself — no `git commit`, no language tag, no preamble, no explanation, no trailing text.
 
 Single-line:
 

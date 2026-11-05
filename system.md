@@ -29,8 +29,7 @@ these win.
   assertion) must be named by exact path under `## Test changes` in the plan the user approved.
   `~/.claude/pipeline/heavy <command>` is optional here. Stop only your own processes
   (`~/.claude/pipeline/kill-own.sh <pattern>`).
-- **Commit subjects:** `type: Description` per the commit-message skill: no scope (`feat:`, never `feat(web):`),
-  capitalized, no period.
+- **Commit subjects:** per the commit-message skill.
 - **Shell hygiene:** absolute paths; no `cd` into computed dirs; multi-step edits as a scratch script; probes and
   scratch files outside the workspace (`/tmp`); no `git stash` (commit a WIP); commit before you finish (uncommitted
   work never leaves the VM).
