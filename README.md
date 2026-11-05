@@ -29,7 +29,7 @@ only. Unattended use of a subscription is a gray area. Read the sources and deci
   - "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the
     Agent SDK".
 - The same page does not permit routing requests "through Free, Pro, Max, or Ultra plan credentials on behalf of
-  their users" (checked 2026-11-05).
+  their users".
 - Each person installs stepwright and signs in with their own Claude account. Don't share one install or one login.
 - You are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
 
@@ -50,8 +50,8 @@ Some events add sessions, each with its stage's caps:
 - A red CI run gets 2 fixer sessions, then more while the failure moves, up to 5 in all.
 - Each round of PR comments runs a respond session.
 
-The dollar caps are estimates at API prices, and "Spend can pass the cap" (the Claude Code CLI reference, checked
-2026-11-04).
+The dollar caps are estimates at API prices, and "Spend can pass the cap"
+([Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference), checked 2026-11-04).
 
 No stage starts while your weekly usage is at 80 % or more, or your five-hour usage is at 70 % or more
 (`admission` in the config). To read your usage, the host makes one small Haiku call when the last reading is over 30
@@ -62,7 +62,8 @@ Docker Sandboxes local use "is free … including for commercial work"
 
 ### What the sandbox protects, and what it doesn't
 
-It protects (Docker's sbx security docs, checked 2026-11-04, and [sandbox/README.md](sandbox/README.md)):
+It protects ([Docker Sandboxes docs](https://docs.docker.com/ai/sandboxes/), checked 2026-11-04, and
+[sandbox/README.md](sandbox/README.md)):
 - Each stage runs in its own microVM, with a "separate kernel per sandbox".
 - Network egress is denied by default. A VM can reach only Anthropic's hosts, plus your `setupEgress` hosts during
   setup.
