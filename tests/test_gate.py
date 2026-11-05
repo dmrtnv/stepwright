@@ -357,8 +357,8 @@ class KitCopyCase(unittest.TestCase):
         self.assertNotIn('pipeline-feature', {path.name for path in skills.iterdir()})
         self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
                          (REAL_KIT / 'skills/plan-harden/SKILL.md').read_text())
-        self.assertEqual((self.captured / 'agents/web-researcher.md').read_text(),
-                         (REAL_KIT / 'agents/web-researcher.md').read_text())
+        self.assertEqual((self.captured / 'agents/web-researcher.md').read_text(), '# stale\n',
+                         'your own convention agent wins')
         self.assertEqual((self.captured / 'CLAUDE.md').read_text(), '# rules\n')
         copies = {result['check']: result['status'] for result in self.results if result['check'].startswith('sbx cp ')}
         self.assertEqual(copies, {'sbx cp CLAUDE.md': 'PASS', 'sbx cp skills': 'PASS', 'sbx cp agents': 'PASS',

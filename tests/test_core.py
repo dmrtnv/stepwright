@@ -1281,7 +1281,11 @@ class RunnerTest(RunnerCase):
         write(personal / 'skills/pr-text/SKILL.md', '# my pr-text\n')
         write(personal / 'skills/pr-text/fixtures/a.md', 'a\n')
         write(personal / 'skills/pr-text/test_check.py', 'pass\n')
+        write(personal / 'skills/pr-text/check.py', 'import sys\nsys.exit(0)\n')
+        write(personal / 'skills/plan-harden/extra.md', '# extra\n')
         write(personal / 'skills/pipeline-feature/SKILL.md', '# mine\n')
+        write(self.fixture.base / 'dotfiles/commit-message/SKILL.md', '# my commits\n')
+        (personal / 'skills/commit-message').symlink_to(self.fixture.base / 'dotfiles/commit-message')
         write(personal / 'agents/mine.md', '# my agent\n')
         write(self.fixture.base / 'linked/linear/SKILL.md', '# linear\n')
         (personal / 'skills/linear').symlink_to(self.fixture.base / 'linked/linear')
@@ -1295,18 +1299,23 @@ class RunnerTest(RunnerCase):
         self.assertEqual((home / '.claude/CLAUDE.md').read_text(), '# rules\n')
         kit_skills = {path.name for path in (REAL_KIT / 'skills').iterdir() if path.name != '__pycache__'}
         self.assertEqual({path.name for path in skills.iterdir()}, kit_skills - {'pipeline-feature'} | {'linear'})
-        kit_pr_text = {path for path in relative_files(REAL_KIT / 'skills/pr-text') if '__pycache__' not in path}
-        self.assertEqual(relative_files(skills / 'pr-text'), kit_pr_text, 'a kit skill replaces a personal one whole')
+        self.assertEqual(relative_files(skills / 'pr-text'),
+                         {'SKILL.md', 'fixtures/a.md', 'test_check.py', 'check.py'}, 'your own pr-text reaches the VM whole')
+        self.assertEqual((skills / 'pr-text/SKILL.md').read_text(), '# my pr-text\n')
+        self.assertEqual(relative_files(skills / 'plan-harden'), relative_files(REAL_KIT / 'skills/plan-harden'),
+                         'a contract skill replaces a personal one whole')
         self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
                          (REAL_KIT / 'skills/plan-harden/SKILL.md').read_text())
+        self.assertFalse((skills / 'commit-message').is_symlink())
+        self.assertEqual(relative_files(skills / 'commit-message'), {'SKILL.md'})
+        self.assertEqual((skills / 'commit-message/SKILL.md').read_text(), '# my commits\n')
         self.assertEqual([str(path) for path in skills.rglob('__pycache__')], [])
         self.assertFalse((skills / 'linear').is_symlink())
         self.assertFalse((skills / 'linear/SKILL.md').is_symlink())
         self.assertEqual((skills / 'linear/SKILL.md').read_text(), '# linear\n')
         agents = home / '.claude/agents'
         self.assertEqual({path.name for path in agents.iterdir()}, {'mine.md', 'web-researcher.md'})
-        self.assertEqual((agents / 'web-researcher.md').read_text(),
-                         (REAL_KIT / 'agents/web-researcher.md').read_text())
+        self.assertEqual((agents / 'web-researcher.md').read_text(), '# agent\n', 'your own convention agent wins')
         target = f'{SANDBOX}:{home}/.claude/'
         copied = sorted(Path(call[-2]).name for call in self.sbx_calls()
                         if call[:1] == ['cp'] and call[-1] == target
@@ -2497,6 +2506,143 @@ class RulesStagingTest(unittest.TestCase):
         self.assertIn('Permission denied', str(raised.exception))
 
 
+class KitSourceTest(unittest.TestCase):
+    """backend.kit_source and backend.stage_kit_tree: your own convention entries win, contract entries stay the kit's."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='kit-source-test-'))
+        self.addCleanup(shutil.rmtree, self.base)
+        self.home = self.base / 'home'
+        (self.home / '.claude/skills').mkdir(parents=True)
+        (self.home / '.claude/agents').mkdir(parents=True)
+        self.kit = fixture_kit(self.base)
+        patcher = mock.patch.multiple(backend, HOME=self.home, KIT=self.kit)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.skills = self.home / '.claude/skills'
+
+    def test_a_contract_skill_is_always_the_kits(self):
+        write(self.skills / 'plan-harden/SKILL.md', '# mine\n')
+        self.assertEqual(backend.kit_source('skills', 'plan-harden'), self.kit / 'skills/plan-harden')
+        write(self.skills / 'pipeline-feature/SKILL.md', '# mine\n')
+        self.assertEqual(backend.kit_source('skills', 'pipeline-feature'), self.kit / 'skills/pipeline-feature')
+
+    def test_your_own_convention_copy_wins(self):
+        write(self.skills / 'commit-message/SKILL.md', '# mine\n')
+        self.assertEqual(backend.kit_source('skills', 'commit-message'), self.skills / 'commit-message')
+        write(self.home / '.claude/agents/web-researcher.md', '# mine\n')
+        self.assertEqual(backend.kit_source('agents', 'web-researcher.md'), self.home / '.claude/agents/web-researcher.md')
+
+    def test_a_link_into_the_kit_is_the_kits(self):
+        (self.skills / 'wrap-up').symlink_to(self.kit / 'skills/wrap-up')
+        self.assertEqual(backend.kit_source('skills', 'wrap-up'), self.kit / 'skills/wrap-up')
+        (self.skills / 'pr-text').symlink_to(self.kit / 'skills/commit-message')
+        self.assertEqual(backend.kit_source('skills', 'pr-text'), self.kit / 'skills/pr-text', 'any link into the kit')
+
+    def test_a_link_to_a_dotfiles_dir_is_yours(self):
+        write(self.base / 'dotfiles/commit-message/SKILL.md', '# dotfiles\n')
+        (self.skills / 'commit-message').symlink_to(self.base / 'dotfiles/commit-message')
+        self.assertEqual(backend.kit_source('skills', 'commit-message'), self.skills / 'commit-message')
+
+    def test_a_dangling_link_a_loop_or_nothing_is_the_kits(self):
+        (self.skills / 'wrap-up').symlink_to(self.base / 'nowhere')
+        self.assertEqual(backend.kit_source('skills', 'wrap-up'), self.kit / 'skills/wrap-up')
+        (self.skills / 'pr-text').symlink_to(self.skills / 'pr-text')
+        self.assertEqual(backend.kit_source('skills', 'pr-text'), self.kit / 'skills/pr-text')
+        self.assertEqual(backend.kit_source('skills', 'commit-message'), self.kit / 'skills/commit-message')
+
+    def test_an_override_of_another_kind_and_a_dangling_link_stage_without_raising(self):
+        write(self.skills / 'commit-message', '# a file, not a dir\n')
+        (self.skills / 'wrap-up').symlink_to(self.base / 'nowhere')
+        staging = self.base / 'staging'
+        staging.mkdir()
+        staged = backend.stage_kit_tree('skills', staging)
+        self.assertTrue((staged / 'commit-message').is_file())
+        self.assertEqual((staged / 'commit-message').read_text(), '# a file, not a dir\n')
+        self.assertEqual(relative_files(staged / 'wrap-up'), relative_files(REAL_KIT / 'skills/wrap-up'))
+        self.assertFalse((staged / 'wrap-up').is_symlink())
+
+
+class PrTextCheckerTest(unittest.TestCase):
+    """core.check_pr_text runs the pr-text check.py the VM got, as a command with a timeout."""
+
+    GOOD = 'fix: Do the thing\n\nWhy it matters.\n\nNo migrations.\n'
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='pr-text-test-'))
+        self.addCleanup(shutil.rmtree, self.base)
+        self.home = self.base / 'home'
+        self.own = self.home / '.claude/skills/pr-text'
+        (self.home / '.claude/skills').mkdir(parents=True)
+        patcher = mock.patch.object(backend, 'HOME', self.home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def own_checker(self, body):
+        write(self.own / 'SKILL.md', '# my pr-text\n')
+        write(self.own / 'check.py', 'import sys\n' + body)
+
+    def test_the_kits_checker_passes_good_text_and_lists_problems(self):
+        self.assertEqual(core.pr_text_checker(), backend.KIT / 'skills/pr-text/check.py')
+        self.assertEqual(core.check_pr_text(self.GOOD), [])
+        found = core.check_pr_text('no title')
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].startswith('pr.md breaks the pr-text format'), found)
+        self.assertIn('line 1: the title is not', found[0])
+
+    def test_non_ascii_text_reaches_the_checker_whole(self):
+        self.assertEqual(core.check_pr_text('fix: Do the thing \u2014 caf\u00e9\n\nWhy it matters \u2014 caf\u00e9.\n\n'
+                                            'No migrations.\n'), [])
+
+    def test_your_own_checker_problems_are_listed(self):
+        self.own_checker("print('line 1: house style')\nsys.exit(1)\n")
+        self.assertEqual(core.pr_text_checker(), self.own / 'check.py')
+        found = core.check_pr_text(self.GOOD)
+        self.assertTrue(found[0].startswith('pr.md breaks the pr-text format'), found)
+        self.assertTrue(found[0].endswith('\nline 1: house style'), found)
+
+    def test_your_own_checker_can_pass_text_the_kit_rejects(self):
+        self.own_checker("sys.exit(0)\n")
+        self.assertEqual(core.check_pr_text('no title'), [])
+
+    def test_your_own_checker_can_import_a_sibling_module(self):
+        write(self.own / 'rules.py', "PROBLEMS = ['line 2: from rules']\n")
+        self.own_checker("import rules\nprint('\\n'.join(rules.PROBLEMS))\nsys.exit(1)\n")
+        self.assertIn('\nline 2: from rules', core.check_pr_text(self.GOOD)[0])
+
+    def test_a_missing_own_checker_could_not_run(self):
+        write(self.own / 'SKILL.md', '# my pr-text\n')
+        found = core.check_pr_text(self.GOOD)
+        self.assertIn(f'The PR text checker {self.own / "check.py"} could not run (exit 2', found[0])
+        self.assertIn('It is your own pr-text skill', found[0])
+        self.assertIn(f'ln -sfn {backend.KIT / "skills/pr-text"} {self.own}', found[0])
+
+    def test_a_crashing_checker_could_not_run(self):
+        self.own_checker("1 / 0\n")
+        found = core.check_pr_text(self.GOOD)
+        self.assertIn('could not run (exit 1', found[0])
+        self.assertIn('ZeroDivisionError', found[0])
+
+    def test_a_crash_after_a_problem_keeps_the_problem_and_the_stderr(self):
+        self.own_checker("print('line 1: house style', flush=True)\n1 / 0\n")
+        found = core.check_pr_text(self.GOOD)
+        self.assertTrue(found[0].startswith('pr.md breaks the pr-text format'), found)
+        lines = found[0].splitlines()
+        self.assertIn('line 1: house style', lines)
+        self.assertTrue(lines[-1].startswith('check.py stderr: '), lines)
+        self.assertIn('ZeroDivisionError', lines[-1])
+
+    def test_a_hanging_checker_times_out(self):
+        self.own_checker("import time\ntime.sleep(5)\n")
+        started = time.monotonic()
+
+        with mock.patch.object(core, 'PR_TEXT_TIMEOUT_SECONDS', 1):
+            found = core.check_pr_text(self.GOOD)
+
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertIn(f'The PR text checker {self.own / "check.py"} could not run (timed out after 1s)', found[0])
+
+
 class TemplateTest(RunnerCase):
     """The sandbox template: built when the host's Claude Code moved (auto), or waited for (manual, failed builds),
     pinned, and pruned."""
@@ -2828,20 +2974,49 @@ class PublishTest(RunnerCase):
         self.assertEqual(self.github.pull(5)['body'], 'Why it matters.\n\nNo migrations.', 'the fixed pr.md passes')
 
     def test_a_missing_pr_text_checker_fails_the_respond_gate(self):
-        missing = self.fixture.base / 'no-such-check.py'
+        kit = fixture_kit(self.fixture.base)
+        (kit / 'skills/pr-text/check.py').unlink()
 
-        with mock.patch.object(core, 'PR_TEXT_CHECKER', missing):
+        with mock.patch.object(backend, 'KIT', kit):
             self.happy_path(**{'thing-01-respond-1': [RESPOND] * 3})
             self.main(FEATURE)
 
         state = self.state()
         self.assertEqual((state['stage'], state['status']), ('respond', 'paused'), state['reason'])
-        self.assertIn(f'The PR text checker {missing} could not run', state['reason'])
+        self.assertIn(f'The PR text checker {kit}/skills/pr-text/check.py could not run', state['reason'])
+        self.assertIn('in the kit dir', state['reason'])
+        self.assertEqual(self.origin_branch(), '')
+
+    def test_your_own_pr_text_checker_runs_in_the_respond_gate(self):
+        own = self.fixture.home / '.claude/skills/pr-text'
+        write(own / 'SKILL.md', '# my pr-text\n')
+        write(own / 'check.py', "import sys\nprint('line 1: house style')\nsys.exit(1)\n")
+        self.happy_path(**{'thing-01-respond-1': [RESPOND] * 3})
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('respond', 'paused'), state['reason'])
+        _, fix, *_ = self.claude_calls('thing-01-respond-1')
+        self.assertIn('pr.md breaks the pr-text format', fix['prompt'])
+        self.assertIn('line 1: house style', fix['prompt'])
+        self.assertEqual(self.origin_branch(), '')
+
+    def test_a_hanging_pr_text_checker_fails_the_respond_gate(self):
+        own = self.fixture.home / '.claude/skills/pr-text'
+        write(own / 'SKILL.md', '# my pr-text\n')
+        write(own / 'check.py', 'import time\ntime.sleep(5)\n')
+
+        with mock.patch.object(core, 'PR_TEXT_TIMEOUT_SECONDS', 1):
+            self.happy_path(**{'thing-01-respond-1': [RESPOND] * 3})
+            self.main(FEATURE)
+
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('respond', 'paused'), state['reason'])
+        self.assertIn('timed out after 1s', state['reason'])
         self.assertEqual(self.origin_branch(), '')
 
     def test_the_pr_text_checker_ships_in_the_kit(self):
-        self.assertEqual(core.PR_TEXT_CHECKER, core.PIPELINE_DIR / 'kit/skills/pr-text/check.py')
-        self.assertTrue(core.PR_TEXT_CHECKER.is_file())
+        self.assertEqual(core.pr_text_checker(), backend.KIT / 'skills/pr-text/check.py')
+        self.assertTrue(core.pr_text_checker().is_file())
         self.assertIn('line 1: the title is not', core.check_pr_text('no title')[0])
 
     def test_a_planted_done_notice_symlink_is_replaced_not_written_through(self):
