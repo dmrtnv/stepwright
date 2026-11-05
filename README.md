@@ -8,15 +8,112 @@ and merge, then the next step starts.
 
 **Install:** [INSTALL.md](INSTALL.md) (Ubuntu 24.04+, a Claude subscription, a GitHub App of your own).
 
-## Terms of use
+## Before you run it
 
-stepwright runs the unmodified `claude` CLI with **your own** Claude login. Unattended use of a subscription is a gray
-area: Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (§3) forbid accessing the services
-"through automated or non-human means, whether through a bot, script, or otherwise", "except when you are accessing
-our Services via an Anthropic API Key or where we otherwise explicitly permit it". The
-[Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) adds that "Advertised usage limits for
-Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK". Read both and decide for
-yourself; you are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
+Read this before you install. It covers the terms, the cost, the risks, what leaves your machine and what the
+GitHub App can do.
+
+### Terms
+
+stepwright runs the unmodified `claude` CLI with **your own** Claude login. It is tested with a subscription login
+only. Unattended use of a subscription is a gray area. Read the sources and decide for yourself.
+
+- Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (§3) forbid accessing the services
+  "through automated or non-human means, whether through a bot, script, or otherwise", "except when you are
+  accessing our Services via an Anthropic API Key or where we otherwise explicitly permit it" (checked 2026-11-05).
+- The [Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) says (checked 2026-11-05):
+  - OAuth "is designed to support ordinary use of Claude Code";
+  - "Developers building products … should use API key authentication";
+  - this does not "prevent an end user from signing in to the unmodified Claude Code binary with their own Claude
+    subscription";
+  - "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the
+    Agent SDK".
+- The same page does not permit routing requests "through Free, Pro, Max, or Ultra plan credentials on behalf of
+  their users".
+- Each person installs stepwright and signs in with their own Claude account. Don't share one install or one login.
+- You are responsible for your account. stepwright is not made, endorsed or supported by Anthropic.
+
+### Cost
+
+Every stage is a Claude Code session on Opus 5.5 (`claude-opus-5-5`). It falls back to Sonnet 5.5 when Opus is
+overloaded. Each session has a time cap and a dollar cap:
+- plan: 3 h, $40
+- implement: 5 h, $60
+- review: 3 h, $20
+- respond: 4 h, $30
+
+The normal path is plan, implement and up to 2 review and respond rounds: 22 h and $200 in caps.
+
+Some events add sessions, each with its stage's caps:
+- A red gate resumes the stage, up to 2 times.
+- A rebase conflict, or a base branch that moved, runs a fixer session.
+- A red CI run gets 2 fixer sessions, then more while the failure moves, up to 5 in all.
+- Each round of PR comments runs a respond session.
+
+The dollar caps are estimates at API prices, and "Spend can pass the cap"
+([Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference), checked 2026-11-04).
+
+No stage starts while your weekly usage is at 80 % or more, or your five-hour usage is at 70 % or more
+(`admission` in the config). To read your usage, the host makes one small Haiku call when the last reading is over 30
+minutes old.
+
+Docker Sandboxes local use "is free … including for commercial work"
+([Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), checked 2026-11-04).
+
+### What the sandbox protects, and what it doesn't
+
+It protects ([Docker Sandboxes docs](https://docs.docker.com/ai/sandboxes/), checked 2026-11-04, and
+[sandbox/README.md](sandbox/README.md)):
+- Each stage runs in its own microVM, with a "separate kernel per sandbox".
+- Network egress is denied by default. A VM can reach only Anthropic's hosts, plus your `setupEgress` hosts during
+  setup.
+- Your Claude login is an sbx secret on the host: "The raw credential values never enter the VM".
+- The GitHub App's private key never enters a VM. The host signs with it.
+
+It doesn't protect:
+- The agent can change anything on its branch. Protected paths, the tamper and secret gates, CI and your review
+  check that.
+- Briefs, repo content and CI logs can carry prompt injection.
+- Your CI runs the agent's code with whatever secrets those jobs can read. The branches live in your repo, not a
+  fork.
+
+### What leaves your machine
+
+To Anthropic, from each stage VM:
+- the repo clone and the step's feature folder;
+- your `~/.claude/CLAUDE.md`, your `~/.claude/rules/`, your other skills and agents, and the repo's Claude memory;
+- the tail of a failed CI job's log (up to 12,000 characters), when a CI fixer session runs.
+
+To Anthropic, from the host:
+- the usage probe;
+- `sandbox/gate.py`'s few test calls, when you run it.
+
+To GitHub: the pushed commits, the PR title and body, the evidence comment and the review request.
+
+To ntfy.sh, only when `~/.config/ntfy/topic` exists:
+- a title of repo, feature and step;
+- error lines, plan questions and PR links;
+- up to 1,000 characters per message.
+
+Anyone who knows the topic can read them. Keep it secret.
+
+### What the GitHub App can do
+
+- It has Contents and Pull requests write, Checks and Actions read, and Metadata read. Nothing else.
+- It can push wherever your rulesets let a non-admin push. `examples/rulesets.sh` limits that to `agent/**`.
+- Publish refuses to push unless the base branch requires a PR with at least one code-owner approval. It checks
+  before every push.
+- Its private key has no expiry. To revoke it, delete the key under the App's **Private keys**, or delete the App.
+- **Actions write** (optional) lets the App rerun CI that failed without a failed step. It also lets the App
+  dispatch any workflow on its own branches and delete runs, logs and caches.
+- Grant Actions write only once deploy environments allow deploys from reviewed branches alone, with the deploy
+  secrets in those environments.
+
+### Requirements you can't change
+
+- Node on the host: the VMs get the same version.
+- x86_64: the VM template installs Node's `linux-x64` build.
+- One reviewer: `app.reviewer` takes a single GitHub login.
 
 ## How it works
 
@@ -69,9 +166,6 @@ Step by step: [INSTALL.md](INSTALL.md). Notes for later:
 
 - **Template**: with the default policy (`"claude": "host", "build": "auto"`) the runner builds the template for a new
   host `claude` itself before the next sandbox create; see Upgrading.
-- **Actions write** (optional) lets the App rerun CI that failed without a failed step, but it also allows
-  dispatching any workflow on its own branches and deleting runs, logs and caches: grant it only once deploy
-  environments allow deploys from reviewed branches alone, with the deploy secrets in those environments.
 - **A daemon started by hand** (`sbx daemon start`, or one any `sbx` command autostarted while `sbx.service` was down)
   sits outside the caps and dies with its terminal; while it holds `sandboxd.lock` the unit refuses to start (retries
   every 15 s) and stages queue. Cut over once, when no stage runs: `pipeline stop --all`, `sbx daemon stop`,
