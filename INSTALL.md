@@ -1,6 +1,9 @@
 # Install
 
-About an hour, most of it waiting for downloads. Each step ends with a **Check**: don't go on until it passes.
+Read [Before you run it](README.md#before-you-run-it) first. It covers the terms, the cost and the risks.
+
+About an hour, most of it waiting for downloads. Paste each block into a terminal. Each step ends with a **Check**:
+don't go on until it passes. When a block starts with lines like `REPO=<owner>/<repo>`, fill in those lines first.
 
 ## What you need
 
@@ -13,30 +16,33 @@ About an hour, most of it waiting for downloads. Each step ends with a **Check**
 - **Claude Code** (`claude`) signed in with your own Claude subscription. Max is recommended: stages are long.
 - **A Docker account** (free) for Docker Sandboxes.
 - **A GitHub account** and a repo you want the pipeline to work on.
-- Packages: `sudo apt install git jq python3 curl`, plus **Node** (any LTS; the VMs get the same version) and
+- **The GitHub CLI** (`gh`), signed in with `gh auth login` as an admin of that repo. Step 6 uses it.
+- Packages: `sudo apt install git jq python3 curl gh`, plus **Node** (any LTS; the VMs get the same version) and
   **Docker Engine** that your user can run (`docker run hello-world` works without sudo).
 
-**Check:** `python3 --version` (≥ 3.12), `node --version`, `claude --version`, `docker run --rm hello-world`,
-`ls /dev/kvm`.
-
-Read [Terms of use](README.md#terms-of-use) before you start.
+**Check:** `python3 --version` (≥ 3.12), `node --version`, `claude --version`, `gh auth status`,
+`docker run --rm hello-world`, `ls /dev/kvm`.
 
 ## 1. Install Docker Sandboxes
 
 1. Install the `docker-sbx` package by following
    [Docker's install guide](https://docs.docker.com/ai/sandboxes/install/).
-2. Add yourself to the `kvm` group: `sudo usermod -aG kvm "$USER"`. Then log out and back in.
-3. **Don't run any `sbx` command yet.** The first one would start a daemon outside the limits you set in step 3.
+2. **Don't run any `sbx` command yet.** The first one would start a daemon outside the limits you set in step 3.
+3. Add yourself to the `kvm` group, then log out and back in:
+
+   ```bash
+   sudo usermod -aG kvm "$USER"
+   ```
 
 **Check:** `command -v sbx` prints a path; `id -nG | grep -w kvm` prints a line.
 
 ## 2. Get stepwright and run init
 
 ```bash
-git clone https://github.com/dmrtnv/stepwright.git ~/.local/share/pipeline/runner
-cd ~/.local/share/pipeline/runner
-git checkout "$(git describe --tags --abbrev=0 2>/dev/null || echo main)"   # the latest release, if any
-./pipeline init
+R=$HOME/.local/share/pipeline/runner
+git clone https://github.com/dmrtnv/stepwright.git "$R"
+git -C "$R" checkout "$(git -C "$R" describe --tags --abbrev=0 2>/dev/null || echo main)"   # the latest release, if any
+"$R/pipeline" init
 ```
 
 Keep this clone for running the pipeline only. Don't develop in it.
@@ -77,7 +83,8 @@ Your own convention entry must keep what the stages rely on:
 No override changes the trailer and personal-text commit gates, or the redaction of pr.md.
 
 Stage VMs also get your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and your other skills and agents.
-`pipeline-feature` stays on the host. Keep secrets out of them.
+`pipeline-feature` stays on the host. Keep secrets out of them. [What leaves your
+machine](README.md#what-leaves-your-machine) lists everything that goes to Anthropic.
 
 **Check:** `pipeline help` lists the commands. If you get "command not found", add `~/.local/bin` to your `PATH`.
 Then run `pipeline doctor`: the `tool`, `kvm group`, `docker`, `runner` and `kit` lines PASS. The lines for later
@@ -85,28 +92,40 @@ steps FAIL until you do those steps; each FAIL has a `fix:` line under it.
 
 ## 3. Start the sandbox daemon
 
-1. Review the caps in `~/.config/systemd/user/sbx.service` (`MemoryHigh`, `MemoryMax` and `CPUQuota`). The comments
-   in the unit explain them. If init kept a unit you already had, it says so: that unit's caps are the ones that
-   apply.
-2. Enable it, and let your units run while you are logged out:
+### 3.1 Review the caps
 
-   ```bash
-   systemctl --user daemon-reload
-   systemctl --user enable --now sbx.service
-   loginctl enable-linger "$USER"
-   ```
+Open `~/.config/systemd/user/sbx.service` and review `MemoryHigh`, `MemoryMax` and `CPUQuota`. The comments in the
+unit explain them. If init kept a unit you already had, it says so: that unit's caps are the ones that apply.
 
-3. Run the one-time sbx setup, then sign in to Docker (it opens a browser):
+```bash
+grep -E '^(MemoryHigh|MemoryMax|CPUQuota)=' ~/.config/systemd/user/sbx.service
+```
 
-   ```bash
-   ~/.local/share/pipeline/runner/sbx-host/install-sbx.sh
-   sbx login
-   ```
+**Check:** the command prints the three caps.
 
-**Check:** in `pipeline doctor`, the `unit sbx.service` and `linger` lines PASS; `sbx-host status` prints the memory
-budget.
-`sbx create --help` lists `--skills`. Stage VMs are created with `--skills off`, and an older sbx fails every create:
-update the `docker-sbx` package.
+### 3.2 Enable the daemon
+
+Enable it, and let your units run while you are logged out:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sbx.service
+loginctl enable-linger "$USER"
+```
+
+**Check:** in `pipeline doctor`, the `unit sbx.service` and `linger` lines PASS.
+
+### 3.3 Set up sbx and sign in to Docker
+
+Run the one-time sbx setup, then sign in to Docker (it opens a browser):
+
+```bash
+~/.local/share/pipeline/runner/sbx-host/install-sbx.sh
+sbx login
+```
+
+**Check:** `sbx-host status` prints the memory budget, and `sbx create --help` lists `--skills`. Stage VMs are created
+with `--skills off`, and an older sbx fails every create: update the `docker-sbx` package.
 
 ## 4. Create your GitHub App
 
@@ -114,71 +133,161 @@ The pipeline pushes branches and opens PRs as this App, never as you.
 
 1. Open <https://github.com/settings/apps/new>.
 2. Fill in:
-   - **Name**: anything, for example `<you>-pipeline`.
-   - **Homepage URL**: your repo's URL.
-   - **Webhook**: untick **Active**.
-   - **Repository permissions**: Contents *Read and write*, Pull requests *Read and write*, Checks *Read-only*,
-     Actions *Read-only*. Leave everything else at *No access*, Workflows included.
-   - **Where can this GitHub App be installed?**: Only on this account.
-3. Click **Create GitHub App**. Note the **App ID**, and the **slug**: the last part of the app's URL.
-4. Under **Private keys**, click **Generate a private key**, then move the downloaded file into place:
+   1. **GitHub App name**: anything, for example `<you>-pipeline`.
+   2. **Homepage URL**: your repo's URL.
+   3. **Webhook**: untick **Active**.
+   4. **Repository permissions**: Contents *Read and write*, Pull requests *Read and write*, Checks *Read-only*,
+      Actions *Read-only*. Leave everything else at *No access*, Workflows included.
+   5. **Where can this GitHub App be installed?**: **Only on this account**.
+3. Click **Create GitHub App**. Note the **App ID**, and the **slug**: the last part of the App's URL.
+4. Under **Private keys**, click **Generate a private key**. Your browser saves it in `~/Downloads`. Keep only this
+   App's key there, then move it into place:
 
    ```bash
    mkdir -p ~/.config/pipeline
-   mv ~/Downloads/<app-name>.*.private-key.pem ~/.config/pipeline/app.pem
+   mv ~/Downloads/*.private-key.pem ~/.config/pipeline/app.pem
    chmod 600 ~/.config/pipeline/app.pem
    ```
 
 5. Click **Install App**, then **Only select repositories**, pick your repo and install.
 
-**Check:** in `pipeline doctor`, the `app key` line PASSes.
+**Check:** `ls -l ~/.config/pipeline/app.pem` starts with `-rw-------`, and `pipeline doctor | grep 'app key'` shows
+PASS.
 
 ## 5. Configure
 
-Edit `~/.config/pipeline/config.json`, which init wrote:
-- `app.id` and `app.slug`: from step 4.
-- `app.reviewer`: your GitHub login. The pipeline requests your review on each PR.
-- `repos`: `{"<owner>/<repo>": "<path of your checkout>"}`, for example `{"alice/shop": "~/code/shop"}`.
+### 5.1 Fill in the config
+
+This edits `~/.config/pipeline/config.json`, which init wrote. Fill in the five lines at the top first:
+- `APP_ID` and `APP_SLUG`: from step 4.
+- `REVIEWER`: your GitHub login. The pipeline requests your review on each PR.
+- `REPO` and `CHECKOUT`: your repo and the path of your checkout of it.
+
+```bash
+APP_ID=<App ID from step 4>
+APP_SLUG=<slug from step 4>
+REVIEWER=<your GitHub login>
+REPO=<owner>/<repo>
+CHECKOUT=$HOME/code/<repo>
+python3 -c '
+import json, pathlib, sys
+app_id, slug, reviewer, repo, checkout = sys.argv[1:]
+path = pathlib.Path.home() / ".config/pipeline/config.json"
+config = json.loads(path.read_text())
+config["app"].update(id=int(app_id), slug=slug, reviewer=reviewer)
+config["repos"].pop("your-github-login/your-repo", None)
+config["repos"][repo] = checkout
+path.write_text(json.dumps(config, indent=2) + "\n")
+' "$APP_ID" "$APP_SLUG" "$REVIEWER" "$REPO" "$CHECKOUT"
+```
 
 `pipeline doctor` reports the config as a FAIL while it still holds the example's values.
 
 init sized the stage VM (`vm`) and how many stages run at once (`admission.slots`) for this machine. The defaults for
 the other limits (`admission`) and the sandbox template (`template`) are described in the README.
 
-Optional: phone notifications through [ntfy](https://ntfy.sh). Put a random topic name on one line in
-`~/.config/ntfy/topic`, `chmod 600` it, and subscribe to that topic in the ntfy app.
+**Check:** `pipeline doctor | grep -E '^(PASS|FAIL)  (config|sbx-host reserve)'` shows two lines, and both read
+PASS. Then run `pipeline prove-app --repo "$REPO"`: every permission line must PASS. Lines about rules, CI runs or
+job logs may still FAIL; step 6 fixes them.
 
-**Check:** in `pipeline doctor`, the `config` and `sbx-host reserve` lines PASS. Then run
-`pipeline prove-app --repo <owner>/<repo>`: every permission line must PASS. Lines about rules, CI runs
-or job logs may still FAIL; step 6 fixes them.
+### 5.2 Turn on phone notifications (optional)
+
+This sends notifications through [ntfy](https://ntfy.sh). It creates a random topic name once and never replaces
+one you have.
+
+```bash
+mkdir -p ~/.config/ntfy
+test -e ~/.config/ntfy/topic || python3 -c 'import secrets; print("pipeline-" + secrets.token_hex(12))' > ~/.config/ntfy/topic
+chmod 600 ~/.config/ntfy/topic
+```
+
+**Check:** `cat ~/.config/ntfy/topic` prints the topic. Subscribe to that topic in the ntfy app.
 
 ## 6. Prepare your repo
 
-Do this in your checkout, then commit and push it to the default branch.
+Steps 6.1 to 6.3 write files in your checkout. Step 6.4 commits and pushes them, and step 6.5 protects the default
+branch.
 
-1. **`.claude/pipeline.json`** tells the pipeline how to set up and check the repo. Start from a preset:
-   - `examples/pipeline.python.json` for Python;
-   - `examples/pipeline.node-pnpm.json` for pnpm.
+### 6.1 Add the recipe
 
-   Adjust `setup` (install commands), `setupEgress` (hosts setup may reach), `checkFast` (the commands that must
-   pass) and `ci.requiredChecks` (your CI job names). The README lists every key. With drizzle-kit, add
-   `"migrations": {"dir": "<out>", "journal": "<out>/meta/_journal.json", "generate": "drizzle-generate.py"}`,
-   where `<out>` is your drizzle-kit `out` dir.
-2. **`.github/CODEOWNERS`** with one line, `* @<your-login>`, so every PR needs your approval.
-3. **A CI workflow** that runs on `pull_request`, with job names matching `ci.requiredChecks`.
-4. **`.gitignore`**: add `.claude/plans/`, where your feature briefs and plans live.
-5. **Rulesets**, after one CI run has finished on the default branch:
-   `~/.local/share/pipeline/runner/examples/rulesets.sh <owner>/<repo> <check> [<check>…]`.
-   They need a public repo, or GitHub Pro or Team for a private one.
+`.claude/pipeline.json` tells the pipeline how to set up and check the repo. This copies a preset: `python` or
+`node-pnpm`. It never replaces a recipe you already have.
 
-**Check:** `pipeline prove-app --repo <owner>/<repo>` and `pipeline prove-gate --repo <owner>/<repo>` (prove-gate
-opens a throwaway draft PR and closes it again): every line PASS.
+```bash
+CHECKOUT=$HOME/code/<repo>
+PRESET=python            # or node-pnpm
+mkdir -p "$CHECKOUT/.claude"
+cp --update=none ~/.local/share/pipeline/runner/examples/pipeline.$PRESET.json "$CHECKOUT/.claude/pipeline.json"
+```
+
+Then adjust `setup` (install commands), `setupEgress` (hosts setup may reach), `checkFast` (the commands that must
+pass) and `ci.requiredChecks` (your CI job names). The README lists every key. With drizzle-kit, add
+`"migrations": {"dir": "<out>", "journal": "<out>/meta/_journal.json", "generate": "drizzle-generate.py"}`,
+where `<out>` is your drizzle-kit `out` dir.
+
+**Check:** `jq -r '.ci.requiredChecks[]' "$CHECKOUT/.claude/pipeline.json"` prints your CI job names.
+
+### 6.2 Add CODEOWNERS
+
+One line, `* @<your-login>`, so every PR needs your approval. It never replaces a CODEOWNERS you already have.
+
+```bash
+CHECKOUT=$HOME/code/<repo>
+LOGIN=<your GitHub login>
+mkdir -p "$CHECKOUT/.github"
+test -e "$CHECKOUT/.github/CODEOWNERS" || printf '* @%s\n' "$LOGIN" > "$CHECKOUT/.github/CODEOWNERS"
+```
+
+**Check:** `cat "$CHECKOUT/.github/CODEOWNERS"` names you as an owner.
+
+### 6.3 Ignore the plans folder
+
+Your feature briefs and plans live in `.claude/plans/`.
+
+```bash
+CHECKOUT=$HOME/code/<repo>
+touch "$CHECKOUT/.gitignore"
+[ -z "$(tail -c1 "$CHECKOUT/.gitignore")" ] || echo >> "$CHECKOUT/.gitignore"
+grep -qxF '.claude/plans/' "$CHECKOUT/.gitignore" || printf '%s\n' '.claude/plans/' >> "$CHECKOUT/.gitignore"
+```
+
+**Check:** `grep -x '.claude/plans/' "$CHECKOUT/.gitignore"` prints the line once.
+
+### 6.4 Add CI, then commit and push
+
+Add a CI workflow that runs on `pull_request`, with job names matching `ci.requiredChecks`. Then commit everything
+to the default branch and push it:
+
+```bash
+CHECKOUT=$HOME/code/<repo>
+git -C "$CHECKOUT" add .claude/pipeline.json .github .gitignore
+git -C "$CHECKOUT" commit -m "chore: Prepare the repo for stepwright"
+git -C "$CHECKOUT" push
+```
+
+**Check:** `git -C "$CHECKOUT" status --short --branch` shows no `ahead`, and the CI run on the default branch has
+finished on GitHub.
+
+### 6.5 Add the rulesets
+
+Run this once, after one CI run has finished on the default branch. A second run fails, because the rulesets already
+exist. Rulesets need a public repo, or GitHub Pro or Team for a private one.
+
+```bash
+CHECKOUT=$HOME/code/<repo>
+REPO=<owner>/<repo>
+jq -r '.ci.requiredChecks[]' "$CHECKOUT/.claude/pipeline.json" | xargs ~/.local/share/pipeline/runner/examples/rulesets.sh "$REPO"
+```
+
+**Check:** `pipeline prove-app --repo "$REPO"` and `pipeline prove-gate --repo "$REPO"` (prove-gate opens a
+throwaway draft PR and closes it again): every line PASS.
 
 ## 7. Build the VM template and test a sandbox
 
 ```bash
+CHECKOUT=$HOME/code/<repo>
 pipeline template build
-~/.local/share/pipeline/runner/sandbox/gate.py --repo <path of your checkout>
+~/.local/share/pipeline/runner/sandbox/gate.py --repo "$CHECKOUT"
 ```
 
 Run `gate.py` from a terminal: the first time, it asks you to `/login` to Claude once inside a sandbox. It makes a few
@@ -188,11 +297,13 @@ tiny Claude calls on your subscription.
 
 ## 8. Turn on the timer
 
-init installed the tick units in step 2. If `node` or `claude` live outside `/usr/local/bin` and `/usr/bin`
-(`command -v node claude`), first add their directories to `PATH=` in `~/.config/systemd/user/pipeline-tick.service`.
-Then:
+init installed the tick units in step 2. This adds the directories of `node` and `claude` to the unit's `PATH=`
+once, then starts the timer:
 
 ```bash
+UNIT=~/.config/systemd/user/pipeline-tick.service
+DIRS=$(dirname "$(command -v node)"):$(dirname "$(command -v claude)")
+grep -qF "PATH=$DIRS:" "$UNIT" || sed -i "s|^Environment=PATH=|&$DIRS:|" "$UNIT"
 systemctl --user daemon-reload
 systemctl --user enable --now pipeline-tick.timer
 ```
@@ -204,35 +315,50 @@ header without errors, and `pipeline doctor` ends with `N checks, 0 FAIL`.
 
 1. In your checkout, start Claude Code and run `/pipeline-feature <name>`. It interviews you and writes the steps
    under `.claude/plans/<name>/`.
-2. Run `pipeline <name> --detach`, or wait up to 5 minutes for the timer to start it.
+2. Start it, or wait up to 5 minutes for the timer to start it:
+
+   ```bash
+   NAME=<name>
+   pipeline "$NAME" --detach
+   ```
+
 3. Watch it with `pipeline status --watch`. The README explains what each state needs from you.
 4. When the PR turns green, review it and merge it. The next step starts on its own.
 
+**Check:** `pipeline show "$NAME"` shows the feature's steps and the current stage.
+
 ## Update
 
-When `pipeline status` shows no running stage:
+When `pipeline status` shows no running stage, fill in the tag and run:
 
 ```bash
-cd ~/.local/share/pipeline/runner && git fetch --tags && git checkout <new tag>
-./pipeline init
+TAG=<new tag>
+R=$HOME/.local/share/pipeline/runner
+git -C "$R" fetch --tags
+git -C "$R" checkout "$TAG"
+"$R/pipeline" init
 ```
 
-`pipeline init` links any skill or agent the new tag adds to the kit and skips everything you already have. Then rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so. To roll back, check out the previous tag. Config
-(`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches them.
+`pipeline init` links any skill or agent the new tag adds to the kit and skips everything you already have. Then
+rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so. To roll back, check out the previous tag. Config
+(`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches
+them.
+
+**Check:** `git -C "$R" describe --tags` prints the tag, and `pipeline doctor` ends with `N checks, 0 FAIL`.
 
 ## Manual setup (without init)
 
 What `pipeline init` does in steps 2 to 5, by hand. Every command refuses to overwrite what you already have.
 
 ```bash
-cd ~/.local/share/pipeline/runner
+R=$HOME/.local/share/pipeline/runner
 mkdir -p ~/.local/bin ~/.claude/skills ~/.claude/agents ~/.config/systemd/user ~/.config/pipeline ~/.config/sbx-host
-ln -s "$PWD/pipeline" ~/.local/bin/pipeline
-ln -s "$PWD/sbx-host/sbx-host" ~/.local/bin/sbx-host
-for skill in kit/skills/*; do ln -s "$PWD/$skill" ~/.claude/skills/; done
-for agent in kit/agents/*; do ln -s "$PWD/$agent" ~/.claude/agents/; done
-cp -n systemd/sbx.service systemd/pipeline-tick.service systemd/pipeline-tick.timer ~/.config/systemd/user/
-cp -n examples/config.example.json ~/.config/pipeline/config.json
+ln -s "$R/pipeline" ~/.local/bin/pipeline
+ln -s "$R/sbx-host/sbx-host" ~/.local/bin/sbx-host
+for skill in "$R"/kit/skills/*; do ln -s "$skill" ~/.claude/skills/; done
+for agent in "$R"/kit/agents/*; do ln -s "$agent" ~/.claude/agents/; done
+cp --update=none "$R"/systemd/sbx.service "$R"/systemd/pipeline-tick.service "$R"/systemd/pipeline-tick.timer ~/.config/systemd/user/
+cp --update=none "$R/examples/config.example.json" ~/.config/pipeline/config.json
 ```
 
 Then set the caps in `~/.config/systemd/user/sbx.service` for your machine. RAM is MemTotal from `/proc/meminfo`
@@ -246,6 +372,8 @@ threads (the default is 6). Under 24 GiB of RAM, also set `vm.memoryGb` to 4, an
 `~/.config/sbx-host/config.json` (the VM's MiB plus 512). `admission.slots` is `MemoryHigh` in MiB divided by
 `reserve.pl`, at least 1.
 
+**Check:** in `pipeline doctor`, the `runner` and `kit` lines PASS.
+
 ## Uninstall
 
 ```bash
@@ -256,3 +384,5 @@ rm -rf ~/.local/share/pipeline ~/.config/pipeline ~/.config/sbx-host ~/.local/st
 ```
 
 Finally, delete the GitHub App in its settings, and remove the sandboxes and templates (`sbx ls`, `sbx rm`).
+
+**Check:** `command -v pipeline` prints nothing.
