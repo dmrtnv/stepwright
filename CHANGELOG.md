@@ -1,7 +1,8 @@
 # Changelog
 
 What changed for you in each release, newest first. Each release says whether to rerun `sandbox/gate.py`
-([INSTALL.md](INSTALL.md), Update). Detail lives in [README.md](README.md) and [INSTALL.md](INSTALL.md).
+([INSTALL.md](INSTALL.md#update)). Detail lives in [README.md](README.md) and [INSTALL.md](INSTALL.md). Versions
+follow SemVer from v1.0.0.
 
 ## Unreleased
 
@@ -16,9 +17,17 @@ What changed for you in each release, newest first. Each release says whether to
 
   Upgrading: a copy that doctor showed as "your own copy, not the kit's" is now what stage VMs use. To keep the
   kit's, delete it or replace it with the kit's link.
+- README "Before you run it": the terms with dated quotes, the cost caps per session, what the sandbox protects and
+  what it doesn't, what leaves your machine, what the GitHub App can do, and the requirements you can't change.
+- SECURITY.md: how to report a vulnerability privately. CONTRIBUTING.md: the rules, tests, commits and public API.
 
 ### Changed
 
+- INSTALL is a copy-paste guide: each step or sub-step has a command block and a Check. Step 5 fills in the
+  config with one command, step 6 writes the recipe, CODEOWNERS and `.gitignore` with commands that never replace
+  what you have, and step 8 adds `node` and `claude` to the timer's `PATH` itself. "What you need" adds the GitHub
+  CLI (`gh`), which `examples/rulesets.sh` uses.
+- README "Terms of use" became "Before you run it". The Actions write note moved there from Setup.
 - The respond gate runs the pr-text skill's `check.py` as a command (`python3 check.py <file>`) with a 60 s
   timeout, instead of importing it. A crash or a timeout pauses the step with the path, the cause and the fix.
 - The `.claude/pipeline.json` presets moved from `sandbox/` to `examples/`.
