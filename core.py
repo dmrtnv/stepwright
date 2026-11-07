@@ -5166,7 +5166,7 @@ def init_item(path, link=None, content=None):
 def command_init():
     """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the three user units with caps
     sized for this box, and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
-    starts or runs anything: it prints the next commands."""
+    starts or runs anything: it prints the next commands, the setup steps only when it wrote sbx.service."""
     sizes = init_sizes(mem_total_kib(), os.cpu_count())
     units = HOME / '.config/systemd/user'
     # Everything is rendered before the first write: a drifted or missing template fails the run with nothing written.
@@ -5219,14 +5219,17 @@ def command_init():
         if result == 'skipped':
             print(f'Kept your {path}: its values are the ones to check, not the ones above.')
 
-    print(f'\nNext (INSTALL step 3 on):\n'
-          f'  systemctl --user daemon-reload\n'
-          f'  systemctl --user enable --now {SBX_UNIT}\n'
-          f'  loginctl enable-linger "$USER"\n'
-          f'  {PIPELINE_DIR}/sbx-host/install-sbx.sh\n'
-          f'  sbx login\n'
-          f'then create your GitHub App (step 4), fill app.id, app.slug, app.reviewer and repos in {adapter.CONFIG} '
-          f'(step 5), and run pipeline doctor.')
+    if unit == 'wrote':
+        print(f'\nNext (INSTALL step 3 on):\n'
+              f'  systemctl --user daemon-reload\n'
+              f'  systemctl --user enable --now {SBX_UNIT}\n'
+              f'  loginctl enable-linger "$USER"\n'
+              f'  {PIPELINE_DIR}/sbx-host/install-sbx.sh\n'
+              f'  sbx login\n'
+              f'then create your GitHub App (step 4), fill app.id, app.slug, app.reviewer and repos in {adapter.CONFIG} '
+              f'(step 5), and run pipeline doctor.')
+    else:
+        print('\nNext: `pipeline doctor` checks this install.')
 
     return 1 if 'failed' in results else 0
 

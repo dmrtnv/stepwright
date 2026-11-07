@@ -226,6 +226,8 @@ class RerunTest(InitCase):
         self.assertTrue(all(line.startswith('skipped') and line.endswith('(exists)') for line in items),
                         '\n'.join(lines))
         self.assertEqual(self.snapshot(), before)
+        self.assertEqual(lines[-1], 'Next: `pipeline doctor` checks this install.')
+        self.assertFalse(any('INSTALL step 3' in line for line in lines), '\n'.join(lines))
 
     def test_what_exists_is_kept(self):
         skills = self.home / '.claude/skills'
