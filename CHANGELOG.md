@@ -6,6 +6,11 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+### Fixed
+
+- `pipeline status` no longer shows `5h ?` when Claude reports no five-hour window (your plan has none). It shows
+  only the windows Claude reports. An unreadable or past-reset window still shows `?`.
+
 ## v0.8 - 2026-11-05
 
 **Rerun the gate:** yes (its kit and exfil tests changed, and stage VMs now get your own convention skills).

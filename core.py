@@ -3605,7 +3605,8 @@ def next_command(state, status):
 
 def usage_windows(usage, now, labels=('weekly', '5h')):
     """`weekly 41% · 5h 4% (90 min old)` from a usage reading: a window carried from an older reading gives its age,
-    one missing, unreadable or past its reset is `?`."""
+    one unreadable or past its reset is `?`, one Claude doesn't report (missing or null) is left out. '' when none is
+    reported."""
     def window_text(window, label):
         info = usage.get(window)
 
@@ -3617,7 +3618,8 @@ def usage_windows(usage, now, labels=('weekly', '5h')):
 
         return f"{label} {info['utilization'] * 100:.0f}%{age}"
 
-    return ' · '.join(window_text(window, label) for window, label in zip(('seven_day', 'five_hour'), labels))
+    return ' · '.join(window_text(window, label) for window, label in zip(('seven_day', 'five_hour'), labels)
+                      if usage.get(window) is not None)
 
 
 def command_status_verbose(show_all=False, probes=None):
@@ -3628,7 +3630,7 @@ def command_status_verbose(show_all=False, probes=None):
 
     if usage:
         age = int((time.time() - usage['at']) / 60)
-        print(f"claude usage: {usage_windows(usage, time.time())} ({age} min ago; stages queue at "
+        print(f"claude usage: {usage_windows(usage, time.time()) or 'none reported'} ({age} min ago; stages queue at "
               f"{limits['weeklyMax']}% / {limits['fiveHourMax']}%)")
     else:
         print('claude usage: unknown (the next stage probes it)')
@@ -4029,7 +4031,7 @@ def header_line(model):
 
     if usage:
         stale = ' (stale)' if model['now'] - usage['at'] > USAGE_STALE_SECONDS else ''
-        claude = f"claude {usage_windows(usage, model['now'])}{stale}"
+        claude = f"claude {usage_windows(usage, model['now']) or 'usage ?'}{stale}"
     else:
         claude = 'claude usage ?'
 

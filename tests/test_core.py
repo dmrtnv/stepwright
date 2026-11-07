@@ -4891,7 +4891,7 @@ class AdmissionTest(RunnerCase):
         self.main('status')
         self.assertIn('5h 10% (10 min old)', self.output.splitlines()[0])
 
-    def test_status_shows_a_carried_window_age_and_a_missing_one_as_unknown(self):
+    def test_status_shows_a_carried_window_age_and_hides_a_missing_one(self):
         self.carried_usage()
         self.main('status')
         self.assertIn('claude weekly 20% · 5h 75% (90 min old) · stages', self.output.splitlines()[0])
@@ -4900,9 +4900,39 @@ class AdmissionTest(RunnerCase):
         write(self.fixture.base / 'logs/usage.json', json.dumps({
             'at': time.time(), 'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}}))
         self.main('status')
-        self.assertIn('claude weekly 20% · 5h ? · stages', self.output.splitlines()[0])
+        header = self.output.splitlines()[0]
+        self.assertIn('claude weekly 20% · stages', header)
+        self.assertNotIn('5h', header)
         self.main('status', '-v')
-        self.assertIn('claude usage: weekly 20% · 5h ? (0 min ago;', self.output)
+        usage_line = next(line for line in self.output.splitlines() if line.startswith('claude usage:'))
+        self.assertIn('claude usage: weekly 20% (0 min ago;', usage_line)
+        self.assertNotIn('5h', usage_line)
+
+    def test_status_hides_a_null_window(self):
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'five_hour': None,
+            'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}}))
+        self.main('status')
+        self.assertIn('claude weekly 20% · stages', self.output.splitlines()[0])
+
+    def test_status_shows_a_five_hour_window_alone(self):
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'five_hour': {'utilization': 0.1, 'resetsAt': time.time() + 3600}}))
+        self.main('status')
+        self.assertIn('claude 5h 10% · stages', self.output.splitlines()[0])
+
+    def test_status_with_no_reported_window_says_usage_unknown(self):
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'seven_day_opus': {'utilization': 0.3, 'resetsAt': time.time() + 86400}}))
+        self.main('status')
+        self.assertIn('claude usage ? · stages', self.output.splitlines()[0])
+        self.main('status', '-v')
+        self.assertIn('claude usage: none reported (0 min ago;', self.output)
+
+    def test_a_weekly_window_alone_under_its_limit_admits(self):
+        write(self.fixture.base / 'logs/usage.json', json.dumps({
+            'at': time.time(), 'seven_day': {'utilization': 0.2, 'resetsAt': time.time() + 86400}}))
+        self.assertIsNone(core.usage_problem(adapter.DEFAULT_ADMISSION, probe=False))
 
     def test_status_shows_an_expired_or_unreadable_window_as_unknown(self):
         self.usage(0.95, resets_in=-60)
