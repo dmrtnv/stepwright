@@ -120,6 +120,7 @@ AUTO_DECIDED = '⚑ auto-decided: '
 ANSWER_CAP = 1000  # characters of your answer to a plan's questions the PR report quotes
 UNRESOLVED = re.compile(r'^##[ \t]+Unresolved questions[ \t]*$', re.MULTILINE | re.IGNORECASE)
 CHANGELOG_HEADING = re.compile(r'^## +(\S+).*$', re.MULTILINE)
+RELEASE_TAG = re.compile(r'v[0-9]+\.[0-9]+(\.[0-9]+)?')  # fullmatch: v0.8, v0.8.1; never v0.9-rc1 or nightly
 GATE_LINE = re.compile(r'^\*\*Rerun the gate:\*\* ((?:yes|no)(?![\w-]).*)$', re.MULTILINE)
 AFTER = re.compile(r'^([a-z0-9][a-z0-9-]*)(?::(\d{2}))?$')
 LOG_LINES = 40
@@ -5311,29 +5312,46 @@ def changelog_sections(text):
     return {key: body.strip() for key, body in zip(parts[1::2], parts[2::2])}
 
 
+def release_tags(directory, *git_filters):
+    """The release tags (RELEASE_TAG) of a checkout, newest first; git_filters narrow them (`--points-at HEAD`,
+    `--merged A --no-merged B`). PipelineError when git fails."""
+    listed = git(directory, 'tag', '--list', '--sort=-v:refname', *git_filters).split()
+    return [tag for tag in listed if RELEASE_TAG.fullmatch(tag)]
+
+
+def is_ancestor(directory, older, newer):
+    return git_succeeds(directory, 'merge-base', '--is-ancestor', older, newer)
+
+
 def doctor_runner(loaded):
-    """HEAD against the newest local tag, by commit: several tags can share one, and describe picks any of them."""
+    """HEAD against the newest local release tag, by commit: several tags can share one, and describe picks any of
+    them. A checkout ahead of it (an untagged fix on main) passes: `pipeline update` never moves it back."""
     try:
         head = git_result(PIPELINE_DIR, 'rev-parse', 'HEAD')
-        tags = git_result(PIPELINE_DIR, 'tag', '--list', '--sort=-v:refname').stdout.split()
+
+        if head.returncode != 0:
+            return [('runner', False, f'{PIPELINE_DIR} is not a git checkout', 'clone it as INSTALL step 2 says')]
+
+        tags = release_tags(PIPELINE_DIR)
     except (OSError, PipelineError) as error:
         return [('runner', False, str(error), 'clone it as INSTALL step 2 says')]
-
-    if head.returncode != 0:
-        return [('runner', False, f'{PIPELINE_DIR} is not a git checkout', 'clone it as INSTALL step 2 says')]
 
     if not tags:
         return [('runner', True, 'no release tags (INSTALL step 2 checks out main then)', '')]
 
     newest = tags[0]
+    known = 'the newest local release tag (`pipeline update` moves to a newer one, if any)'
 
     if git_result(PIPELINE_DIR, 'rev-parse', f'{newest}^{{commit}}').stdout.strip() == head.stdout.strip():
-        return [('runner', True, f'{newest}, the newest local tag (`git fetch --tags` looks for newer)', '')]
+        return [('runner', True, f'{newest}, {known}', '')]
 
     current = git_result(PIPELINE_DIR, 'describe', '--tags', '--always').stdout.strip()
 
-    return [('runner', False, f'at {current}, the newest local tag is {newest}',
-             f'when `pipeline status` shows no running stage: git -C {PIPELINE_DIR} checkout {newest} (INSTALL Update)')]
+    if is_ancestor(PIPELINE_DIR, newest, 'HEAD'):
+        return [('runner', True, f'at {current}, ahead of {newest}, {known}', '')]
+
+    return [('runner', False, f'at {current}, the newest local release tag is {newest}',
+             'pipeline update (INSTALL Update)')]
 
 
 def doctor_kit(loaded):
@@ -5516,6 +5534,173 @@ def command_doctor():
     print(f'{len(results)} checks, {results.count(False)} FAIL')
 
     return 0 if all(results) else 1
+
+
+# ---------------------------------------------------------------------------------------------- update
+
+INIT_TIMEOUT_SECONDS = 120
+INIT_SHOWN = ('linked', 'wrote', 'failed')  # init's item lines update shows; skipped and Kept lines are the old state
+
+
+def refuse(text):
+    print(text, file=sys.stderr)
+
+    return 1
+
+
+def changelog_at(revision):
+    result = git_result(PIPELINE_DIR, 'show', f'{revision}:CHANGELOG.md')
+
+    return changelog_sections(result.stdout if result.returncode == 0 else '')
+
+
+def gate_line(sections, key):
+    found = GATE_LINE.findall(sections.get(key, ''))
+
+    return found[0] if found else 'no Rerun the gate line'
+
+
+def crossed_releases(target):
+    """The releases a move from HEAD to target adds (in target, not in HEAD) and undoes (in HEAD, not in target), each
+    with its Rerun the gate line from the side that has it. HEAD's Unreleased changes count as undone only when HEAD
+    is untagged and not in the target's history: on a forward move the target's own release covers them."""
+    added = release_tags(PIPELINE_DIR, '--merged', target, '--no-merged', 'HEAD')
+    undone = release_tags(PIPELINE_DIR, '--merged', 'HEAD', '--no-merged', target)
+    at_target, at_head = changelog_at(target), changelog_at('HEAD')
+    lines = [(f'{tag} (added)', gate_line(at_target, tag)) for tag in added]
+    lines += [(f'{tag} (undone)', gate_line(at_head, tag)) for tag in undone]
+
+    if at_head.get('Unreleased') and not release_tags(PIPELINE_DIR, '--points-at', 'HEAD') and \
+            not is_ancestor(PIPELINE_DIR, 'HEAD', target):
+        short = git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')
+        lines.append((f'Unreleased at {short} (undone)', gate_line(at_head, 'Unreleased')))
+
+    if not lines:
+        return []
+
+    block = ['Releases this update crosses:', *(f'  {name}: {line}' for name, line in lines)]
+
+    if any(line.startswith('yes') for _, line in lines):
+        block.append('Rerun the gate for each repo:')
+        gate = PIPELINE_DIR / 'sandbox/gate.py'
+
+        try:
+            block += [f'  {gate} --repo {shlex.quote(str(adapter.checkout(repo)))}'
+                      for repo in adapter.load_config()['repos']]
+        except adapter.AdapterError:
+            block.append(f'  {gate} --repo <your checkout>')
+
+    return block
+
+
+def busy_reason():
+    """Why the runner cannot move now (a run lock held, a pipeline-run unit active or starting), or None."""
+    held = sorted(path.name for path in LOGS.glob('run-*.lock') if locked_path(path))
+    units = sbx_host.systemctl('list-units', 'pipeline-run-*', '--state=active,activating', '--no-legend', '--plain')
+
+    if units.returncode != 0:
+        error = (units.stderr.strip().splitlines() or [f'exit {units.returncode}'])[-1]
+        return (f'systemctl --user list-units failed ({error}): update needs your user manager to see running stages; '
+                'run it as yourself in a login session')
+
+    running = held + [line.split()[0] for line in units.stdout.splitlines() if line.strip()]
+
+    if running:
+        return (f'a stage is running ({", ".join(running)}); wait for it, or run `pipeline pause` to drain, then '
+                '`pipeline update`, then `pipeline start`')
+
+    return None
+
+
+def run_init():
+    """The new code's `pipeline init`: its new items only, its errors in full. The exit code, or the reason it never
+    finished."""
+    try:
+        result = subprocess.run([PYTHON, str(PIPELINE_DIR / 'pipeline'), 'init'], capture_output=True, text=True,
+                                errors='replace', stdin=subprocess.DEVNULL, timeout=INIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return f'no answer in {INIT_TIMEOUT_SECONDS} s'
+    except OSError as error:
+        return f'{PYTHON}: {error.strerror or error}'
+
+    shown = [line for line in result.stdout.splitlines() if line.split(' ', 1)[0] in INIT_SHOWN]
+    print('\n'.join(shown) or 'init: nothing new', flush=True)
+
+    if result.stderr:
+        print(result.stderr, end='' if result.stderr.endswith('\n') else '\n', file=sys.stderr, flush=True)
+
+    return result.returncode
+
+
+def command_update(argv):
+    """Move the runner to the newest release tag, or to argv's: fetch the tags, refuse while a stage runs, check out
+    the tag, rerun init and doctor as the new code, and print the gate lines of the releases crossed. A bare update
+    never moves back: a checkout ahead of the newest release stays."""
+    if len(argv) > 1:
+        return usage_error('update')
+
+    fetch = git_result(PIPELINE_DIR, 'fetch', '--tags', 'origin')
+
+    if fetch.returncode != 0:
+        return refuse(f'git fetch failed; the checkout is unchanged:\n{fetch.stderr.strip()}')
+
+    tags = release_tags(PIPELINE_DIR)
+
+    if not tags:
+        return refuse(f'no release tag in {PIPELINE_DIR} after git fetch --tags; the checkout is unchanged')
+
+    target = argv[0] if argv else tags[0]
+
+    if target not in tags:
+        return refuse(f'no release tag {target}; the newest: {", ".join(tags[:3])}')
+
+    head = git(PIPELINE_DIR, 'rev-parse', 'HEAD')
+
+    if git(PIPELINE_DIR, 'rev-parse', f'{target}^{{commit}}') == head:
+        print(f'Already at {target}.')
+        return 0
+
+    if not argv and is_ancestor(PIPELINE_DIR, target, 'HEAD'):
+        current = git(PIPELINE_DIR, 'describe', '--tags', '--always')
+        print(f'At {current}, ahead of {target}, the newest release: nothing newer. `pipeline update {target}` goes '
+              'back to it.')
+        return 0
+
+    was = (release_tags(PIPELINE_DIR, '--points-at', 'HEAD') or [git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')])[0]
+    crossed = crossed_releases(target)
+
+    def switch():
+        if git(PIPELINE_DIR, 'status', '--porcelain', '--untracked-files=no'):
+            return refuse(f'local changes in {PIPELINE_DIR}; update needs a clean clone (git -C {PIPELINE_DIR} status)')
+
+        if busy := busy_reason():
+            return refuse(busy)
+
+        checkout = git_result(PIPELINE_DIR, 'checkout', '--quiet', '--detach', f'refs/tags/{target}')
+
+        if checkout.returncode != 0:
+            return refuse(f'git checkout {target} failed; the checkout is unchanged:\n{checkout.stderr.strip()}')
+
+        print(f'Was at {was}, now at {target}.', flush=True)
+        init = run_init()
+
+        if crossed:
+            print('\n'.join(crossed), flush=True)
+
+        if init:
+            failure = f'exit {init}' if isinstance(init, int) else init
+            return refuse(f'init failed ({failure}); fix what it printed above and run `pipeline init`, or go back: '
+                          f'git -C {PIPELINE_DIR} checkout {was}')
+
+        return 0
+
+    if code := with_lock('tick', switch):
+        return code
+
+    try:
+        return subprocess.run([PYTHON, str(PIPELINE_DIR / 'pipeline'), 'doctor'], stdin=subprocess.DEVNULL).returncode
+    except OSError as error:
+        return refuse(f'{PYTHON}: {error.strerror or error}')
 
 
 def expect_refusal(label, call):
@@ -6027,6 +6212,8 @@ COMMANDS = {
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
              'admin'),
     'doctor': ('doctor', 'check this install: a PASS/FAIL line per check, a fix under each FAIL', 'admin'),
+    'update': ('update [<tag>]', 'move to the newest release, or <tag>: fetch, check out, init, doctor; refuses while '
+                                 'a stage runs', 'admin'),
     'prove-app': ('prove-app [--repo <o>/<r>]', 'read-only: what the GitHub App reaches', 'admin'),
     'prove-gate': ('prove-gate [--repo <o>/<r>]', 'throwaway draft PR: GitHub refuses the App all but agent/**',
                    'admin'),
@@ -6158,6 +6345,9 @@ def main(argv=None):
 
         if command == 'doctor':
             return command_doctor() if len(argv) == 1 else usage_error(command)
+
+        if command == 'update':
+            return command_update(argv[1:])
 
         if command in ('prove-app', 'prove-gate'):
             extra = argv[1:]

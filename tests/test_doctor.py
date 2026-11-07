@@ -292,23 +292,48 @@ class DockerTest(DoctorCase):
         self.assertEqual(after, f'      fix: {self.FIX}')
 
 
+NEWEST = 'the newest local release tag (`pipeline update` moves to a newer one, if any)'
+
+
 class RunnerTest(DoctorCase):
     def test_at_the_newest_tag(self):
-        self.assertPass('runner', 'v0.1.0, the newest local tag (`git fetch --tags` looks for newer)')
+        self.assertPass('runner', f'v0.1.0, {NEWEST}')
 
     def test_an_older_tag_checked_out(self):
         git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
         git(self.runner, 'tag', 'v0.2.0')
         git(self.runner, 'checkout', '-q', 'v0.1.0')
-        self.assertFail('runner', 'at v0.1.0, the newest local tag is v0.2.0',
-                        f'when `pipeline status` shows no running stage: git -C {self.runner} checkout v0.2.0 '
-                        '(INSTALL Update)')
+        self.assertFail('runner', 'at v0.1.0, the newest local release tag is v0.2.0',
+                        'pipeline update (INSTALL Update)')
 
     def test_several_tags_on_the_head_commit(self):
         git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
         for tag in ('v0.2', 'v1.0', 'v0.10'):  # describe names v0.10 here: only a commit comparison passes
             git(self.runner, 'tag', tag)
-        self.assertPass('runner', 'v1.0, the newest local tag (`git fetch --tags` looks for newer)')
+        self.assertPass('runner', f'v1.0, {NEWEST}')
+
+    def test_only_release_tags_count(self):
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
+        git(self.runner, 'tag', 'v0.3-rc1')
+        git(self.runner, 'tag', 'nightly')
+        git(self.runner, 'checkout', '-q', 'v0.1.0')
+        self.assertPass('runner', f'v0.1.0, {NEWEST}')
+
+    def test_ahead_of_the_newest_tag_passes(self):
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'fix')
+        short = git(self.runner, 'rev-parse', '--short', 'HEAD')
+        self.assertPass('runner', f'at v0.1.0-1-g{short}, ahead of v0.1.0, {NEWEST}')
+
+    def test_a_branch_off_an_older_tag_fails(self):
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'fix on v0.1.0')
+        fix = git(self.runner, 'rev-parse', 'HEAD')
+        git(self.runner, 'checkout', '-q', 'v0.1.0')
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
+        git(self.runner, 'tag', 'v0.2.0')
+        git(self.runner, 'checkout', '-q', fix)
+        short = git(self.runner, 'rev-parse', '--short', 'HEAD')
+        self.assertFail('runner', f'at v0.1.0-1-g{short}, the newest local release tag is v0.2.0',
+                        'pipeline update (INSTALL Update)')
 
     def test_no_tags(self):
         git(self.runner, 'tag', '-d', 'v0.1.0')
