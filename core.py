@@ -5582,7 +5582,7 @@ def crossed_releases(target):
 
     if any(line.startswith('yes') for _, line in lines):
         block.append('Rerun the gate for each repo:')
-        gate = PIPELINE_DIR / 'sandbox/gate.py'
+        gate = shlex.quote(str(PIPELINE_DIR / 'sandbox/gate.py'))
 
         try:
             block += [f'  {gate} --repo {shlex.quote(str(adapter.checkout(repo)))}'

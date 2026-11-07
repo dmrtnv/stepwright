@@ -75,8 +75,10 @@ def git(directory, *arguments):
 
 
 class UpdateCase(unittest.TestCase):
+    prefix = 'update-'
+
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp(prefix='update-'))
+        self.base = Path(tempfile.mkdtemp(prefix=self.prefix))
         self.addCleanup(shutil.rmtree, self.base, True)
         self.origin = self.base / 'origin'
         self.runner = self.base / 'runner'
@@ -195,7 +197,7 @@ class MoveTest(UpdateCase):
         self.assertNotIn('Unreleased', self.out)
         self.assertNotIn('v0.1.0 (', self.out)
         self.assertIn('Rerun the gate for each repo:', lines)
-        self.assertIn(f'  {self.runner}/sandbox/gate.py --repo {shlex.quote(str(self.shop))}', lines)
+        self.assertIn(f'  {shlex.quote(f"{self.runner}/sandbox/gate.py")} --repo {shlex.quote(str(self.shop))}', lines)
         self.assertEqual(self.err, '')
 
     def test_an_explicit_older_tag_undoes_the_newer_release(self):
@@ -253,13 +255,24 @@ class MoveTest(UpdateCase):
 
     def test_a_config_that_does_not_load_shows_a_placeholder(self):
         self.update()
-        self.assertIn(f'  {self.runner}/sandbox/gate.py --repo <your checkout>', self.out.splitlines())
+        self.assertIn(f'  {shlex.quote(f"{self.runner}/sandbox/gate.py")} --repo <your checkout>', self.out.splitlines())
 
     def test_a_release_candidate_on_origin_is_never_the_default(self):
         git(self.origin, 'commit', '-q', '--allow-empty', '-m', 'rc')
         git(self.origin, 'tag', 'v0.3-rc1')
         self.update()
         self.assertEqual(self.head(), self.tag_commit('v0.2.0'))
+
+
+class SpacedRunnerTest(UpdateCase):
+    prefix = 'update runner-'
+
+    def test_the_gate_command_quotes_the_runner_path(self):
+        self.write_config()
+        self.update()
+        gate = shlex.quote(f'{self.runner}/sandbox/gate.py')
+        self.assertTrue(gate.startswith("'"), gate)
+        self.assertIn(f'  {gate} --repo {shlex.quote(str(self.shop))}', self.out.splitlines())
 
 
 class NoMoveTest(UpdateCase):
