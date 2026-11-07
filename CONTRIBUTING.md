@@ -35,7 +35,8 @@ Rerun `sandbox/gate.py` after a `claude` or sbx upgrade, or a change to `STAGES`
 ## Changelog
 
 Each user-visible change adds an entry under **Unreleased** in [CHANGELOG.md](CHANGELOG.md). Keep its
-**Rerun the gate** line up to date: yes or no, with the reason.
+**Rerun the gate** line up to date: yes or no, with the reason. Keep it on one line. `Changelog` in
+`tests/test_docs.py` fails when a release after v0.1, or a non-empty Unreleased, has no such line, has two, or wraps it.
 
 ## Public API
 
