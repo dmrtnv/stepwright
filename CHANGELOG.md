@@ -6,6 +6,22 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Added
+
+- `pipeline update [<tag>]` updates the runner in one command. It fetches the tags, refuses while a stage runs or
+  starts, checks out the newest release tag (or the one you name), runs `pipeline init` and `pipeline doctor`, and
+  prints the Rerun the gate line of each release it adds or undoes. A bare update never moves the runner back.
+  Moving to this release still takes the manual commands in [INSTALL: Update](INSTALL.md#update).
+
+### Changed
+
+- `pipeline doctor`'s runner check counts only release tags (`vN.N`, `vN.N.N`), so a `v0.9-rc1` tag is never "the
+  newest". A checkout ahead of the newest release passes. Its fix is `pipeline update`.
+- `pipeline init` prints the setup steps only when it writes `sbx.service`, a fresh install. Otherwise it ends with
+  "Next: `pipeline doctor` checks this install."
+
 ## v0.8.1 - 2026-11-07
 
 **Rerun the gate:** no (only the `pipeline status` text changed, not the kit or `STAGES`).

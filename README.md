@@ -152,6 +152,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline pause <name>` and `pipeline start <name>`: hold a feature and lift the hold.
 - `pipeline stop --all`: stop everything now. `pipeline stop --clear` lets it run again.
 - `pipeline doctor`: check the install.
+- `pipeline update`: move to the newest release.
 - `pipeline gc`: clean up after merged steps.
 
 Re-running is always safe. Every command, in detail: [Everyday use](docs/how-it-works.md#everyday-use).
@@ -163,7 +164,7 @@ Re-running is always safe. Every command, in detail: [Everyday use](docs/how-it-
 
 ## Update
 
-- stepwright: [INSTALL: Update](INSTALL.md#update).
+- stepwright: `pipeline update` ([INSTALL: Update](INSTALL.md#update)).
 - Claude Code: `config.json` `"template"` decides what sandboxes run and when it is built.
   - `"claude": "host"` follows the host: after an update the next sandbox create builds the new template
     (`"build": "auto"`) or waits for `pipeline template build` (`"manual"`).

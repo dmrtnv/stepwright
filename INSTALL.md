@@ -339,7 +339,45 @@ header without errors, and `pipeline doctor` ends with `N checks, 0 FAIL`.
 
 ## Update
 
-When `pipeline status` shows no running stage, fill in the tag and run:
+When `pipeline status` shows no running stage, run:
+
+```bash
+pipeline update
+```
+
+What it does:
+- It fetches the tags and checks out the newest release tag.
+- It runs the new code's `pipeline init`, which links any skill or agent the release adds and skips everything you
+  already have. It shows only what init added and any error.
+- It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
+  `sandbox/gate.py` command for each of your repos: run them.
+- It ends with `pipeline doctor`.
+
+It changes nothing and tells you why when:
+- the fetch fails, for example because a tag moved on GitHub;
+- the clone has local changes to its files;
+- a stage is running or starting. Wait for it, or run `pipeline pause` to drain, then `pipeline update`, then
+  `pipeline start`.
+
+Don't start `pipeline <name>` by hand while an update runs: update cannot see that run until it takes its lock.
+
+A checkout ahead of the newest release, such as an untagged fix on `main`, stays where it is. A bare
+`pipeline update` never moves the runner back.
+
+To go back to an older release, name its tag, for example `pipeline update v0.8.1`. Releases before v0.6 have no
+`pipeline init`, so don't go below v0.6. An older release may have no `pipeline update` (the CHANGELOG names the
+release that adds it): from there, update with the commands below.
+
+To look for a newer release without moving, fetch the tags and run doctor. Its runner line names the newest one:
+
+```bash
+R=$HOME/.local/share/pipeline/runner
+git -C "$R" fetch --tags
+pipeline doctor
+```
+
+A checkout without `pipeline update` (this includes the first move to the release that adds it) updates by hand.
+Fill in the tag and run:
 
 ```bash
 TAG=<new tag>
@@ -349,12 +387,13 @@ git -C "$R" checkout "$TAG"
 "$R/pipeline" init
 ```
 
-`pipeline init` links any skill or agent the new tag adds to the kit and skips everything you already have. Then
-rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so. To roll back, check out the previous tag. Config
-(`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so a checkout never touches
-them.
+Then rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so.
 
-**Check:** `git -C "$R" describe --tags` prints the tag, and `pipeline doctor` ends with `N checks, 0 FAIL`.
+Config (`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so an update never
+touches them.
+
+**Check:** `pipeline doctor` ends with `N checks, 0 FAIL`. Its runner line names the release, or says the checkout
+is ahead of it.
 
 ## Manual setup (without init)
 
