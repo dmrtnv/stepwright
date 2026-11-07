@@ -316,6 +316,18 @@ class Gate(ReleaseCase):
         self.state(checks=[checks(('test', 'pending')), checks(('test', 'pass'), ('old', 'cancel'))])
         self.assert_no_merge(r'\(old cancel\)')
 
+    def test_a_final_read_that_exits_nonzero(self):
+        self.state(checks=[checks(('test', 'pending')), checks(('test', 'pass'), ('lint', 'pass'), exit_code=1)])
+        self.assert_no_merge(r'not every check passed on #24 \(no test pass\)')
+
+    def test_a_final_read_with_test_skipping(self):
+        self.state(checks=[checks(('test', 'pending')), checks(('test', 'skipping'))])
+        self.assert_no_merge(r'not every check passed on #24 \(test skipping\)')
+
+    def test_a_final_read_without_test(self):
+        self.state(checks=[checks(('test', 'pending')), checks(('lint', 'pass'))])
+        self.assert_no_merge(r'not every check passed on #24 \(no test pass\)')
+
     def test_no_test_check_by_the_deadline(self):
         self.state(checks=[checks(('lint', 'pending'))])
         self.assert_no_merge('no test check on #24 after 10 minutes')
@@ -367,6 +379,13 @@ class Resume(ReleaseCase):
         head = self.read_state()['prs'][BRANCH]['headRefOid']
         self.assertNotEqual(head, first)
         self.assertTrue(self.on_origin('refs/tags/v0.9'))
+
+    def test_a_merged_pr_without_the_version_section_is_not_tagged(self):
+        oid = self.merged_pr(changelog=CHANGELOG.replace('Intro.', 'Intro, edited.'))
+        self.refused(f'CHANGELOG.md at {oid} has no v0.9 section')
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+        self.assertEqual(git(self.clone, 'tag', '--list', 'v0.9'), '')
+        self.assertNotIn(['release', 'create'], self.gh_calls())
 
     def test_a_merge_commit_not_reported_yet(self):
         self.state(merge_commit_null=True)
