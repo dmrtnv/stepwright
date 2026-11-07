@@ -1,6 +1,7 @@
 """The docs hold together: links and anchors resolve, every INSTALL step has a command block and a Check, INSTALL's
 commands paste cleanly, the step numbers and doc sections the code cites exist, README is short and in order, no
-box's history ships, and README's cost numbers match the code.
+box's history ships, README's cost numbers match the code, and each CHANGELOG release has one Rerun the
+gate line.
 
 Run: python3 -m unittest tests/test_docs.py
 """
@@ -39,6 +40,7 @@ STEP_REFERENCE = re.compile(r'INSTALL steps? (\d+)(?:-(\d+))?')
 NAMED_REFERENCE = re.compile(r'INSTALL(?::| ) ?(What you need|Update)\b')
 CITED_SECTION = re.compile(r'(?<![\w/])(README(?:\.md)?|docs/[\w-]+\.md|sandbox/README\.md) "([^"]+)"')
 BOX_HISTORY = re.compile(r'cut ?over|\bR2\b|phase 3|pilot|db:squash|\be2e\b', re.I)
+GATE_LINE_EXEMPT = ('v0.1',)
 
 
 def read(name):
@@ -222,6 +224,34 @@ class Readme(unittest.TestCase):
                  if BOX_HISTORY.search(line)]
 
         self.assertEqual(found, [])
+
+
+class Changelog(unittest.TestCase):
+    def test_each_release_has_one_rerun_the_gate_line(self):
+        text = read('CHANGELOG.md')
+        sections = core.changelog_sections(text)
+
+        self.assertIn('Unreleased', sections)
+        self.assertIn('v0.1', sections)
+        self.assertEqual(len(sections), len(core.CHANGELOG_HEADING.findall(text)))
+
+        problems = []
+
+        for key, body in sections.items():
+            if key in GATE_LINE_EXEMPT or (key == 'Unreleased' and not body):
+                continue
+
+            count = len(core.GATE_LINE.findall(body))
+
+            if count != 1:
+                problems.append(f'{key}: {count} Rerun the gate lines answering yes or no, expected 1')
+
+            lines = body.splitlines()
+
+            if any(core.GATE_LINE.match(line) and next_line.strip() for line, next_line in zip(lines, lines[1:])):
+                problems.append(f'{key}: keep the Rerun the gate line on one line, followed by a blank line')
+
+        self.assertEqual(problems, [])
 
 
 class Cost(unittest.TestCase):

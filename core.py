@@ -119,6 +119,8 @@ AUTO_ANSWERED = 'Answered by autonomy auto: each recommendation below is the dec
 AUTO_DECIDED = '⚑ auto-decided: '
 ANSWER_CAP = 1000  # characters of your answer to a plan's questions the PR report quotes
 UNRESOLVED = re.compile(r'^##[ \t]+Unresolved questions[ \t]*$', re.MULTILINE | re.IGNORECASE)
+CHANGELOG_HEADING = re.compile(r'^## +(\S+).*$', re.MULTILINE)
+GATE_LINE = re.compile(r'^\*\*Rerun the gate:\*\* ((?:yes|no)(?![\w-]).*)$', re.MULTILINE)
 AFTER = re.compile(r'^([a-z0-9][a-z0-9-]*)(?::(\d{2}))?$')
 LOG_LINES = 40
 
@@ -5297,6 +5299,13 @@ def doctor_docker(loaded):
         return [('docker', True, f'server {result.stdout.strip()}', fix)]
 
     return [('docker', False, (result.stderr.strip().splitlines() or [f'exit {result.returncode}'])[-1], fix)]
+
+
+def changelog_sections(text):
+    """CHANGELOG.md's `## ` sections keyed by the heading's first word (`Unreleased`, `v0.8.1`), each body stripped
+    and running to the next `## ` heading. A body's gate lines are GATE_LINE.findall(body)."""
+    parts = CHANGELOG_HEADING.split(text)
+    return {key: body.strip() for key, body in zip(parts[1::2], parts[2::2])}
 
 
 def doctor_runner(loaded):

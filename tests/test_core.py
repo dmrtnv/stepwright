@@ -3796,6 +3796,39 @@ class ClassifyRunTest(unittest.TestCase):
         self.assertEqual(len(core.ci_why([{'annotation_level': 'failure', 'message': 'x' * 500}], GATE_JOBS[0])), 300)
 
 
+class ChangelogTest(unittest.TestCase):
+    """CHANGELOG.md's `## ` sections and the Rerun the gate line in each."""
+
+    def test_each_heading_keys_its_own_body(self):
+        text = ('# Changelog\n\nPreamble.\n\n## Unreleased\n\n## v0.8.1 - 2026-11-07\n\n'
+                '**Rerun the gate:** no (text only).\n\n### Fixed\n\n- A fix.\n\n'
+                '## v0.8 - 2026-11-05\n\n**Rerun the gate:** yes.\n')
+
+        self.assertEqual(core.changelog_sections(text), {
+            'Unreleased': '',
+            'v0.8.1': '**Rerun the gate:** no (text only).\n\n### Fixed\n\n- A fix.',
+            'v0.8': '**Rerun the gate:** yes.',
+        })
+
+    def test_gate_line_is_one_yes_or_no_line(self):
+        cases = {
+            '**Rerun the gate:** yes (the kit changed).': ['yes (the kit changed).'],
+            '**Rerun the gate:** yes\n- next bullet': ['yes'],
+            '**Rerun the gate:** no.\n**Rerun the gate:** no.': ['no.', 'no.'],
+            '**Rerun the gate:** no': ['no'],
+            '**Rerun the gate:** no-op': [],
+            '**Rerun the gate:** yes-ish': [],
+            '**Rerun the gate:** maybe': [],
+            '**Rerun the gate:** yesterday': [],
+            '**Run the gate:** yes': [],
+            'Then **Rerun the gate:** yes': [],
+        }
+
+        for body, answers in cases.items():
+            with self.subTest(body):
+                self.assertEqual(core.GATE_LINE.findall(body), answers)
+
+
 class PathPatternTest(unittest.TestCase):
     """A path in the plan's `## Test changes` that the tamper gate's exact-path check could never match."""
 
