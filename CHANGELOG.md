@@ -6,6 +6,10 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.8.1 - 2026-11-07
+
+**Rerun the gate:** no (only the `pipeline status` text changed, not the kit or `STAGES`).
+
 ### Fixed
 
 - `pipeline status` no longer shows `5h ?` when Claude reports no five-hour window (your plan has none). It shows
