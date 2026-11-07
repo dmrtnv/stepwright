@@ -244,12 +244,12 @@ class Changelog(unittest.TestCase):
             count = len(core.GATE_LINE.findall(body))
 
             if count != 1:
-                problems.append(f'{key}: {count} Rerun the gate lines, expected 1')
+                problems.append(f'{key}: {count} Rerun the gate lines answering yes or no, expected 1')
 
             lines = body.splitlines()
 
             if any(core.GATE_LINE.match(line) and next_line.strip() for line, next_line in zip(lines, lines[1:])):
-                problems.append(f'{key}: the Rerun the gate line wraps, keep it on one line')
+                problems.append(f'{key}: keep the Rerun the gate line on one line, followed by a blank line')
 
         self.assertEqual(problems, [])
 
