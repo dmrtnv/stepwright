@@ -14,8 +14,8 @@ you: pipeline status [--watch]    (what needs you, runs, queues; `pipeline help`
 
 each step (one PR, one sandbox pl-<repo>-<name>-NN):
   admit       not held, sbx.service up, a free stage slot (`pipeline parallel`, ≤2 by default), room for its VM (`sbx-host
-              fits pl`), weekly <80 % and 5-hour <70 % usage (defaults), then its VM's reserve claimed until the run
-              ends — else queued
+              fits pl`), weekly <80 % and 5-hour <70 % (when Claude reports one) usage (defaults), then its VM's
+              reserve claimed until the run ends — else queued
   provision   template built if missing, sandbox cloned from the runner's clean clone, kit copied, branch from
               origin/<base>, repo setup (an sbx/VM-git/fetch/setup failure retries 3× 15 min apart, then pauses)
   plan        Claude writes plan.md            → waits if it has questions for you (autonomy auto: takes its
@@ -195,7 +195,8 @@ Unknown keys are an error.
     `~/.config/sbx-host/config.json`);
   - weekly <`weeklyMax` (80 %) and 5-hour <`fiveHourMax` (70 %) (from `~/.local/state/pipeline/usage.json`,
     written from every stage's `rate_limit_event`; a window an event omits is kept, with its own reading time,
-    until it resets; older than 30 min ⇒ a one-token Haiku probe refreshes it, so your manual use counts).
+    until it resets; older than 30 min ⇒ a one-token Haiku probe refreshes it, so your manual use counts). Status
+    shows only the windows Claude reports.
   - Then the run claims the VM's reserve (`sbx_host.claim`): kept while its VM is stopped between stages, moved to
     the next step's VM, given back when the run ends, so a CI VM never takes a stage's memory between its stages.
   - Failing ⇒ step `ready`, "queued: <why>" (pinged once per reason, low priority; never for busy stage slots), the

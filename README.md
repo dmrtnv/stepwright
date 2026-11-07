@@ -52,8 +52,8 @@ The dollar caps are estimates at API prices, and "Spend can pass the cap"
 ([Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference), checked 2026-11-04).
 
 No stage starts while your weekly usage is at 80 % or more, or your five-hour usage is at 70 % or more
-(`admission` in the config). To read your usage, the host makes one small Haiku call when the last reading is over 30
-minutes old.
+(`admission` in the config). When Claude reports no five-hour window, only the weekly limit applies. To read your
+usage, the host makes one small Haiku call when the last reading is over 30 minutes old.
 
 Docker Sandboxes local use "is free … including for commercial work"
 ([Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), checked 2026-11-04).
