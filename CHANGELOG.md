@@ -24,6 +24,9 @@ What changed for you in each release, newest first. Each release says whether to
   the branch instead of detaching at the commit.
 - `pipeline update` and `pipeline doctor` describe a runner ahead of a release by release tags only
   (`v0.9-2-g<sha>`), so a nearer tag such as `nightly-1` no longer names it.
+- `dev/release.py` stops with one line on Ctrl+C ("release: stopped; rerun the same command to resume", exit 130)
+  instead of a traceback. When GitHub still shows the release PR open after the merge, it says to rerun once
+  GitHub shows it merged.
 
 ## v0.9 - 2026-11-08
 
