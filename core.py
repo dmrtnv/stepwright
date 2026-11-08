@@ -2131,9 +2131,9 @@ def relink_fix(entry, link):
     """The command that points ~/.claude/<item>/<name> back at the kit's entry: ln -sfn replaces a link, but makes a
     nested link inside a real dir, so a copy is moved aside first."""
     if link.is_symlink():
-        return f'ln -sfn {entry} {link}'
+        return f'ln -sfn {shlex.quote(str(entry))} {shlex.quote(str(link))}'
 
-    return f'move {link} aside, then ln -s {entry} {link.parent}/'
+    return f'move {link} aside, then ln -s {shlex.quote(str(entry))} {shlex.quote(str(link.parent))}/'
 
 
 def pr_text_checker_fix(checker):
@@ -5424,7 +5424,7 @@ def doctor_kit(loaded):
             if os.path.realpath(link) == os.path.realpath(entry):  # Path.resolve raises on a loop on 3.12
                 results.append((label, True, f'links to {entry}', ''))
             elif not os.path.lexists(link):
-                results.append((label, False, 'not linked', f'ln -s {entry} {linked}/'))
+                results.append((label, False, 'not linked', f'ln -s {shlex.quote(str(entry))} {shlex.quote(str(linked))}/'))
             elif backend.kit_source(item, entry.name) != entry:
                 if (item, entry.name) == ('skills', 'pr-text') and not pr_text_checker().is_file():
                     results.append((label, False, 'your own, without check.py: the respond gate runs it',

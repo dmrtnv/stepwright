@@ -15,8 +15,9 @@ What changed for you in each release, newest first. Each release says whether to
 
 ### Fixed
 
-- Commands that `pipeline update`, `pipeline init` and `pipeline doctor` print quote the runner path, so they paste
-  cleanly when it holds a space. The go-back command after a failed init also quotes the branch.
+- Commands that `pipeline update`, `pipeline init`, `pipeline doctor` and the respond gate's pr-text message print
+  quote the runner path, so they paste cleanly when it holds a space. The go-back command after a failed init also
+  quotes the branch.
 
 ## v0.10 - 2026-11-08
 

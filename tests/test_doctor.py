@@ -554,6 +554,30 @@ class SpacedRunnerTest(DoctorCase):
         self.pipeline_config.unlink()
         self.assertInitFirst('config')
 
+    def assertCommand(self, label, argv):
+        command = self.fix(label).split(', then ', 1)[-1]
+        self.assertEqual(shlex.split(command), argv)
+        self.assertIn(shlex.quote(argv[2]), command)
+
+    def test_the_not_linked_fix_quotes_the_kit_path(self):
+        linked = self.home / '.claude/skills'
+        (linked / 'wrap-up').unlink()
+        self.assertCommand('kit skills/wrap-up', ['ln', '-s', str(self.kit / 'skills/wrap-up'), f'{linked}/'])
+
+    def test_the_linked_elsewhere_fix_quotes_the_kit_path(self):
+        link = self.home / '.claude/agents/web-researcher.md'
+        link.unlink()
+        link.symlink_to('/tmp/elsewhere/web-researcher.md')
+        self.assertCommand('kit agents/web-researcher.md',
+                           ['ln', '-sfn', str(self.kit / 'agents/web-researcher.md'), str(link)])
+
+    def test_the_own_copy_fix_quotes_the_kit_path(self):
+        link = self.home / '.claude/skills/review-branch'
+        link.unlink()
+        link.mkdir()
+        self.assertCommand('kit skills/review-branch',
+                           ['ln', '-s', str(self.kit / 'skills/review-branch'), f'{link.parent}/'])
+
 
 class LingerTest(DoctorCase):
     FIX = 'loginctl enable-linger "$USER" (INSTALL step 3)'
