@@ -329,6 +329,20 @@ class RunnerTest(DoctorCase):
         short = git(self.runner, 'rev-parse', '--short', 'HEAD')
         self.assertPass('runner', f'at v0.1.0-1-g{short}, ahead of v0.1.0, {NEWEST}')
 
+    def test_ahead_names_only_release_tags(self):
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'one')
+        git(self.runner, 'tag', 'nightly-1')
+        git(self.runner, 'tag', 'v0.2-rc1')
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
+        short = git(self.runner, 'rev-parse', '--short', 'HEAD')
+        self.assertPass('runner', f'at v0.1.0-2-g{short}, ahead of v0.1.0, {NEWEST}')
+
+    def test_a_position_git_cannot_name_fails(self):
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'fix')
+
+        with mock.patch.object(core, 'release_position', side_effect=core.PipelineError('git describe failed')):
+            self.assertFail('runner', 'git describe failed', 'clone it as INSTALL step 2 says')
+
     def test_a_branch_off_an_older_tag_fails(self):
         git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'fix on v0.1.0')
         fix = git(self.runner, 'rev-parse', 'HEAD')

@@ -258,6 +258,12 @@ class MoveTest(UpdateCase):
         self.assertIn('  v0.2.0 (added): yes (the kit changed).', self.out.splitlines())
         self.assertNotIn('Unreleased', self.out)
 
+    def test_leaving_a_branch_names_it(self):
+        git(self.runner, 'checkout', '-q', '-B', 'main', 'v0.1.0')
+        self.update()
+        self.assertEqual(self.head(), self.tag_commit('v0.2.0'))
+        self.assertEqual(self.out.splitlines()[0], 'Was at main, now at v0.2.0.')
+
     def test_two_release_tags_on_head_name_the_newer(self):
         git(self.runner, 'tag', 'v0.1.1', 'v0.1.0')
         self.update()
@@ -308,6 +314,19 @@ class NoMoveTest(UpdateCase):
         self.assertEqual(self.head(), before)
         self.assertIn('ahead of v0.2.0, the newest release: nothing newer.', self.out)
         self.assertIn('`pipeline update v0.2.0` goes back to it.', self.out)
+        self.assertEqual(self.calls(), [])
+
+    def test_ahead_names_only_release_tags(self):
+        git(self.runner, 'checkout', '-q', '--detach', 'v0.2.0')
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'one')
+        git(self.runner, 'tag', 'nightly-1')
+        git(self.runner, 'tag', 'v0.3-rc1')
+        git(self.runner, 'commit', '-q', '--allow-empty', '-m', 'two')
+        short = git(self.runner, 'rev-parse', '--short', 'HEAD')
+        code = self.update()
+        self.assertEqual(code, 0, self.out + self.err)
+        self.assertEqual(self.out, f'At v0.2.0-2-g{short}, ahead of v0.2.0, the newest release: nothing newer. '
+                                   '`pipeline update v0.2.0` goes back to it.\n')
         self.assertEqual(self.calls(), [])
 
     def test_already_at_the_target(self):
@@ -470,6 +489,13 @@ class InitFailureTest(UpdateCase):
         self.assertIn('Traceback: boom', self.err)
         self.assertIn('init failed (exit 1)', self.err)
         self.assertIn(f'git -C {self.runner} checkout v0.1.0', self.err)
+
+    def test_init_fails_on_a_branch(self):
+        git(self.runner, 'checkout', '-q', '-B', 'main', 'v0.1.0')
+        self.behavior(init_exit=1)
+        code = self.update()
+        self.assertEqual(code, 1)
+        self.assertIn(f'git -C {self.runner} checkout main', self.err)
 
     def test_init_times_out(self):
         self.behavior(init_sleep=5)
