@@ -5747,6 +5747,7 @@ def command_update(argv):
         if checkout.returncode != 0:
             return refuse(f'git checkout {target} failed; the checkout is unchanged:\n{checkout.stderr.strip()}')
 
+        print(f'Verified {target}: signed by a key in {SIGNERS_FILE} at {was}.', flush=True)
         print(f'Was at {was}, now at {target}.', flush=True)
         init = run_init()
 

@@ -79,6 +79,10 @@ HINT = 'If a release changed the signing key, update one release at a time'
 AFTER = '## Unreleased\n\n**Rerun the gate:** yes (after v0.2.0).\n\n' + V020.removeprefix('## Unreleased\n\n')
 
 
+def verified(target, was):
+    return f'Verified {target}: signed by a key in .github/allowed_signers at {was}.'
+
+
 def git(directory, *arguments):
     return subprocess.run([REAL_GIT, '-C', str(directory), *arguments], capture_output=True, text=True,
                           check=True).stdout.strip()
@@ -202,6 +206,7 @@ class UpdateCase(unittest.TestCase):
             self.assertIn(text, self.err)
         self.assertEqual(self.head(), before)
         self.assertEqual(self.calls(), [])
+        self.assertNotIn('Verified', self.out)
 
 
 class MoveTest(UpdateCase):
@@ -212,8 +217,9 @@ class MoveTest(UpdateCase):
         self.assertEqual(self.head(), self.tag_commit('v0.2.0'))
         self.assertEqual(self.calls(), [['init'], ['doctor', 'tick free']])
         lines = self.out.splitlines()
-        self.assertEqual(lines[0], 'Was at v0.1.0, now at v0.2.0.')
-        self.assertEqual(lines[1], 'linked   /x/new-skill -> /kit/new-skill')
+        self.assertEqual(lines[0], verified('v0.2.0', 'v0.1.0'))
+        self.assertEqual(lines[1], 'Was at v0.1.0, now at v0.2.0.')
+        self.assertEqual(lines[2], 'linked   /x/new-skill -> /kit/new-skill')
         self.assertNotIn('skipped', self.out)
         self.assertNotIn('Kept your', self.out)
         self.assertIn('  v0.2.0 (added): yes (the kit changed).', lines)
@@ -228,7 +234,7 @@ class MoveTest(UpdateCase):
         code = self.update('v0.1.0')
         self.assertEqual(code, 3, self.out + self.err)
         self.assertEqual(self.head(), self.tag_commit('v0.1.0'))
-        self.assertEqual(self.out.splitlines()[0], 'Was at v0.2.0, now at v0.1.0.')
+        self.assertEqual(self.out.splitlines()[:2], [verified('v0.1.0', 'v0.2.0'), 'Was at v0.2.0, now at v0.1.0.'])
         self.assertIn('  v0.2.0 (undone): yes (the kit changed).', self.out.splitlines())
         self.assertNotIn('(added)', self.out)
 
@@ -239,7 +245,8 @@ class MoveTest(UpdateCase):
         short = git(self.runner, 'rev-parse', '--short', 'HEAD')
         self.update('v0.1.0')
         lines = self.out.splitlines()
-        self.assertEqual(lines[0], f'Was at {short}, now at v0.1.0.')
+        self.assertEqual(lines[0], verified('v0.1.0', short))
+        self.assertEqual(lines[1], f'Was at {short}, now at v0.1.0.')
         self.assertIn(f'  Unreleased at {short} (undone): yes (after v0.2.0).', lines)
         self.assertIn('  v0.2.0 (undone): yes (the kit changed).', lines)
 
@@ -262,12 +269,12 @@ class MoveTest(UpdateCase):
         git(self.runner, 'checkout', '-q', '-B', 'main', 'v0.1.0')
         self.update()
         self.assertEqual(self.head(), self.tag_commit('v0.2.0'))
-        self.assertEqual(self.out.splitlines()[0], 'Was at main, now at v0.2.0.')
+        self.assertEqual(self.out.splitlines()[:2], [verified('v0.2.0', 'main'), 'Was at main, now at v0.2.0.'])
 
     def test_two_release_tags_on_head_name_the_newer(self):
         git(self.runner, 'tag', 'v0.1.1', 'v0.1.0')
         self.update()
-        self.assertEqual(self.out.splitlines()[0], 'Was at v0.1.1, now at v0.2.0.')
+        self.assertEqual(self.out.splitlines()[:2], [verified('v0.2.0', 'v0.1.1'), 'Was at v0.1.1, now at v0.2.0.'])
 
     def test_a_release_without_a_gate_line_says_so(self):
         git(self.runner, 'checkout', '-q', '--detach', 'v0.2.0')
@@ -280,7 +287,7 @@ class MoveTest(UpdateCase):
     def test_init_with_nothing_new(self):
         self.behavior(init_stdout=['skipped  /x/old (exists)', 'Kept your /x/config.json: its values'])
         self.update()
-        self.assertEqual(self.out.splitlines()[1], 'init: nothing new')
+        self.assertEqual(self.out.splitlines()[2], 'init: nothing new')
 
     def test_a_config_that_does_not_load_shows_a_placeholder(self):
         self.update()
@@ -385,6 +392,12 @@ class RefusalTest(UpdateCase):
         git(self.origin, 'tag', '-f', 'v0.2.0', 'v0.1.0')
         self.assertRefused((), 'git fetch failed; the checkout is unchanged', 'would clobber existing tag')
 
+    def test_a_failed_checkout(self):
+        (self.origin / 'new.txt').write_text('released')
+        self.commit(V030, 'v0.3.0')
+        (self.runner / 'new.txt').write_text('mine')
+        self.assertRefused((), 'git checkout v0.3.0 failed; the checkout is unchanged')
+
 
 class VerifyTest(UpdateCase):
     def from_v020(self):
@@ -488,6 +501,7 @@ class InitFailureTest(UpdateCase):
         self.assertEqual(self.calls(), [['init']])
         self.assertIn('Traceback: boom', self.err)
         self.assertIn('init failed (exit 1)', self.err)
+        self.assertIn(verified('v0.2.0', 'v0.1.0'), self.out)
         self.assertIn(f'git -C {self.runner} checkout v0.1.0', self.err)
 
     def test_init_fails_on_a_branch(self):

@@ -6,6 +6,13 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Changed
+
+- After `pipeline update` checks out a verified tag, it says so first:
+  `Verified v0.11: signed by a key in .github/allowed_signers at v0.10.`, then `Was at v0.10, now at v0.11.`
+
 ## v0.10 - 2026-11-08
 
 **Rerun the gate:** no (no kit or `STAGES` change).

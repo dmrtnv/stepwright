@@ -347,7 +347,9 @@ pipeline update
 
 What it does:
 - It fetches the tags and verifies the newest release tag, or the one you name. The tag must be signed by a key in
-  `.github/allowed_signers` as committed in the checkout you have installed. Then it checks the tag out.
+  `.github/allowed_signers` as committed in the checkout you have installed. Then it checks the tag out. When it
+  has, it prints `Verified <tag>: signed by a key in .github/allowed_signers at <where you were>.` Where you were is
+  the tag, branch or short commit that the next line, `Was at …`, names.
 - It runs the new code's `pipeline init`, which links any skill or agent the release adds and skips everything you
   already have. It shows only what init added and any error.
 - It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
