@@ -5719,8 +5719,9 @@ def command_update(argv):
               'back to it.')
         return 0
 
-    was = (git_result(PIPELINE_DIR, 'symbolic-ref', '--short', '-q', 'HEAD').stdout.strip()
-           or (release_tags(PIPELINE_DIR, '--points-at', 'HEAD') or [git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')])[0])
+    branch = git_result(PIPELINE_DIR, 'symbolic-ref', '--short', '-q', 'HEAD').stdout.strip()
+    was = branch or (release_tags(PIPELINE_DIR, '--points-at', 'HEAD')
+                     or [git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')])[0]
     crossed = crossed_releases(target)
 
     def switch():
