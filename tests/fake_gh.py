@@ -91,7 +91,7 @@ def main():
             if option('--match-head-commit') != found['headRefOid']:
                 answer(state, stderr='Pull request head has moved\n', exit_code=1)
             oid = merge(state, found, found['title'])
-            found['state'] = 'MERGED'
+            found['state'] = 'OPEN' if state.get('merge_stays_open') else 'MERGED'
             found['mergeCommit'] = None if state.get('merge_commit_null') else {'oid': oid}
             answer(state)
 

@@ -5320,6 +5320,13 @@ def release_tags(directory, *git_filters):
     return [tag for tag in listed if RELEASE_TAG.fullmatch(tag)]
 
 
+def release_position(tags):
+    """HEAD described by the nearest of tags (release_tags' list), so a nearer non-release tag never names it: the
+    tag, `<tag>-<count>-g<sha>`, or the short sha. tags must not be empty: an empty list matches any tag.
+    PipelineError when git fails."""
+    return git(PIPELINE_DIR, 'describe', '--tags', '--always', *(f'--match={tag}' for tag in tags))
+
+
 SIGNERS_FILE = '.github/allowed_signers'
 # Only an SSH signature by a key in the signers file passes: a user's own ssh program, gpg keyring or gpgsm never decide.
 TAG_VERIFY_PINS = ('-c', 'gpg.ssh.program=ssh-keygen', '-c', 'gpg.program=false', '-c', 'gpg.openpgp.program=false',
@@ -5387,7 +5394,10 @@ def doctor_runner(loaded):
     if git_result(PIPELINE_DIR, 'rev-parse', f'{newest}^{{commit}}').stdout.strip() == head.stdout.strip():
         return [('runner', True, f'{newest}, {known}', '')]
 
-    current = git_result(PIPELINE_DIR, 'describe', '--tags', '--always').stdout.strip()
+    try:
+        current = release_position(tags)
+    except PipelineError as error:
+        return [('runner', False, str(error), 'clone it as INSTALL step 2 says')]
 
     if is_ancestor(PIPELINE_DIR, newest, 'HEAD'):
         return [('runner', True, f'at {current}, ahead of {newest}, {known}', '')]
@@ -5704,12 +5714,14 @@ def command_update(argv):
         return 0
 
     if not argv and is_ancestor(PIPELINE_DIR, target, 'HEAD'):
-        current = git(PIPELINE_DIR, 'describe', '--tags', '--always')
+        current = release_position(tags)
         print(f'At {current}, ahead of {target}, the newest release: nothing newer. `pipeline update {target}` goes '
               'back to it.')
         return 0
 
-    was = (release_tags(PIPELINE_DIR, '--points-at', 'HEAD') or [git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')])[0]
+    branch = git_result(PIPELINE_DIR, 'symbolic-ref', '--short', '-q', 'HEAD').stdout.strip()
+    was = branch or (release_tags(PIPELINE_DIR, '--points-at', 'HEAD')
+                     or [git(PIPELINE_DIR, 'rev-parse', '--short', 'HEAD')])[0]
     crossed = crossed_releases(target)
 
     def switch():

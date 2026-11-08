@@ -402,6 +402,26 @@ class Resume(ReleaseCase):
         self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
         self.assertEqual(git(self.clone, 'tag', '--list', 'v0.9'), '')
 
+    def test_a_merge_github_still_shows_open_says_to_rerun(self):
+        self.state(merge_stays_open=True)
+        self.refused('#24 for chore/release-v0.9 is OPEN, not merged yet: rerun once GitHub shows it merged')
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+        self.assertEqual(git(self.clone, 'tag', '--list', 'v0.9'), '')
+
+    def test_ctrl_c_in_the_gate_stops_with_one_line(self):
+        self.open_pr()
+        out, err = io.StringIO(), io.StringIO()
+
+        with (mock.patch.object(release, 'gate', side_effect=KeyboardInterrupt),
+              mock.patch.object(release, 'ROOT', self.clone),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            code = release.main(['v0.9'])
+
+        self.assertEqual(code, 130)
+        self.assertEqual(err.getvalue(), 'release: stopped; rerun the same command to resume\n')
+        self.assertNotIn(['pr', 'merge'], self.gh_calls())
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+
     def test_a_signed_local_tag_on_the_merge_commit_is_pushed(self):
         oid = self.merged_pr()
         git(self.clone, 'fetch', '-q', 'origin')

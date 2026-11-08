@@ -109,7 +109,8 @@ def merge_commit(directory, version):
         found = pull_request(directory, branch) or found
 
     if found['state'] != 'MERGED':
-        raise core.PipelineError(f'#{found["number"]} for {branch} is {found["state"]}, not merged: no tag')
+        raise core.PipelineError(f'#{found["number"]} for {branch} is {found["state"]}, not merged yet: rerun '
+                                 'once GitHub shows it merged')
 
     if not found.get('mergeCommit'):
         raise core.PipelineError(f'GitHub has not reported the merge commit of #{found["number"]} yet: rerun')
@@ -219,6 +220,9 @@ def main(argv=None):
     except core.PipelineError as error:
         print(f'release: {error}', file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print('release: stopped; rerun the same command to resume', file=sys.stderr)
+        return 130
 
 
 if __name__ == '__main__':

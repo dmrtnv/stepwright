@@ -65,6 +65,11 @@ Maintainers cut a release with [`dev/release.py`](dev/release.py). You need:
 If a run stops, fix what it names and run the same command again: it resumes where it stopped. "Already released"
 means nothing is left to do. Watch the repo for releases on GitHub to hear of each one.
 
+Two stops print git's own error:
+- "would clobber existing tag": your local tag differs from origin's. Delete it with `git tag -d <tag>`, then rerun.
+- "stale info" when pushing `chore/release-<version>`: origin deleted that branch. Run `git fetch --prune origin`,
+  then rerun.
+
 ### The signing key
 
 Runners trust the keys in `.github/allowed_signers` at the release they run. Each line reads
