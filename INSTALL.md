@@ -17,8 +17,8 @@ don't go on until it passes. When a block starts with lines like `REPO=<owner>/<
 - **A Docker account** (free) for Docker Sandboxes.
 - **A GitHub account** and a repo you want the pipeline to work on.
 - **The GitHub CLI** (`gh`), signed in with `gh auth login` as an admin of that repo. Step 6 uses it.
-- Packages: `sudo apt install git jq python3 curl gh`, plus **Node** (any LTS; the VMs get the same version) and
-  **Docker Engine** that your user can run (`docker run hello-world` works without sudo).
+- Packages: `sudo apt install git jq python3 curl gh openssh-client`, plus **Node** (any LTS; the VMs get the same
+  version) and **Docker Engine** that your user can run (`docker run hello-world` works without sudo).
 
 **Check:** `python3 --version` (≥ 3.12), `node --version`, `claude --version`, `gh auth status`,
 `docker run --rm hello-world`, `ls /dev/kvm`.
@@ -346,7 +346,8 @@ pipeline update
 ```
 
 What it does:
-- It fetches the tags and checks out the newest release tag.
+- It fetches the tags and verifies the newest release tag, or the one you name. The tag must be signed by a key in
+  `.github/allowed_signers` as committed in the checkout you have installed. Then it checks the tag out.
 - It runs the new code's `pipeline init`, which links any skill or agent the release adds and skips everything you
   already have. It shows only what init added and any error.
 - It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
@@ -356,6 +357,10 @@ What it does:
 It changes nothing and tells you why when:
 - the fetch fails, for example because a tag moved on GitHub;
 - the clone has local changes to its files;
+- the tag is not signed by a key in the installed checkout's `.github/allowed_signers`. When the move crosses two or
+  more releases, it also names the oldest: a release may have changed the signing key, so update one release at a
+  time;
+- the installed checkout has no `.github/allowed_signers`. Move by hand with the commands below.
 - a stage is running or starting. Wait for it, or run `pipeline pause` to drain, then `pipeline update`, then
   `pipeline start`.
 
@@ -365,8 +370,8 @@ A checkout ahead of the newest release, such as an untagged fix on `main`, stays
 `pipeline update` never moves the runner back.
 
 To go back to an older release, name its tag, for example `pipeline update v0.8.1`. Releases before v0.6 have no
-`pipeline init`, so don't go below v0.6. An older release may have no `pipeline update` (the CHANGELOG names the
-release that adds it): from there, update with the commands below.
+`pipeline init`, so don't go below v0.6. Releases before v0.9 have no `pipeline update`: from there, update with the
+commands below.
 
 To look for a newer release without moving, fetch the tags and run doctor. Its runner line names the newest one:
 
@@ -376,8 +381,8 @@ git -C "$R" fetch --tags
 pipeline doctor
 ```
 
-A checkout without `pipeline update` (this includes the first move to the release that adds it) updates by hand.
-Fill in the tag and run:
+A checkout without `pipeline update` (one before v0.9, so the first move to v0.9 too) updates by hand. Fill in the tag
+and run:
 
 ```bash
 TAG=<new tag>
@@ -388,6 +393,9 @@ git -C "$R" checkout "$TAG"
 ```
 
 Then rerun `sandbox/gate.py` if the [CHANGELOG](CHANGELOG.md) says so.
+
+The manual commands never verify a tag. v0.9's `pipeline update` does not verify either, so the move from v0.9 to the
+next release is the last unverified one.
 
 Config (`~/.config/pipeline/`) and state (`~/.local/state/pipeline/`) live outside the clone, so an update never
 touches them.

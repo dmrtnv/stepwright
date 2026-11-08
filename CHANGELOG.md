@@ -6,6 +6,18 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Changed
+
+- `pipeline update` verifies the release tag before it checks it out. The tag must be signed by a key in
+  `.github/allowed_signers` as committed in the checkout you have installed; otherwise the checkout is unchanged.
+  When the installed checkout has no such file, it points to the manual commands in
+  [INSTALL: Update](INSTALL.md#update). The move from v0.9 to this release is not verified yet: v0.9's update has no
+  check.
+- `pipeline doctor` checks for `ssh-keygen` (`sudo apt install openssh-client`).
+- `dev/release.py` verifies the tag against the previous release's `.github/allowed_signers` before it pushes it.
+
 ## v0.9 - 2026-11-08
 
 **Rerun the gate:** no (no kit or `STAGES` change).

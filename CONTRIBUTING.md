@@ -44,7 +44,8 @@ line, has two, or puts text on the next line.
 Maintainers cut a release with [`dev/release.py`](dev/release.py). You need:
 - a clean checkout whose HEAD is `origin/main`;
 - `gh` logged in as a repo admin;
-- git set to sign with SSH (`gpg.format ssh` and `user.signingkey`).
+- git set to sign with SSH (`gpg.format ssh` and `user.signingkey`), with a key listed in `.github/allowed_signers`;
+- `ssh-keygen` (`sudo apt install openssh-client`).
 
 1. From the checkout, run it with the new version:
 
@@ -54,13 +55,24 @@ Maintainers cut a release with [`dev/release.py`](dev/release.py). You need:
    ```
 
    It opens the "chore: Release" PR, which turns the Unreleased entries into the version's section. It waits for
-   the `test` check, squash-merges the PR, signs the tag on the merge commit and pushes it. Last, it publishes a
-   GitHub Release whose notes are the version's CHANGELOG section.
+   the `test` check, squash-merges the PR and signs the tag on the merge commit. It verifies the tag against
+   `.github/allowed_signers` at the previous release, the file runners check it against, and only then pushes it.
+   Last, it publishes a GitHub Release whose notes are the version's CHANGELOG section.
 
    **Check:** `gh release view "$VERSION"` shows the Release.
 
 If a run stops, fix what it names and run the same command again: it resumes where it stopped. "Already released"
 means nothing is left to do. Watch the repo for releases on GitHub to hear of each one.
+
+### The signing key
+
+Runners trust the keys in `.github/allowed_signers` at the release they run. Each line reads
+`stepwright-release namespaces="git" <key type> <key>`, with no comment.
+- To rotate the key, add the new key's line in a release that the old key signs. Runners on that release then
+  accept tags signed by either key. A later release can remove the old line. `valid-after` and `valid-before` exist,
+  but they check the tagger date, which the signer sets.
+- If a key leaks, cut a release that removes its line. After that, every tag the key signed stops verifying,
+  rollbacks included. Runners still on older releases trust the key until they update.
 
 ## Public API
 
