@@ -26,6 +26,8 @@ sys.path.insert(0, str(TESTS.parent))
 
 import adapter  # noqa: E402
 import core  # noqa: E402
+import fake_ssh  # noqa: E402
+from fake_ssh import TRUSTED_KEY  # noqa: E402
 
 REAL_GIT = shutil.which('git')
 # Behavior comes from behavior.json at call time, so a test changes it without a commit.
@@ -106,9 +108,12 @@ class UpdateCase(unittest.TestCase):
         systemctl = self.bin / 'systemctl'
         systemctl.write_text(FAKE_SYSTEMCTL.format(python=sys.executable, state=str(self.base / 'systemctl.json')))
         systemctl.chmod(0o755)
+        fake_ssh.install(self.bin)
 
         self.origin.mkdir()
         git(self.origin, 'init', '-q', '-b', 'main')
+        git(self.origin, 'config', 'gpg.format', 'ssh')
+        git(self.origin, 'config', 'user.signingkey', f'key::{TRUSTED_KEY}')
         (self.origin / 'pipeline').write_text(FAKE_PIPELINE.format(base=str(self.base),
                                                                    tick=str(self.logs / 'tick.lock')))
         self.commit(V010, 'v0.1.0')
@@ -117,13 +122,23 @@ class UpdateCase(unittest.TestCase):
         subprocess.run([REAL_GIT, 'clone', '-q', str(self.origin), str(self.runner)], check=True)
         git(self.runner, 'checkout', '-q', '--detach', 'v0.1.0')
 
-    def commit(self, changelog, tag=None):
+    def commit(self, changelog, tag=None, signers=(TRUSTED_KEY,), key=TRUSTED_KEY, sign=True):
         (self.origin / 'CHANGELOG.md').write_text('# Changelog\n\n' + changelog)
+        signers_file = self.origin / '.github/allowed_signers'
+
+        if signers:
+            signers_file.parent.mkdir(exist_ok=True)
+            signers_file.write_text(''.join(f'stepwright-release namespaces="git" {line}\n' for line in signers))
+        else:
+            signers_file.unlink(missing_ok=True)
+
         git(self.origin, 'add', '-A')
         git(self.origin, 'commit', '-q', '-m', tag or 'work')
 
-        if tag:
-            git(self.origin, 'tag', tag)
+        if tag and sign:
+            git(self.origin, 'tag', '-s', '-u', f'key::{key}', '-m', tag, tag)
+        elif tag:
+            git(self.origin, 'tag', '-a', '-m', tag, tag)
 
         return git(self.origin, 'rev-parse', 'HEAD')
 

@@ -1,6 +1,6 @@
 """`dev/release.py <version>`: the release PR, the checks gate, the merge, the signed tag on the merge commit and the
 GitHub Release, resumed by a rerun. Origin is a temp bare repo, the release runs in a temp clone, `gh` is
-tests/fake_gh.py answering from a state file, and git signs with a fake SSH signer.
+tests/fake_gh.py answering from a state file, and git signs and verifies with tests/fake_ssh.py as ssh-keygen.
 
 Run: python3 -m unittest tests/test_release.py
 """
@@ -21,8 +21,11 @@ from unittest import mock
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
 
 import core  # noqa: E402
+import fake_ssh  # noqa: E402
+from fake_ssh import TRUSTED_KEY  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location('release', ROOT / 'dev' / 'release.py')
 release = importlib.util.module_from_spec(SPEC)
@@ -30,12 +33,11 @@ SPEC.loader.exec_module(release)
 github = sys.modules['release_github']
 
 REAL_GIT = shutil.which('git')
-SIGNER = '''#!{python}
+BAD_SIGNER = f'''#!{sys.executable}
 import sys
 from pathlib import Path
-Path(sys.argv[-1] + '.sig').write_text({signature!r})
+Path(sys.argv[-1] + '.sig').write_text('not a signature\\n')
 '''
-SIGNED = '-----BEGIN SSH SIGNATURE-----\nZmFrZQ==\n-----END SSH SIGNATURE-----\n'
 GATE = '**Rerun the gate:** no (only the docs changed).'
 NOTES = f'{GATE}\n\n### Fixed\n\n- A fix.'
 V081 = '## v0.8.1 - 2026-11-07\n\n**Rerun the gate:** no (status text).\n\n### Fixed\n\n- Status.\n\n'
@@ -78,11 +80,12 @@ class ReleaseCase(unittest.TestCase):
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.state_path = self.base / 'gh.json'
-        self.signer(SIGNED, 'signer')
-        self.signer('not a signature\n', 'bad-signer')
+        bad_signer = self.bin / 'bad-signer'
+        bad_signer.write_text(BAD_SIGNER)
+        bad_signer.chmod(0o755)
+        fake_ssh.install(self.bin)
         gitconfig = self.base / 'gitconfig'
-        gitconfig.write_text(f'[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tprogram = {self.bin / "signer"}\n'
-                             '[user]\n\tsigningkey = key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake test@example.com\n')
+        gitconfig.write_text(f'[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = key::{TRUSTED_KEY}\n')
         gh = self.bin / 'gh'
         gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(TESTS / "fake_gh.py"))} '
                       f'{shlex.quote(str(self.state_path))} "$@"\n')
@@ -106,13 +109,14 @@ class ReleaseCase(unittest.TestCase):
         self.state(origin=str(self.origin), calls=[], releases=[], prs={}, next_number=24, watch_exit=0,
                    checks=[NO_CHECKS, checks(('test', 'pending'), exit_code=8), checks(('test', 'pass'))])
 
-    def signer(self, signature, name):
-        path = self.bin / name
-        path.write_text(SIGNER.format(python=sys.executable, signature=signature))
-        path.chmod(0o755)
-
-    def commit(self, changelog, tags=(), extra=None):
+    def commit(self, changelog, tags=(), extra=None, signers=True):
         (self.seed / 'CHANGELOG.md').write_text(changelog)
+        signers_file = self.seed / '.github/allowed_signers'
+        if signers:
+            signers_file.parent.mkdir(exist_ok=True)
+            signers_file.write_text(f'stepwright-release namespaces="git" {TRUSTED_KEY}\n')
+        else:
+            signers_file.unlink(missing_ok=True)
         if extra:
             (self.seed / extra).write_text('Extra.\n')
         git(self.seed, 'add', '-A')
