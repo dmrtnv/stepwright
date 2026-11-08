@@ -56,7 +56,8 @@ Maintainers cut a release with [`dev/release.py`](dev/release.py). You need:
 
    It opens the "chore: Release" PR, which turns the Unreleased entries into the version's section. It waits for
    the `test` check, squash-merges the PR and signs the tag on the merge commit. It verifies the tag against
-   `.github/allowed_signers` at the previous release, the file runners check it against, and only then pushes it.
+   `.github/allowed_signers` at the previous release, the file runners on that release check it against, and only
+   then pushes it.
    Last, it publishes a GitHub Release whose notes are the version's CHANGELOG section.
 
    **Check:** `gh release view "$VERSION"` shows the Release.
