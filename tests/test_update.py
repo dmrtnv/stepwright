@@ -27,7 +27,7 @@ sys.path.insert(0, str(TESTS.parent))
 import adapter  # noqa: E402
 import core  # noqa: E402
 import fake_ssh  # noqa: E402
-from fake_ssh import TRUSTED_KEY  # noqa: E402
+from fake_ssh import ATTACKER_KEY, TRUSTED_KEY  # noqa: E402
 
 REAL_GIT = shutil.which('git')
 # Behavior comes from behavior.json at call time, so a test changes it without a commit.
@@ -68,6 +68,14 @@ BEHAVIOR = {'init_sleep': 0, 'init_stdout': ['linked   /x/new-skill -> /kit/new-
 V010 = '## v0.1.0 - 2026-01-01\n\nThe first release.\n'
 MID = '## Unreleased\n\n**Rerun the gate:** yes (mid).\n\n' + V010
 V020 = '## Unreleased\n\n## v0.2.0 - 2026-02-01\n\n**Rerun the gate:** yes (the kit changed).\n\n' + V010
+V030 = '## Unreleased\n\n## v0.3.0 - 2026-03-01\n\nNo gate line.\n\n' + V020.removeprefix('## Unreleased\n\n')
+# git looks for "\n[GNUPG:] GOODSIG ", so the status lines start after an empty line.
+FAKE_GPG = '''#!/bin/sh
+cat > /dev/null
+printf '\\n[GNUPG:] GOODSIG 1234 T\\n[GNUPG:] VALIDSIG ABCD\\n[GNUPG:] TRUST_ULTIMATE\\n'
+'''
+NOT_SIGNED = 'is not signed by a key in HEAD:.github/allowed_signers'
+HINT = 'If a release changed the signing key, update one release at a time'
 AFTER = '## Unreleased\n\n**Rerun the gate:** yes (after v0.2.0).\n\n' + V020.removeprefix('## Unreleased\n\n')
 
 
@@ -357,6 +365,99 @@ class RefusalTest(UpdateCase):
     def test_a_clobbered_tag(self):
         git(self.origin, 'tag', '-f', 'v0.2.0', 'v0.1.0')
         self.assertRefused((), 'git fetch failed; the checkout is unchanged', 'would clobber existing tag')
+
+
+class VerifyTest(UpdateCase):
+    def from_v020(self):
+        git(self.runner, 'checkout', '-q', '--detach', 'v0.2.0')
+
+    def test_a_tag_signed_by_an_unlisted_key(self):
+        self.from_v020()
+        self.commit(V030, 'v0.3.0', key=ATTACKER_KEY)
+        self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED} (exit 1); the checkout is unchanged')
+        self.assertNotIn(HINT, self.err)
+
+    def test_an_unsigned_annotated_tag(self):
+        self.from_v020()
+        self.commit(V030, 'v0.3.0', sign=False)
+        self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED} (error: no signature found)')
+
+    def test_a_lightweight_tag(self):
+        self.from_v020()
+        self.commit(V030)
+        git(self.origin, 'tag', 'v0.3.0')
+        self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED}', 'cannot verify a non-tag object')
+
+    def test_the_targets_own_signers_file_is_not_trusted(self):
+        self.from_v020()
+        self.commit(V030, 'v0.3.0', signers=(TRUSTED_KEY, ATTACKER_KEY), key=ATTACKER_KEY)
+        self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED} (exit 1)')
+
+    def test_an_old_signed_tag_under_a_newer_name(self):
+        git(self.origin, 'update-ref', 'refs/tags/v0.3.0', git(self.origin, 'rev-parse', 'refs/tags/v0.2.0'))
+        self.assertRefused(())
+        self.assertEqual(self.err, 'the tag v0.3.0 is signed as v0.2.0, not v0.3.0; the checkout is unchanged\n'
+                                   f'{HINT}: `pipeline update v0.2.0`\n')
+
+    def signed_by_another_format(self, header, footer):
+        commit = git(self.origin, 'rev-parse', 'v0.2.0^{commit}')
+        body = (f'object {commit}\ntype commit\ntag v0.3.0\ntagger Test <test@example.com> 1767225600 +0000\n\nv0.3.0\n'
+                f'{header}\n\nZmFrZQ==\n{footer}\n')
+        made = subprocess.run([REAL_GIT, '-C', str(self.origin), 'mktag'], input=body, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        git(self.origin, 'update-ref', 'refs/tags/v0.3.0', made)
+
+    def test_a_pgp_or_x509_signature_the_users_gpg_accepts(self):
+        gpg = self.bin / 'fake-gpg'
+        gpg.write_text(FAKE_GPG)
+        gpg.chmod(0o755)
+        cases = {'pgp': ('gpg.program', '-----BEGIN PGP SIGNATURE-----', '-----END PGP SIGNATURE-----'),
+                 'x509': ('gpg.x509.program', '-----BEGIN SIGNED MESSAGE-----', '-----END SIGNED MESSAGE-----')}
+
+        for name, (key, header, footer) in cases.items():
+            with self.subTest(name):
+                self.signed_by_another_format(header, footer)
+                git(self.runner, 'config', key, str(gpg))
+                self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED}')
+                git(self.runner, 'config', '--unset', key)
+                git(self.runner, 'tag', '-d', 'v0.3.0')
+
+    def test_the_users_ssh_program_does_not_decide(self):
+        git(self.runner, 'config', 'gpg.ssh.program', '/bin/false')
+        self.assertEqual(self.update(), 3, self.out + self.err)
+        self.assertEqual(self.head(), self.tag_commit('v0.2.0'))
+
+    def test_a_failed_move_across_two_releases_names_the_oldest(self):
+        self.commit(V030, 'v0.3.0', key=ATTACKER_KEY)
+        self.assertRefused((), f'the tag v0.3.0 {NOT_SIGNED} (exit 1)')
+        self.assertTrue(self.err.endswith(f'\n{HINT}: `pipeline update v0.2.0`\n'), self.err)
+
+    def test_a_failed_rollback_has_no_hint(self):
+        self.commit(V030, 'v0.3.0')
+        git(self.origin, 'tag', '-s', '-u', f'key::{ATTACKER_KEY}', '-m', 'v0.0.9', 'v0.0.9', 'v0.1.0^{commit}')
+        git(self.runner, 'fetch', '-q', '--tags', 'origin')
+        git(self.runner, 'checkout', '-q', '--detach', 'v0.3.0')
+        self.assertRefused(('v0.0.9',), f'the tag v0.0.9 {NOT_SIGNED} (exit 1)')
+        self.assertNotIn(HINT, self.err)
+
+    def test_a_head_without_a_signers_file(self):
+        self.commit(V030, 'v0.3.0')
+        git(self.runner, 'rm', '-q', '.github/allowed_signers')
+        git(self.runner, 'commit', '-q', '-m', 'no signers')
+        (self.runner / '.github').mkdir()
+        (self.runner / '.github/allowed_signers').write_text(f'stepwright-release namespaces="git" {TRUSTED_KEY}\n')
+        self.assertRefused((), 'the installed checkout has no .github/allowed_signers, so update cannot verify v0.3.0; '
+                               'the checkout is unchanged. Move by hand with the commands in INSTALL: Update.')
+        self.assertNotIn('is not signed', self.err)
+        self.assertNotIn(HINT, self.err)
+
+    def test_already_at_a_release_without_a_signers_file(self):
+        self.commit(V030, 'v0.3.0', signers=())
+        git(self.runner, 'fetch', '-q', '--tags', 'origin')
+        git(self.runner, 'checkout', '-q', '--detach', 'v0.3.0')
+        code = self.update()
+        self.assertEqual((code, self.out, self.err), (0, 'Already at v0.3.0.\n', ''))
+        self.assertEqual(self.calls(), [])
 
 
 class InitFailureTest(UpdateCase):
