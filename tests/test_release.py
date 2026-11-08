@@ -453,7 +453,6 @@ class Resume(ReleaseCase):
         self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
         self.assertNotIn(['release', 'create'], self.gh_calls())
 
-
     def test_a_tag_on_origin_is_only_published(self):
         self.commit(RELEASED, tags=('v0.9',))
 
