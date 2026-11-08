@@ -62,7 +62,7 @@ with open(root / 'sbx-calls', 'a') as handle:
     handle.write(json.dumps(sys.argv[1:]) + '\n')
 sys.exit(1)
 ''',
-    'claude': '', 'node': '', 'jq': '',
+    'claude': '', 'node': '', 'jq': '', 'ssh-keygen': '',
 }
 HEADER = '#!{python}\nimport json, os, pathlib, pwd, sys, time\nroot = pathlib.Path(__file__).resolve().parent.parent\n' \
          "state = json.loads((root / 'state.json').read_text())\n"
@@ -188,7 +188,8 @@ class SummaryTest(DoctorCase):
         labels = [line.split('  ', 1)[1].split(':', 1)[0] for line in checks]
         kit = [f'kit {item}/{entry.name}' for item in backend.KIT_ITEMS for entry in sorted((self.kit / item).iterdir())
                if entry.name != '__pycache__']
-        self.assertEqual(labels, ['tool claude', 'tool node', 'tool git', 'tool jq', 'tool sbx', 'kvm group', 'docker',
+        self.assertEqual(labels, ['tool claude', 'tool node', 'tool git', 'tool jq', 'tool sbx',
+                                  'tool ssh-keygen', 'kvm group', 'docker',
                                   'runner', *kit, 'unit sbx.service', 'linger', 'app key', 'config',
                                   'sbx-host reserve', 'unit pipeline-tick.service', 'unit pipeline-tick.timer'])
 
@@ -236,7 +237,7 @@ class SummaryTest(DoctorCase):
 
 class ToolsTest(DoctorCase):
     def test_each_tool_on_path(self):
-        for name in ('claude', 'node', 'git', 'jq', 'sbx'):
+        for name in ('claude', 'node', 'git', 'jq', 'sbx', 'ssh-keygen'):
             self.assertPass(f'tool {name}', str(self.bin / name))
 
     def test_a_missing_tool_fails_alone_with_its_install_fix(self):
@@ -247,6 +248,10 @@ class ToolsTest(DoctorCase):
     def test_the_sbx_fix_names_step_1(self):
         (self.bin / 'sbx').unlink()
         self.assertFail('tool sbx', 'not on PATH', 'install the docker-sbx package (INSTALL step 1)')
+
+    def test_the_ssh_keygen_fix_names_openssh_client(self):
+        (self.bin / 'ssh-keygen').unlink()
+        self.assertFail('tool ssh-keygen', 'not on PATH', 'sudo apt install openssh-client (INSTALL: What you need)')
 
 
 class KvmTest(DoctorCase):

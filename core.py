@@ -5242,7 +5242,8 @@ DOCTOR_TOOLS = {'claude': 'install Claude Code and sign in (INSTALL: What you ne
                 'node': 'install Node, any LTS (INSTALL: What you need)',
                 'git': 'sudo apt install git (INSTALL: What you need)',
                 'jq': 'sudo apt install jq (INSTALL: What you need)',
-                'sbx': 'install the docker-sbx package (INSTALL step 1)'}
+                'sbx': 'install the docker-sbx package (INSTALL step 1)',
+                'ssh-keygen': 'sudo apt install openssh-client (INSTALL: What you need)'}
 # `systemctl is-enabled` states of a unit systemd knows and would start: the tick service has no [Install] section.
 STARTABLE = ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias')
 
@@ -6265,8 +6266,8 @@ COMMANDS = {
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
              'admin'),
     'doctor': ('doctor', 'check this install: a PASS/FAIL line per check, a fix under each FAIL', 'admin'),
-    'update': ('update [<tag>]', 'move to the newest release, or <tag>: fetch, check out, init, doctor; refuses while '
-                                 'a stage runs', 'admin'),
+    'update': ('update [<tag>]', 'move to the newest release, or <tag>: fetch, verify, check out, init, doctor; '
+                                 'refuses while a stage runs', 'admin'),
     'prove-app': ('prove-app [--repo <o>/<r>]', 'read-only: what the GitHub App reaches', 'admin'),
     'prove-gate': ('prove-gate [--repo <o>/<r>]', 'throwaway draft PR: GitHub refuses the App all but agent/**',
                    'admin'),
