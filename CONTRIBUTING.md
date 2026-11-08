@@ -39,6 +39,29 @@ Each user-visible change adds an entry under **Unreleased** in [CHANGELOG.md](CH
 line. `Changelog` in `tests/test_docs.py` fails when a release after v0.1, or a non-empty Unreleased, has no such
 line, has two, or puts text on the next line.
 
+## Releasing
+
+Maintainers cut a release with [`dev/release.py`](dev/release.py). You need:
+- a clean checkout whose HEAD is `origin/main`;
+- `gh` logged in as a repo admin;
+- git set to sign with SSH (`gpg.format ssh` and `user.signingkey`).
+
+1. From the checkout, run it with the new version:
+
+   ```bash
+   VERSION=v0.9
+   dev/release.py "$VERSION"
+   ```
+
+   It opens the "chore: Release" PR, which turns the Unreleased entries into the version's section. It waits for
+   the `test` check, squash-merges the PR, signs the tag on the merge commit and pushes it. Last, it publishes a
+   GitHub Release whose notes are the version's CHANGELOG section.
+
+   **Check:** `gh release view "$VERSION"` shows the Release.
+
+If a run stops, fix what it names and run the same command again: it resumes where it stopped. "Already released"
+means nothing is left to do. Watch the repo for releases on GitHub to hear of each one.
+
 ## Public API
 
 A change to any of these is a breaking change for users. Each has one home:
