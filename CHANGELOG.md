@@ -18,6 +18,8 @@ What changed for you in each release, newest first. Each release says whether to
 - Commands that `pipeline update`, `pipeline init`, `pipeline doctor` and the respond gate's pr-text message print
   quote the runner path, so they paste cleanly when it holds a space. The go-back command after a failed init also
   quotes the branch.
+- [INSTALL step 2](INSTALL.md#2-get-stepwright-and-run-init) checks out the newest release tag, the one
+  `pipeline update` picks, so a `nightly` or `-rc` tag no longer wins.
 
 ## v0.10 - 2026-11-08
 

@@ -41,7 +41,8 @@ don't go on until it passes. When a block starts with lines like `REPO=<owner>/<
 ```bash
 R=$HOME/.local/share/pipeline/runner
 git clone https://github.com/dmrtnv/stepwright.git "$R"
-git -C "$R" checkout "$(git -C "$R" describe --tags --abbrev=0 2>/dev/null || echo main)"   # the latest release, if any
+TAG=$(git -C "$R" tag --list --sort=-v:refname | grep -xE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1)   # the newest release, if any
+git -C "$R" checkout "${TAG:-main}"
 "$R/pipeline" init
 ```
 
