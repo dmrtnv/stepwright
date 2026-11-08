@@ -1,6 +1,6 @@
 """`dev/release.py <version>`: the release PR, the checks gate, the merge, the signed tag on the merge commit and the
 GitHub Release, resumed by a rerun. Origin is a temp bare repo, the release runs in a temp clone, `gh` is
-tests/fake_gh.py answering from a state file, and git signs with a fake SSH signer.
+tests/fake_gh.py answering from a state file, and git signs and verifies with tests/fake_ssh.py as ssh-keygen.
 
 Run: python3 -m unittest tests/test_release.py
 """
@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,8 +22,11 @@ from unittest import mock
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
 
 import core  # noqa: E402
+import fake_ssh  # noqa: E402
+from fake_ssh import ATTACKER_KEY, TRUSTED_KEY  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location('release', ROOT / 'dev' / 'release.py')
 release = importlib.util.module_from_spec(SPEC)
@@ -30,12 +34,11 @@ SPEC.loader.exec_module(release)
 github = sys.modules['release_github']
 
 REAL_GIT = shutil.which('git')
-SIGNER = '''#!{python}
+BAD_SIGNER = f'''#!{sys.executable}
 import sys
 from pathlib import Path
-Path(sys.argv[-1] + '.sig').write_text({signature!r})
+Path(sys.argv[-1] + '.sig').write_text('not a signature\\n')
 '''
-SIGNED = '-----BEGIN SSH SIGNATURE-----\nZmFrZQ==\n-----END SSH SIGNATURE-----\n'
 GATE = '**Rerun the gate:** no (only the docs changed).'
 NOTES = f'{GATE}\n\n### Fixed\n\n- A fix.'
 V081 = '## v0.8.1 - 2026-11-07\n\n**Rerun the gate:** no (status text).\n\n### Fixed\n\n- Status.\n\n'
@@ -43,6 +46,7 @@ V08 = '## v0.8 - 2026-11-05\n\n**Rerun the gate:** yes (the kit).\n\n### Added\n
 CHANGELOG = f'# Changelog\n\nIntro.\n\n## Unreleased\n\n{NOTES}\n\n' + V081 + V08
 RELEASED = f'# Changelog\n\nIntro.\n\n## Unreleased\n\n## v0.9 - 2026-11-08\n\n{NOTES}\n\n' + V081 + V08
 BRANCH = 'chore/release-v0.9'
+NOT_SIGNED = re.escape('the tag v0.9 is not signed by a key in v0.8.1:.github/allowed_signers')
 
 
 def git(directory, *arguments):
@@ -69,6 +73,8 @@ class Clock:
 
 
 class ReleaseCase(unittest.TestCase):
+    first_signers = True
+
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix='release-'))
         self.addCleanup(shutil.rmtree, self.base, True)
@@ -78,11 +84,12 @@ class ReleaseCase(unittest.TestCase):
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.state_path = self.base / 'gh.json'
-        self.signer(SIGNED, 'signer')
-        self.signer('not a signature\n', 'bad-signer')
+        bad_signer = self.bin / 'bad-signer'
+        bad_signer.write_text(BAD_SIGNER)
+        bad_signer.chmod(0o755)
+        fake_ssh.install(self.bin)
         gitconfig = self.base / 'gitconfig'
-        gitconfig.write_text(f'[gpg]\n\tformat = ssh\n[gpg "ssh"]\n\tprogram = {self.bin / "signer"}\n'
-                             '[user]\n\tsigningkey = key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake test@example.com\n')
+        gitconfig.write_text(f'[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = key::{TRUSTED_KEY}\n')
         gh = self.bin / 'gh'
         gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(TESTS / "fake_gh.py"))} '
                       f'{shlex.quote(str(self.state_path))} "$@"\n')
@@ -100,19 +107,21 @@ class ReleaseCase(unittest.TestCase):
 
         git(self.base, 'init', '-q', '--bare', '-b', 'main', str(self.origin))
         git(self.base, 'clone', '-q', str(self.origin), str(self.seed))
-        self.commit(CHANGELOG.replace(f'## Unreleased\n\n{NOTES}\n\n', '## Unreleased\n\n'), tags=('v0.8', 'v0.8.1'))
+        self.commit(CHANGELOG.replace(f'## Unreleased\n\n{NOTES}\n\n', '## Unreleased\n\n'), tags=('v0.8', 'v0.8.1'),
+                    signers=self.first_signers)
         self.commit(CHANGELOG)
         git(self.base, 'clone', '-q', str(self.origin), str(self.clone))
         self.state(origin=str(self.origin), calls=[], releases=[], prs={}, next_number=24, watch_exit=0,
                    checks=[NO_CHECKS, checks(('test', 'pending'), exit_code=8), checks(('test', 'pass'))])
 
-    def signer(self, signature, name):
-        path = self.bin / name
-        path.write_text(SIGNER.format(python=sys.executable, signature=signature))
-        path.chmod(0o755)
-
-    def commit(self, changelog, tags=(), extra=None):
+    def commit(self, changelog, tags=(), extra=None, signers=True):
         (self.seed / 'CHANGELOG.md').write_text(changelog)
+        signers_file = self.seed / '.github/allowed_signers'
+        if signers:
+            signers_file.parent.mkdir(exist_ok=True)
+            signers_file.write_text(f'stepwright-release namespaces="git" {TRUSTED_KEY}\n')
+        else:
+            signers_file.unlink(missing_ok=True)
         if extra:
             (self.seed / extra).write_text('Extra.\n')
         git(self.seed, 'add', '-A')
@@ -413,17 +422,36 @@ class Resume(ReleaseCase):
         oid = self.merged_pr()
         git(self.clone, 'fetch', '-q', 'origin')
 
-        for arguments in (['-a', '-m', 'v0.9'], []):
+        for arguments, reason in ((['-a', '-m', 'v0.9'], 'no signature found'), ([], 'cannot verify a non-tag object')):
             with self.subTest(arguments):
                 git(self.clone, 'tag', '-f', *arguments, 'v0.9', oid)
-                self.refused('the tag v0.9 is not SSH-signed')
+                self.refused(f'{NOT_SIGNED} \\(error: .*{reason}')
                 self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
 
     def test_a_fresh_tag_the_signer_did_not_sign_is_refused(self):
         git(self.clone, 'config', 'gpg.ssh.program', str(self.bin / 'bad-signer'))
         self.merged_pr()
-        self.refused('the tag v0.9 is not SSH-signed')
+        self.refused(NOT_SIGNED)
         self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+
+    def test_a_tag_signed_by_a_key_the_previous_release_does_not_list_is_refused(self):
+        git(self.clone, 'config', 'user.signingkey', f'key::{ATTACKER_KEY}')
+        self.merged_pr()
+        self.refused(f'{NOT_SIGNED} \\(exit 1\\)\\. Runners at v0\\.8\\.1 would refuse it: sign with a key in its '
+                     '\\.github/allowed_signers')
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+        self.assertNotIn(['release', 'create'], self.gh_calls())
+
+    def test_no_earlier_release_is_refused(self):
+        for tag in ('v0.8', 'v0.8.1'):
+            git(self.seed, 'tag', '-d', tag)
+            git(self.clone, 'tag', '-d', tag)
+            git(self.seed, 'push', '-q', 'origin', f':refs/tags/{tag}')
+        oid = self.merged_pr()
+        self.refused(re.escape(f'no release before v0.9 in the history of {oid[:12]}: runners would have no signers '
+                               'file to check it against'))
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
+        self.assertNotIn(['release', 'create'], self.gh_calls())
 
     def test_a_tag_on_origin_is_only_published(self):
         self.commit(RELEASED, tags=('v0.9',))
@@ -459,6 +487,22 @@ class Resume(ReleaseCase):
         spy.assert_not_called()
         self.assertEqual(self.gh_calls(), [['release', 'view']])
         self.assertEqual(out.getvalue(), 'v0.9 is already released\n')
+
+
+class NoSignersFileBefore(ReleaseCase):
+    first_signers = False
+
+    def test_an_earlier_release_without_a_signers_file_is_refused(self):
+        self.merged_pr()
+
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(core.PipelineError) as raised:
+            release.release('v0.9', self.clone)
+
+        self.assertEqual(str(raised.exception), 'v0.8.1 has no .github/allowed_signers, so runners there cannot check '
+                                                'v0.9: the first release this script can cut is the one after the '
+                                                'release that adds the file')
+        self.assertNotIn('sign with a key', str(raised.exception))
+        self.assertEqual(self.on_origin('refs/tags/v0.9'), '')
 
 
 class Command(unittest.TestCase):

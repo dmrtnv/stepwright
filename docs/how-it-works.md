@@ -160,9 +160,10 @@ Unknown keys are an error.
 - Set up an install: `pipeline init` (links, config skeletons and user units with caps sized from `/proc`; never
   overwrites a file or link, never starts a unit; `pipeline update` runs it).
 - Check the install: `pipeline doctor` (a PASS/FAIL line per check, a fix under each FAIL; exits 1 on any FAIL).
-- Update the runner: `pipeline update [<tag>]` (fetches the tags, refuses while a stage runs or starts, checks out
-  the newest release tag or `<tag>`, runs init and doctor, and prints the Rerun the gate line of each release it
-  adds or undoes; a bare update never moves the runner back).
+- Update the runner: `pipeline update [<tag>]` (fetches the tags, refuses while a stage runs or starts, verifies the
+  tag against the installed checkout's `.github/allowed_signers`, checks out the newest release tag or `<tag>`, runs
+  init and doctor, and prints the Rerun the gate line of each release it adds or undoes; a bare update never moves
+  the runner back).
 - Clean up: `pipeline gc` (orphan sandboxes, refs and logs of merged steps, snapshot refs > 14 days, then
   `template prune`).
 - Sandbox templates:

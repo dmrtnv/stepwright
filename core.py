@@ -5242,7 +5242,8 @@ DOCTOR_TOOLS = {'claude': 'install Claude Code and sign in (INSTALL: What you ne
                 'node': 'install Node, any LTS (INSTALL: What you need)',
                 'git': 'sudo apt install git (INSTALL: What you need)',
                 'jq': 'sudo apt install jq (INSTALL: What you need)',
-                'sbx': 'install the docker-sbx package (INSTALL step 1)'}
+                'sbx': 'install the docker-sbx package (INSTALL step 1)',
+                'ssh-keygen': 'sudo apt install openssh-client (INSTALL: What you need)'}
 # `systemctl is-enabled` states of a unit systemd knows and would start: the tick service has no [Install] section.
 STARTABLE = ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias')
 
@@ -5317,6 +5318,47 @@ def release_tags(directory, *git_filters):
     `--merged A --no-merged B`). PipelineError when git fails."""
     listed = git(directory, 'tag', '--list', '--sort=-v:refname', *git_filters).split()
     return [tag for tag in listed if RELEASE_TAG.fullmatch(tag)]
+
+
+SIGNERS_FILE = '.github/allowed_signers'
+# Only an SSH signature by a key in the signers file passes: a user's own ssh program, gpg keyring or gpgsm never decide.
+TAG_VERIFY_PINS = ('-c', 'gpg.ssh.program=ssh-keygen', '-c', 'gpg.program=false', '-c', 'gpg.openpgp.program=false',
+                   '-c', 'gpg.x509.program=false')
+
+
+class NoSignersFile(PipelineError):
+    """The signers revision has no SIGNERS_FILE: nothing to verify a tag against."""
+
+
+def verify_tag(directory, name, signers_revision):
+    """The object id of the tag refs/tags/<name> when it is signed by a key in SIGNERS_FILE as committed at
+    signers_revision and names itself <name> (an old signed tag served under a newer name never passes). PipelineError
+    with the reason otherwise."""
+    oid = git(directory, 'rev-parse', '--verify', f'refs/tags/{name}')
+    listed = git(directory, 'ls-tree', signers_revision, '--', SIGNERS_FILE).split()
+
+    if len(listed) < 3 or listed[1] != 'blob':
+        raise NoSignersFile(f'{signers_revision} has no {SIGNERS_FILE}')
+
+    blob = git_result(directory, 'cat-file', 'blob', listed[2])
+
+    if blob.returncode != 0:
+        raise PipelineError(f'git cat-file {signers_revision}:{SIGNERS_FILE} failed: {error_line(blob.stderr)}')
+
+    with tempfile.NamedTemporaryFile('w', prefix='allowed-signers-') as signers:
+        signers.write(blob.stdout)
+        signers.flush()
+        verified = git_result(directory, *TAG_VERIFY_PINS, '-c', f'gpg.ssh.allowedSignersFile={signers.name}',
+                              'verify-tag', '--format=%(tag)', oid)
+
+    if verified.returncode != 0:
+        reason = error_line(verified.stderr) or f'exit {verified.returncode}'
+        raise PipelineError(f'the tag {name} is not signed by a key in {signers_revision}:{SIGNERS_FILE} ({reason})')
+
+    if (signed_as := verified.stdout.strip()) != name:
+        raise PipelineError(f'the tag {name} is signed as {signed_as or "no name"}, not {name}')
+
+    return oid
 
 
 def is_ancestor(directory, older, newer):
@@ -5633,9 +5675,10 @@ def run_init():
 
 
 def command_update(argv):
-    """Move the runner to the newest release tag, or to argv's: fetch the tags, refuse while a stage runs, check out
-    the tag, rerun init and doctor as the new code, and print the gate lines of the releases crossed. A bare update
-    never moves back: a checkout ahead of the newest release stays."""
+    """Move the runner to the newest release tag, or to argv's: fetch the tags, refuse while a stage runs, verify the
+    tag against HEAD's signers file (verify_tag), check out the verified tag, rerun init and doctor as the new code, and
+    print the gate lines of the releases crossed. A bare update never moves back: a checkout ahead of the newest
+    release stays."""
     if len(argv) > 1:
         return usage_error('update')
 
@@ -5676,7 +5719,18 @@ def command_update(argv):
         if busy := busy_reason():
             return refuse(busy)
 
-        checkout = git_result(PIPELINE_DIR, 'checkout', '--quiet', '--detach', f'refs/tags/{target}')
+        try:
+            oid = verify_tag(PIPELINE_DIR, target, 'HEAD')
+        except NoSignersFile:
+            return refuse(f'the installed checkout has no {SIGNERS_FILE}, so update cannot verify {target}; the '
+                          'checkout is unchanged. Move by hand with the commands in INSTALL: Update.')
+        except PipelineError as error:
+            added = release_tags(PIPELINE_DIR, '--merged', target, '--no-merged', 'HEAD')
+            hint = (f'\nIf a release changed the signing key, update one release at a time: `pipeline update '
+                    f'{added[-1]}`' if len(added) >= 2 else '')
+            return refuse(f'{error}; the checkout is unchanged{hint}')
+
+        checkout = git_result(PIPELINE_DIR, 'checkout', '--quiet', '--detach', oid)
 
         if checkout.returncode != 0:
             return refuse(f'git checkout {target} failed; the checkout is unchanged:\n{checkout.stderr.strip()}')
@@ -6212,8 +6266,8 @@ COMMANDS = {
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
              'admin'),
     'doctor': ('doctor', 'check this install: a PASS/FAIL line per check, a fix under each FAIL', 'admin'),
-    'update': ('update [<tag>]', 'move to the newest release, or <tag>: fetch, check out, init, doctor; refuses while '
-                                 'a stage runs', 'admin'),
+    'update': ('update [<tag>]', 'move to the newest release, or <tag>: fetch, verify, check out, init, doctor; '
+                                 'refuses while a stage runs', 'admin'),
     'prove-app': ('prove-app [--repo <o>/<r>]', 'read-only: what the GitHub App reaches', 'admin'),
     'prove-gate': ('prove-gate [--repo <o>/<r>]', 'throwaway draft PR: GitHub refuses the App all but agent/**',
                    'admin'),

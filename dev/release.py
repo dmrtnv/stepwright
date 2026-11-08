@@ -19,9 +19,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'dev')]
 
 import core  # noqa: E402
 from release_github import failed, gate, gh  # noqa: E402
+from release_tag import tag  # noqa: E402
 
 UNRELEASED = re.compile(r'^## Unreleased[ \t]*$', re.MULTILINE)
-SIGNATURE = '-----BEGIN SSH SIGNATURE-----'
 
 
 def released_changelog(text, version, date):
@@ -190,31 +190,6 @@ def check_head(directory, version, head):
         raise core.PipelineError(f'the release PR changes {changed or "nothing"}, not only CHANGELOG.md: no merge')
 
     section(directory, head, version)
-
-
-def tag(directory, version, oid):
-    reference = f'refs/tags/{version}'
-    local = core.git_result(directory, 'rev-parse', '--verify', '--quiet', f'{reference}^{{commit}}')
-
-    if local.returncode == 0 and local.stdout.strip() != oid:
-        raise core.PipelineError(f'the local tag {version} is not on the merge commit {oid[:12]}: delete it with '
-                                 f'git tag -d {version}, then rerun')
-
-    if local.returncode != 0:
-        signed = core.git_result(directory, 'tag', '-s', version, '-m', version, oid)
-
-        if signed.returncode != 0:
-            raise core.PipelineError(f'git tag -s {version}: {core.error_line(signed.stderr)}. Set git config '
-                                     'gpg.format ssh and user.signingkey, then rerun')
-
-    shown = core.git_result(directory, 'cat-file', 'tag', reference)
-
-    if shown.returncode != 0 or SIGNATURE not in shown.stdout:
-        raise core.PipelineError(f'the tag {version} is not SSH-signed: set git config gpg.format ssh and '
-                                 f'user.signingkey, delete it with git tag -d {version}, then rerun')
-
-    core.git(directory, 'push', 'origin', reference)
-    print(f'Tagged and pushed {version}')
 
 
 def publish(directory, version):
