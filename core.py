@@ -5225,7 +5225,7 @@ def command_init():
               f'  systemctl --user daemon-reload\n'
               f'  systemctl --user enable --now {SBX_UNIT}\n'
               f'  loginctl enable-linger "$USER"\n'
-              f'  {PIPELINE_DIR}/sbx-host/install-sbx.sh\n'
+              f"  {shlex.quote(str(PIPELINE_DIR / 'sbx-host/install-sbx.sh'))}\n"
               f'  sbx login\n'
               f'then create your GitHub App (step 4), fill app.id, app.slug, app.reviewer and repos in {adapter.CONFIG} '
               f'(step 5), and run pipeline doctor.')
@@ -5443,7 +5443,7 @@ def doctor_sbx_unit(loaded):
     """Enabled (INSTALL step 3 runs enable --now: else no daemon after a reboot) and active."""
     (state, detail), active = unit_state(SBX_UNIT), sbx_host.active()
     fix = {None: NO_USER_MANAGER_FIX,
-           '': f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload && '
+           '': f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then systemctl --user daemon-reload && "
                f'systemctl --user enable --now {SBX_UNIT} (INSTALL step 3)'}.get(
         state, f'systemctl --user enable --now {SBX_UNIT}')
 
@@ -5511,7 +5511,7 @@ def doctor_config(loaded):
 
         return [('config', True, str(adapter.CONFIG), '')]
 
-    fix = edit if adapter.CONFIG.exists() else f'{PIPELINE_DIR}/pipeline init, then {edit}'
+    fix = edit if adapter.CONFIG.exists() else f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then {edit}"
 
     return [('config', False, error, fix)]
 
@@ -5546,7 +5546,7 @@ def doctor_tick_service(loaded):
     """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
     state, detail = unit_state(TICK_UNIT)
     fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {TICK_UNIT}'}.get(
-        state, f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload (INSTALL step 8)')
+        state, f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then systemctl --user daemon-reload (INSTALL step 8)")
 
     return [(f'unit {TICK_UNIT}', state in STARTABLE, detail, fix)]
 
@@ -5554,7 +5554,7 @@ def doctor_tick_service(loaded):
 def doctor_tick_timer(loaded):
     state, detail = unit_state(TICK_TIMER)
     fix = {None: NO_USER_MANAGER_FIX,
-           '': f'{PIPELINE_DIR}/pipeline init, then systemctl --user daemon-reload && '
+           '': f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then systemctl --user daemon-reload && "
                f'systemctl --user enable --now {TICK_TIMER} (INSTALL step 8)'}.get(
         state, f'systemctl --user enable --now {TICK_TIMER}')
 
@@ -5726,7 +5726,8 @@ def command_update(argv):
 
     def switch():
         if git(PIPELINE_DIR, 'status', '--porcelain', '--untracked-files=no'):
-            return refuse(f'local changes in {PIPELINE_DIR}; update needs a clean clone (git -C {PIPELINE_DIR} status)')
+            return refuse(f'local changes in {PIPELINE_DIR}; update needs a clean clone '
+                          f'(git -C {shlex.quote(str(PIPELINE_DIR))} status)')
 
         if busy := busy_reason():
             return refuse(busy)
@@ -5757,7 +5758,7 @@ def command_update(argv):
         if init:
             failure = f'exit {init}' if isinstance(init, int) else init
             return refuse(f'init failed ({failure}); fix what it printed above and run `pipeline init`, or go back: '
-                          f'git -C {PIPELINE_DIR} checkout {was}')
+                          f'git -C {shlex.quote(str(PIPELINE_DIR))} checkout {shlex.quote(was)}')
 
         return 0
 

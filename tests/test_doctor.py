@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -76,8 +77,10 @@ def git(directory, *arguments):
 
 
 class DoctorCase(unittest.TestCase):
+    prefix = 'doctor-'
+
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp(prefix='doctor-'))
+        self.base = Path(tempfile.mkdtemp(prefix=self.prefix))
         self.addCleanup(shutil.rmtree, self.base, True)
         self.home = self.base / 'home'
         self.bin = self.base / 'bin'
@@ -519,6 +522,37 @@ class UnitsTest(DoctorCase):
         self.assertFail('unit pipeline-tick.timer', 'not installed',
                         f'{self.runner}/pipeline init, then systemctl --user daemon-reload && '
                         'systemctl --user enable --now pipeline-tick.timer (INSTALL step 8)')
+
+
+class SpacedRunnerTest(DoctorCase):
+    prefix = 'doctor runner-'
+
+    def enabled(self, **states):
+        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
+
+    def fix(self, label):
+        _, after = self.check(label)
+        self.assertTrue(after.startswith('      fix: '), after)
+
+        return after.removeprefix('      fix: ')
+
+    def assertInitFirst(self, label):
+        command = self.fix(label).split(', then ', 1)[0]
+        pipeline = str(self.runner / 'pipeline')
+        self.assertEqual(shlex.split(command), [pipeline, 'init'])
+        self.assertEqual(command, f'{shlex.quote(pipeline)} init')
+
+    def test_the_unit_fixes_quote_the_runner_path(self):
+        self.enabled(**{'sbx.service': 'not-found', 'pipeline-tick.service': 'not-found',
+                        'pipeline-tick.timer': 'not-found'})
+
+        for label in ('unit sbx.service', 'unit pipeline-tick.service', 'unit pipeline-tick.timer'):
+            with self.subTest(label):
+                self.assertInitFirst(label)
+
+    def test_the_config_fix_quotes_the_runner_path(self):
+        self.pipeline_config.unlink()
+        self.assertInitFirst('config')
 
 
 class LingerTest(DoctorCase):

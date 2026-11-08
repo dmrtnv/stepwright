@@ -310,6 +310,21 @@ class SpacedRunnerTest(UpdateCase):
         self.assertTrue(gate.startswith("'"), gate)
         self.assertIn(f'  {gate} --repo {shlex.quote(str(self.shop))}', self.out.splitlines())
 
+    def test_the_dirty_refusal_command_quotes_the_runner_path(self):
+        (self.runner / 'CHANGELOG.md').write_text('mine')
+        self.assertRefused((), f'local changes in {self.runner}; update needs a clean clone')
+        command = self.err.rsplit('(', 1)[1].split(')', 1)[0]
+        self.assertEqual(shlex.split(command), ['git', '-C', str(self.runner), 'status'])
+        self.assertIn(shlex.quote(str(self.runner)), command)
+
+    def test_the_go_back_command_quotes_the_runner_path_and_the_branch(self):
+        git(self.runner, 'checkout', '-q', '-B', "it's", 'v0.1.0')
+        self.behavior(init_exit=1)
+        self.assertEqual(self.update(), 1)
+        command = self.err.split('go back: ', 1)[1].strip()
+        self.assertEqual(shlex.split(command), ['git', '-C', str(self.runner), 'checkout', "it's"])
+        self.assertIn(shlex.quote(str(self.runner)), command)
+
 
 class NoMoveTest(UpdateCase):
     def test_ahead_of_the_newest_stays(self):

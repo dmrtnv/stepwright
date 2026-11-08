@@ -13,6 +13,11 @@ What changed for you in each release, newest first. Each release says whether to
 - After `pipeline update` checks out a verified tag, it says so first:
   `Verified v0.11: signed by a key in .github/allowed_signers at v0.10.`, then `Was at v0.10, now at v0.11.`
 
+### Fixed
+
+- Commands that `pipeline update`, `pipeline init` and `pipeline doctor` print quote the runner path, so they paste
+  cleanly when it holds a space. The go-back command after a failed init also quotes the branch.
+
 ## v0.10 - 2026-11-08
 
 **Rerun the gate:** no (no kit or `STAGES` change).
