@@ -2219,6 +2219,15 @@ class RunnerTest(RunnerCase):
         self.assertIn(f'rebased onto origin/main (backup {backup})', self.state()['notes'])
         self.assertEqual(self.pnpm_calls().count('install --frozen-lockfile'), 2, 'setup runs again after a rebase')
 
+    def test_a_tag_named_like_the_base_does_not_stall_the_rebase(self):
+        git(self.fixture.main, 'tag', 'main')
+        git(self.fixture.main, 'push', '-q', 'origin', 'refs/tags/main')
+        moving = move_main('more', 'other.txt').replace('push -q origin main', 'push -q origin HEAD:refs/heads/main')
+        self.happy_path(**{'thing-01-implement': [{'run': IMPLEMENT['run'] + [moving]}]})
+        self.main(FEATURE)
+        self.assertEqual(self.state()['stage'], 'done', self.state()['reason'])
+        self.assertOnTopOfRemoteMain()
+
     def test_rebase_conflict_resumes_implement_to_resolve_it(self):
         self.happy_path(**{'thing-01-implement': [{'run': IMPLEMENT['run'] + [move_main('main', 'thing.txt')]}, RESOLVE]})
         self.main(FEATURE)
