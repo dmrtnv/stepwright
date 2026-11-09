@@ -1813,6 +1813,19 @@ class RunnerTest(RunnerCase):
 
         self.assertEqual(dropped, [SANDBOX])
 
+    def test_a_branch_fetched_out_of_a_sandbox_brings_no_tag(self):
+        def tags(directory):
+            return git(directory, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/tags')
+
+        git(self.fixture.main, 'tag', 'v0.1')
+        git(self.fixture.main, 'push', '-q', 'origin', 'v0.1')
+        tagging = {'run': [IMPLEMENT['run'][0] + ' && git tag agent-made && git tag -f v0.1']}
+        self.happy_path(**{'thing-01-implement': [tagging]})
+        self.main(FEATURE, '--until', 'implement')
+        self.assertTrue(self.ref())
+        self.assertEqual(tags(self.fixture.clone), tags(self.fixture.origin),
+                         'an agent-made or agent-moved tag never reaches the clean clone')
+
     def test_the_vm_fetches_from_the_host_clone_not_github(self):
         self.happy_path()
         self.main(FEATURE, '--until', 'plan')
@@ -1843,6 +1856,8 @@ class RunnerTest(RunnerCase):
         self.assertEqual(state['status'], 'paused')
         self.assertIn('fetching origin/main into', state['reason'])
         self.assertIn('unable to access origin', state['reason'].splitlines()[0])
+        self.assertEqual(state['reason'].splitlines()[1],
+                         f'fix: sbx exec -it {SANDBOX} bash; git fetch origin refs/heads/main')
         self.assertEqual(self.claude_calls(), [])
         self.assertEqual(self.notifications, ['base fetch failed, retrying in 15 min: fatal: unable to access origin',
                                               'paused: base fetch failed'])
@@ -2205,6 +2220,15 @@ class RunnerTest(RunnerCase):
         self.assertTrue(git(self.fixture.clone, 'rev-parse', '--verify', backup))
         self.assertIn(f'rebased onto origin/main (backup {backup})', self.state()['notes'])
         self.assertEqual(self.pnpm_calls().count('install --frozen-lockfile'), 2, 'setup runs again after a rebase')
+
+    def test_a_tag_named_like_the_base_does_not_stall_the_rebase(self):
+        git(self.fixture.main, 'tag', 'main')
+        git(self.fixture.main, 'push', '-q', 'origin', 'refs/tags/main')
+        moving = move_main('more', 'other.txt').replace('push -q origin main', 'push -q origin HEAD:refs/heads/main')
+        self.happy_path(**{'thing-01-implement': [{'run': IMPLEMENT['run'] + [moving]}]})
+        self.main(FEATURE)
+        self.assertEqual(self.state()['stage'], 'done', self.state()['reason'])
+        self.assertOnTopOfRemoteMain()
 
     def test_rebase_conflict_resumes_implement_to_resolve_it(self):
         self.happy_path(**{'thing-01-implement': [{'run': IMPLEMENT['run'] + [move_main('main', 'thing.txt')]}, RESOLVE]})

@@ -622,5 +622,6 @@ def configure_git(name, workdir, user, email):
 
 
 def refresh_base(name, workdir, base):
-    """The VM fetches the base from the host clone it was made from (origin = the live source mount)."""
-    return exec(name, ['git', 'fetch', '--quiet', 'origin', base], workdir=workdir, timeout=600)
+    """The VM fetches the base from the host clone it was made from (origin = the live source mount), by its full ref
+    so a tag of the same name does not shadow it."""
+    return exec(name, ['git', 'fetch', '--quiet', 'origin', f'refs/heads/{base}'], workdir=workdir, timeout=600)

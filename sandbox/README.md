@@ -56,10 +56,10 @@ Verified by probes (2026-09-30, sbx 0.46.0; the runner relies on each):
   `remote.origin.url` to it (a `set-url` does not survive a stop; 2026-09-30). The runner adds
   `url./run/sandbox/source.insteadOf <that URL>` to the workspace's `.git/config`, which survives: origin is then the
   clean clone (mounted read-only and live), a host commit is one `git fetch origin` away, and repo tools that ask
-  origin (such as `git ls-remote origin`) see the clean clone. The VM's
-  `~/.gitconfig` carries `safe.directory` and your git `user.name`/`user.email`; a repo-local `user.*` in the
-  workspace overrides it for author and committer and survives a stop/start (2026-10-01): the runner sets the
-  App's bot there.
+  origin (such as `git ls-remote origin`) see the clean clone. The runner's clean clone mirrors GitHub's branches
+  and tags, so `origin` in a VM lists the repo's tags. The VM's `~/.gitconfig` carries `safe.directory` and your git
+  `user.name`/`user.email`; a repo-local `user.*` in the workspace overrides it for author and committer and
+  survives a stop/start (2026-10-01): the runner sets the App's bot there.
 - `--clone` also adds the host remote `sandbox-<name>` (`git://127.0.0.1:<port>/…`, a git-daemon in the VM). Its own
   refspecs fetch every branch into `refs/remotes/` and `refs/sandboxes/`, so the runner fetches its URL with one
   explicit refspec. `sbx stop` removes that remote; the next start restores it on a new port ⇒ read the URL after

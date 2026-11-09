@@ -213,6 +213,24 @@ class CleanCloneTest(AdapterCase):
         self.assertEqual(git(path, 'rev-parse', 'main'), git(self.origin, 'rev-parse', 'main'),
                          'a sandbox fetching origin from the clone sees the new base')
 
+    def test_the_clone_mirrors_origin_tags_and_keeps_its_own_refs(self):
+        def tags(directory):
+            return git(directory, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/tags')
+
+        git(self.work, 'tag', 'moves', 'main')
+        git(self.work, 'tag', 'goes', 'main')
+        git(self.work, 'push', '-q', 'origin', 'moves', 'goes')
+        path = adapter.clean_clone('a/r', dict(os.environ))
+        git(path, 'update-ref', 'refs/pipeline/thing/01', 'refs/remotes/origin/agent/x')
+        git(self.work, 'tag', '-a', '-m', 'release', 'added')
+        git(self.work, 'tag', '-f', 'moves', 'agent/x')
+        git(self.work, 'push', '-q', '--force', 'origin', 'added', 'moves')
+        git(self.origin, 'update-ref', '-d', 'refs/tags/goes')
+        adapter.clean_clone('a/r', dict(os.environ))
+        self.assertEqual(tags(path), tags(self.origin), 'tags added, moved and deleted on origin are mirrored')
+        self.assertEqual(git(path, 'rev-parse', 'refs/pipeline/thing/01'), git(self.origin, 'rev-parse', 'agent/x'))
+        self.assertEqual(git(path, 'rev-parse', 'refs/heads/main'), git(self.origin, 'rev-parse', 'main'))
+
     def test_the_recipe_is_read_from_the_base_branch_never_an_agent_branch_or_your_checkout(self):
         adapter.clean_clone('a/r', dict(os.environ))
         self.assertEqual(adapter.repo_config('a/r')['base'], 'main')
