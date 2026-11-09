@@ -146,6 +146,9 @@ class DoctorCase(unittest.TestCase):
         state.update(changes)
         self.state(state)
 
+    def enabled(self, **states):
+        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
+
     def config(self, extra, key=None):
         self.pipeline_config.write_text(json.dumps(dict({
             'app': {'id': 1, 'slug': 'acme-pipeline', 'privateKey': str(key or self.key), 'reviewer': 'alice'},
@@ -457,9 +460,6 @@ class UnitsTest(DoctorCase):
     BUS_FIX = ('run doctor as yourself in a login session, not through sudo or su: systemctl --user cannot reach '
                'your user manager here')
 
-    def enabled(self, **states):
-        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
-
     def test_sbx_service_enabled_and_active(self):
         self.assertPass('unit sbx.service', 'enabled, active')
 
@@ -526,9 +526,6 @@ class UnitsTest(DoctorCase):
 
 class SpacedRunnerTest(DoctorCase):
     prefix = 'doctor runner-'
-
-    def enabled(self, **states):
-        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
 
     def fix(self, label):
         _, after = self.check(label)
