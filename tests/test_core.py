@@ -1813,6 +1813,19 @@ class RunnerTest(RunnerCase):
 
         self.assertEqual(dropped, [SANDBOX])
 
+    def test_a_branch_fetched_out_of_a_sandbox_brings_no_tag(self):
+        def tags(directory):
+            return git(directory, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/tags')
+
+        git(self.fixture.main, 'tag', 'v0.1')
+        git(self.fixture.main, 'push', '-q', 'origin', 'v0.1')
+        tagging = {'run': [IMPLEMENT['run'][0] + ' && git tag agent-made && git tag -f v0.1']}
+        self.happy_path(**{'thing-01-implement': [tagging]})
+        self.main(FEATURE, '--until', 'implement')
+        self.assertTrue(self.ref())
+        self.assertEqual(tags(self.fixture.clone), tags(self.fixture.origin),
+                         'an agent-made or agent-moved tag never reaches the clean clone')
+
     def test_the_vm_fetches_from_the_host_clone_not_github(self):
         self.happy_path()
         self.main(FEATURE, '--until', 'plan')
