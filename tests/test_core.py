@@ -1856,6 +1856,8 @@ class RunnerTest(RunnerCase):
         self.assertEqual(state['status'], 'paused')
         self.assertIn('fetching origin/main into', state['reason'])
         self.assertIn('unable to access origin', state['reason'].splitlines()[0])
+        self.assertEqual(state['reason'].splitlines()[1],
+                         f'fix: sbx exec -it {SANDBOX} bash; git fetch origin refs/heads/main')
         self.assertEqual(self.claude_calls(), [])
         self.assertEqual(self.notifications, ['base fetch failed, retrying in 15 min: fatal: unable to access origin',
                                               'paused: base fetch failed'])

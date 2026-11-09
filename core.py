@@ -942,8 +942,9 @@ def refresh_base(state, context):
     fetched = backend.refresh_base(context['name'], context['workspace'], context['base'])
 
     if fetched.returncode != 0:
-        retry_later(state, f"fetching origin/{context['base']} into {context['name']}", fetched.stderr or fetched.stdout,
-                    f"sbx exec -it {context['name']} bash; git fetch origin {context['base']}", 'base fetch failed')
+        name, base = context['name'], context['base']
+        retry_later(state, f'fetching origin/{base} into {name}', fetched.stderr or fetched.stdout,
+                    f'sbx exec -it {name} bash; git fetch origin refs/heads/{base}', 'base fetch failed')
 
 
 def make_branch(state, context):
