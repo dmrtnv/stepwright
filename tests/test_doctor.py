@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -76,8 +77,10 @@ def git(directory, *arguments):
 
 
 class DoctorCase(unittest.TestCase):
+    prefix = 'doctor-'
+
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp(prefix='doctor-'))
+        self.base = Path(tempfile.mkdtemp(prefix=self.prefix))
         self.addCleanup(shutil.rmtree, self.base, True)
         self.home = self.base / 'home'
         self.bin = self.base / 'bin'
@@ -142,6 +145,9 @@ class DoctorCase(unittest.TestCase):
         state = json.loads((self.base / 'state.json').read_text())
         state.update(changes)
         self.state(state)
+
+    def enabled(self, **states):
+        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
 
     def config(self, extra, key=None):
         self.pipeline_config.write_text(json.dumps(dict({
@@ -454,9 +460,6 @@ class UnitsTest(DoctorCase):
     BUS_FIX = ('run doctor as yourself in a login session, not through sudo or su: systemctl --user cannot reach '
                'your user manager here')
 
-    def enabled(self, **states):
-        self.change(enabled=dict(GOOD_STATE['enabled'], **states))
-
     def test_sbx_service_enabled_and_active(self):
         self.assertPass('unit sbx.service', 'enabled, active')
 
@@ -519,6 +522,58 @@ class UnitsTest(DoctorCase):
         self.assertFail('unit pipeline-tick.timer', 'not installed',
                         f'{self.runner}/pipeline init, then systemctl --user daemon-reload && '
                         'systemctl --user enable --now pipeline-tick.timer (INSTALL step 8)')
+
+
+class SpacedRunnerTest(DoctorCase):
+    prefix = 'doctor runner-'
+
+    def fix(self, label):
+        _, after = self.check(label)
+        self.assertTrue(after.startswith('      fix: '), after)
+
+        return after.removeprefix('      fix: ')
+
+    def assertInitFirst(self, label):
+        command = self.fix(label).split(', then ', 1)[0]
+        pipeline = str(self.runner / 'pipeline')
+        self.assertEqual(shlex.split(command), [pipeline, 'init'])
+        self.assertEqual(command, f'{shlex.quote(pipeline)} init')
+
+    def test_the_unit_fixes_quote_the_runner_path(self):
+        self.enabled(**{'sbx.service': 'not-found', 'pipeline-tick.service': 'not-found',
+                        'pipeline-tick.timer': 'not-found'})
+
+        for label in ('unit sbx.service', 'unit pipeline-tick.service', 'unit pipeline-tick.timer'):
+            with self.subTest(label):
+                self.assertInitFirst(label)
+
+    def test_the_config_fix_quotes_the_runner_path(self):
+        self.pipeline_config.unlink()
+        self.assertInitFirst('config')
+
+    def assertCommand(self, label, argv):
+        command = self.fix(label).split(', then ', 1)[-1]
+        self.assertEqual(shlex.split(command), argv)
+        self.assertIn(shlex.quote(argv[2]), command)
+
+    def test_the_not_linked_fix_quotes_the_kit_path(self):
+        linked = self.home / '.claude/skills'
+        (linked / 'wrap-up').unlink()
+        self.assertCommand('kit skills/wrap-up', ['ln', '-s', str(self.kit / 'skills/wrap-up'), f'{linked}/'])
+
+    def test_the_linked_elsewhere_fix_quotes_the_kit_path(self):
+        link = self.home / '.claude/agents/web-researcher.md'
+        link.unlink()
+        link.symlink_to('/tmp/elsewhere/web-researcher.md')
+        self.assertCommand('kit agents/web-researcher.md',
+                           ['ln', '-sfn', str(self.kit / 'agents/web-researcher.md'), str(link)])
+
+    def test_the_own_copy_fix_quotes_the_kit_path(self):
+        link = self.home / '.claude/skills/review-branch'
+        link.unlink()
+        link.mkdir()
+        self.assertCommand('kit skills/review-branch',
+                           ['ln', '-s', str(self.kit / 'skills/review-branch'), f'{link.parent}/'])
 
 
 class LingerTest(DoctorCase):

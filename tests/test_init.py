@@ -7,6 +7,7 @@ import errno
 import io
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -203,10 +204,23 @@ class FreshTest(InitCase):
         self.assertEqual(next_block[1:6], ['  systemctl --user daemon-reload',
                                            '  systemctl --user enable --now sbx.service',
                                            '  loginctl enable-linger "$USER"',
-                                           f'  {REPO}/sbx-host/install-sbx.sh',
+                                           f"  {shlex.quote(str(REPO / 'sbx-host/install-sbx.sh'))}",
                                            '  sbx login'])
         self.assertIn('pipeline doctor', next_block[-1])
         self.assertIn(str(self.pipeline_config), '\n'.join(next_block))
+
+    def test_the_next_commands_quote_a_runner_path_with_a_space(self):
+        runner = self.base / 'run ner'
+        shutil.copytree(REPO / 'systemd', runner / 'systemd')
+        shutil.copytree(REPO / 'examples', runner / 'examples')
+
+        with mock.patch.object(core, 'PIPELINE_DIR', runner):
+            _, lines = self.init()
+
+        install = str(runner / 'sbx-host/install-sbx.sh')
+        command = [line.strip() for line in lines if 'install-sbx.sh' in line]
+        self.assertEqual(command, [shlex.quote(install)], '\n'.join(lines))
+        self.assertEqual(shlex.split(command[0]), [install])
 
     def test_extra_arguments_are_a_usage_error(self):
         code, lines = self.init('now')

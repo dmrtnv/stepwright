@@ -5,8 +5,12 @@ gate line.
 
 Run: python3 -m unittest tests/test_docs.py
 """
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,6 +45,11 @@ NAMED_REFERENCE = re.compile(r'INSTALL(?::| ) ?(What you need|Update)\b')
 CITED_SECTION = re.compile(r'(?<![\w/])(README(?:\.md)?|docs/[\w-]+\.md|sandbox/README\.md) "([^"]+)"')
 BOX_HISTORY = re.compile(r'cut ?over|\bR2\b|phase 3|pilot|db:squash|\be2e\b', re.I)
 GATE_LINE_EXEMPT = ('v0.1',)
+STEP_TWO = '2. Get stepwright and run init'
+GIT = shutil.which('git')
+GIT_ENVIRONMENT = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': '/dev/null',
+                   'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+                   'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
 
 
 def read(name):
@@ -170,6 +179,60 @@ class InstallSteps(unittest.TestCase):
         for name in NO_TABLE_DOCS:
             with self.subTest(name):
                 self.assertEqual([line for line in read(name).splitlines() if line.startswith('|')], [])
+
+
+class StepTwoCheckout(unittest.TestCase):
+    """Step 2 checks out the tag `pipeline update` would pick: the newest release tag by version, else main."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='docs-'))
+        self.addCleanup(shutil.rmtree, self.base, True)
+
+    def git(self, directory, *arguments):
+        return subprocess.run([GIT, '-C', str(directory), *arguments], capture_output=True, text=True, check=True,
+                              env=GIT_ENVIRONMENT).stdout.strip()
+
+    def block(self):
+        return next(block for block in bash_blocks(dict(sections(read('INSTALL.md')))[STEP_TWO])
+                    if 'git clone' in block)
+
+    def checkout_lines(self):
+        """The lines between the clone and init, picked by position, not by what they say."""
+        lines = self.block().splitlines()
+        clone = next(index for index, line in enumerate(lines) if 'git clone' in line)
+        init = next(index for index, line in enumerate(lines) if '"$R/pipeline" init' in line)
+
+        return lines[clone + 1:init]
+
+    def clone_with_tags(self, *tags):
+        origin, runner = self.base / 'origin', self.base / 'runner'
+        origin.mkdir()
+        self.git(origin, 'init', '-q', '-b', 'main')
+
+        for tag in tags:
+            self.git(origin, 'commit', '-q', '--allow-empty', '-m', tag)
+            self.git(origin, 'tag', '-a', '-m', tag, tag)
+
+        self.git(origin, 'commit', '-q', '--allow-empty', '-m', 'tip')
+        subprocess.run([GIT, 'clone', '-q', str(origin), str(runner)], check=True, env=GIT_ENVIRONMENT)
+        lines = self.checkout_lines()
+        self.assertTrue(lines)
+        result = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, text=True,
+                                env=GIT_ENVIRONMENT | {'R': str(runner)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        return runner
+
+    def test_step_2_checks_out_the_newest_release_tag(self):
+        runner = self.clone_with_tags('v0.9', 'v0.10', 'v0.11-rc1', 'v1.2.3.4', 'nightly')
+        self.assertEqual(self.git(runner, 'rev-parse', 'HEAD'), self.git(runner, 'rev-parse', 'v0.10^{commit}'))
+
+    def test_step_2_stays_on_main_without_a_release_tag(self):
+        runner = self.clone_with_tags('nightly')
+        self.assertEqual(self.git(runner, 'symbolic-ref', '--short', 'HEAD'), 'main')
+
+    def test_install_release_pattern_is_the_code_s(self):
+        self.assertEqual(re.findall(r"grep -xE '([^']*)'", self.block()), [core.RELEASE_TAG.pattern])
 
 
 class StepReferences(unittest.TestCase):

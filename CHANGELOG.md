@@ -6,6 +6,21 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Changed
+
+- After `pipeline update` checks out a verified tag, it says so first:
+  `Verified v0.11: signed by a key in .github/allowed_signers at v0.10.`, then `Was at v0.10, now at v0.11.`
+
+### Fixed
+
+- The commands printed by `pipeline update`, `pipeline init`, `pipeline doctor` and the respond gate's pr-text
+  message now quote the runner path, so they paste cleanly when it holds a space. The go-back command after a failed init also
+  quotes the branch.
+- [INSTALL step 2](INSTALL.md#2-get-stepwright-and-run-init) checks out the newest release tag, the one
+  `pipeline update` picks, so a `nightly` or `-rc` tag no longer wins.
+
 ## v0.10 - 2026-11-08
 
 **Rerun the gate:** no (no kit or `STAGES` change).

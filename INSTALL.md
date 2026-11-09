@@ -41,7 +41,8 @@ don't go on until it passes. When a block starts with lines like `REPO=<owner>/<
 ```bash
 R=$HOME/.local/share/pipeline/runner
 git clone https://github.com/dmrtnv/stepwright.git "$R"
-git -C "$R" checkout "$(git -C "$R" describe --tags --abbrev=0 2>/dev/null || echo main)"   # the latest release, if any
+TAG=$(git -C "$R" tag --list --sort=-v:refname | grep -xE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1)   # the newest release, if any
+git -C "$R" checkout "${TAG:-main}"
 "$R/pipeline" init
 ```
 
@@ -347,7 +348,9 @@ pipeline update
 
 What it does:
 - It fetches the tags and verifies the newest release tag, or the one you name. The tag must be signed by a key in
-  `.github/allowed_signers` as committed in the checkout you have installed. Then it checks the tag out.
+  `.github/allowed_signers` as committed in the checkout you have installed. Then it checks the tag out. When it
+  has, it prints `Verified <tag>: signed by a key in .github/allowed_signers at <where you were>.` Where you were is
+  the tag, branch or short commit that the next line, `Was at …`, names.
 - It runs the new code's `pipeline init`, which links any skill or agent the release adds and skips everything you
   already have. It shows only what init added and any error.
 - It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
