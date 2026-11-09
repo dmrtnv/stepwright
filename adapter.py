@@ -227,8 +227,8 @@ SAFE_FETCH = ('-c', 'transfer.fsckObjects=true', '-c', 'fetch.fsckObjects=true')
 def clean_clone(repo, environment):
     """The runner's own clone of a repo, fetched from GitHub with the App token (`environment` carries it) and never
     checked out: sandboxes clone from it (sbx mounts it read-only at /run/sandbox/source) and it holds the refs the
-    runner fetches out of them. Its local base branch follows origin, so a sandbox's `git fetch origin` sees the new
-    base. Returns the path."""
+    runner fetches out of them. It mirrors GitHub's branches and tags. Its local base branch follows origin, so a
+    sandbox's `git fetch origin` sees the new base. Returns the path."""
     path = clone_path(repo)
 
     with exclusive(f'fetch-{short(repo)}'):
@@ -244,7 +244,8 @@ def clean_clone(repo, environment):
             for key, value in (('transfer.fsckObjects', 'true'), ('fetch.fsckObjects', 'true'), ('gc.auto', '0')):
                 git(path, 'config', key, value)
 
-        git(path, *SAFE_FETCH, 'fetch', '--quiet', '--prune', '--no-tags', 'origin', env=environment)
+        git(path, *SAFE_FETCH, 'fetch', '--quiet', '--prune', '--no-tags', 'origin',
+            '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*', env=environment)
         git(path, 'remote', 'set-head', 'origin', '--auto', env=environment)
         base = repo_config(repo)['base']
         tip = git(path, 'rev-parse', '--verify', f'refs/remotes/origin/{base}').stdout.strip()

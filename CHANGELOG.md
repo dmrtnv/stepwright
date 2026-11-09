@@ -15,6 +15,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ### Fixed
 
+- A stage VM's `origin` now lists the repo's tags, kept in step with GitHub as tags are added, moved or deleted,
+  so tools that read tags from `origin` work in a stage.
 - The commands printed by `pipeline update`, `pipeline init`, `pipeline doctor` and the respond gate's pr-text
   message now quote the runner path, so they paste cleanly when it holds a space. The go-back command after a failed init also
   quotes the branch.

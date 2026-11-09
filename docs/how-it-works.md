@@ -215,7 +215,7 @@ Unknown keys are an error.
 - **Sandbox**: `sbx create --clone` of the clean clone (6 CPU, 8 GiB by default: config `vm`), the claude kit's
   extra egress denied, kit copied:
   - the VM's `origin` rewritten to the clean clone (`url.…insteadOf`: sbx resets `origin` to GitHub on every
-    start);
+    start); the clean clone mirrors GitHub's branches and tags, so `origin` lists the repo's tags;
   - a repo-local git identity of the App's bot (`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`; sbx
     copies yours into the VM's `~/.gitconfig`, and a squash credits every commit author other than the PR author
     as a co-author);
