@@ -273,7 +273,8 @@ Then:
   one evidence comment (`<!-- pipeline-evidence -->`: summary, decisions (incl. your answers to the plan's questions
   and review-round approvals), questions still open, owed, deferred (each only when it has items), tests, CI state,
   the permission-denial count when above 0; redacted like `pr.md`).
-- Each stage sees the items earlier stages recorded and adds only new ones.
+- Each stage sees the items earlier stages recorded and adds only new ones. A deferred item handed to a later step of
+  the feature shows in that step's stages.
 - Learnings, runner notes, MEMORY.md size, usage and the denials themselves stay in the local `done.md`: PR text is
   the team's, project facts only.
 - Tokens: one per repo per hour, scoped to that repo, kept in memory, passed to git via its environment only.

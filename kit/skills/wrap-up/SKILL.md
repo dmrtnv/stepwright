@@ -21,7 +21,7 @@ Run at the end of a working session, or when another skill says so. Input: this 
 3. **The plan.** If the work follows a plan file, update it:
    - `## Shipped` or `## Review round K` as the calling skill says;
    - deviations and why;
-   - deferred items → owner.
+   - deferred items → owner (a later step, or none with evidence).
 4. **Memory.** Save only durable, non-obvious learnings a future session couldn't get from the code or git history:
    a user preference, a trap, a decision's why.
    - Update an existing entry before creating a new one, and delete entries that proved wrong.
