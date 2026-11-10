@@ -132,6 +132,11 @@ def backlog_root(repo):
     return plans_root(repo) / '_backlog'
 
 
+def archive_root(repo):
+    """Fully merged features `pipeline archive` moved aside: the `_` keeps them out of every list."""
+    return plans_root(repo) / '_archive'
+
+
 def feature_folders(repo, root=None):
     """Every folder of the repo's plans (or of `root`) that holds steps (NN-slug/), reserved names included."""
     root = root or plans_root(repo)

@@ -473,16 +473,16 @@ def push_url(repo):
 # ---------------------------------------------------------------------------------------------- features and steps
 
 
-def feature_dir(repo, feature):
-    return adapter.plans_root(repo) / feature
+def feature_dir(repo, feature, root=None):
+    return (root or adapter.plans_root(repo)) / feature
 
 
-def state_dir(repo, feature):
-    return feature_dir(repo, feature) / '.pipeline'
+def state_dir(repo, feature, root=None):
+    return feature_dir(repo, feature, root) / '.pipeline'
 
 
-def state_file(repo, feature, step_id):
-    return state_dir(repo, feature) / f'{step_id}.json'
+def state_file(repo, feature, step_id, root=None):
+    return state_dir(repo, feature, root) / f'{step_id}.json'
 
 
 class Step:
@@ -521,8 +521,8 @@ class Step:
         return f'{backend.plans_dir(name, self.feature)}/{self.name}/{Path(path).name}'
 
 
-def steps(repo, feature):
-    directory = feature_dir(repo, feature)
+def steps(repo, feature, root=None):
+    directory = feature_dir(repo, feature, root)
 
     if not FEATURE_NAME.match(feature) or not directory.is_dir():
         raise PipelineError(f'no feature folder {directory} (a name of lowercase letters, digits and dashes)')
@@ -561,8 +561,8 @@ def new_state(repo, feature, step_id):
     }
 
 
-def load_state(repo, feature, step_id):
-    path = state_file(repo, feature, step_id)
+def load_state(repo, feature, step_id, root=None):
+    path = state_file(repo, feature, step_id, root)
     state = new_state(repo, feature, step_id)
 
     if path.exists():
@@ -1416,21 +1416,28 @@ def hold_label(held):
 
 
 def after_unmet(repo, after):
-    """None once `<feature>[:NN]` is merged (all its steps, or step NN), else what is still awaited. A feature that is
-    not there (parked, renamed, a typo) is never merged: the hold stays and says so."""
+    """None once `<feature>[:NN]` is merged (all its steps, or step NN), else what is still awaited. The live folder
+    wins; else the one under _archive/. A feature in neither (parked, renamed, a typo) is never merged: the hold stays
+    and says so."""
     name, _, step_id = after.partition(':')
+    root = None
 
     try:
         found = steps(repo, name)
     except PipelineError:
-        return f'after {after}: no feature {name}'
+        root = adapter.archive_root(repo)
+
+        try:
+            found = steps(repo, name, root=root)
+        except PipelineError:
+            return f'after {after}: no feature {name}'
 
     targets = [step for step in found if not step_id or step.id == step_id]
 
     if not targets:
         return f'after {after}: {name} has no step {step_id}'
 
-    merged = all(load_state(repo, name, step.id)['status'] == 'closed' for step in targets)
+    merged = all(load_state(repo, name, step.id, root=root)['status'] == 'closed' for step in targets)
 
     return None if merged else f'after {after}'
 

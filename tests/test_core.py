@@ -6039,6 +6039,48 @@ class ExtrasTest(RunnerCase):
         self.main('start', 'next')
         self.assertIsNone(core.feature_control(REPO, 'next')['after'], 'a plain start drops the wait')
 
+    def archive(self, name=FEATURE):
+        archive = self.fixture.plans / '_archive'
+        archive.mkdir(exist_ok=True)
+        os.rename(self.fixture.plans / name, archive / name)
+
+    def test_after_an_archived_feature_stays_met(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+
+        for after in (FEATURE, f'{FEATURE}:01'):
+            core.update_feature_control(REPO, 'next', after=after)
+            self.assertIsNone(core.hold_reason(REPO, 'next'), after)
+
+        core.update_feature_control(REPO, 'next', after=f'{FEATURE}:09')
+        self.assertEqual(core.hold_reason(REPO, 'next'),
+                         f'after {FEATURE}:09: {FEATURE} has no step 09 (pipeline start next drops it)')
+
+    def test_after_an_archived_unmerged_step_keeps_the_hold(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        write(self.fixture.feature / '02-more/brief.md', '# more\n')
+        self.archive()
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertEqual(core.hold_reason(REPO, 'next'), f'after {FEATURE} (pipeline start next drops it)')
+
+    def test_after_reads_a_live_namesake_before_the_archive(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+        write(self.fixture.step / 'brief.md', '# again\n')
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertEqual(core.hold_reason(REPO, 'next'), f'after {FEATURE} (pipeline start next drops it)')
+
+    def test_reading_an_archived_feature_writes_no_live_folder(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertIsNone(core.hold_reason(REPO, 'next'))
+        self.assertFalse(self.fixture.feature.exists(), 'reading the archive wrote a ghost live folder')
+
     def test_answer_approves_a_changed_plan_only(self):
         write(self.fixture.step / 'plan.md', '# Plan\n\n## Unresolved questions\n\n1. Q1? Rec: A\n')
         state = self.state()
