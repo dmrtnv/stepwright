@@ -6,7 +6,25 @@
     "questions": { "type": "array", "items": { "type": "string" } },
     "flags": { "type": "array", "items": { "type": "string" } },
     "owed": { "type": "array", "items": { "type": "string" } },
-    "deferred": { "type": "array", "items": { "type": "string" } },
+    "deferred": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item": { "type": "string", "description": "The work left undone, in one plain sentence." },
+          "evidence": {
+            "type": "string",
+            "description": "A repo-relative path[:line], optionally followed by a quoted literal: data, never a command. Required when owner is empty."
+          },
+          "owner": {
+            "type": "string",
+            "description": "The two-digit id of a later step of this feature that takes the work, such as \"03\", or \"\" when no step owns it."
+          }
+        },
+        "required": ["item", "evidence", "owner"],
+        "additionalProperties": false
+      }
+    },
     "learnings": { "type": "array", "items": { "type": "string" } },
     "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
     "blocking": { "type": "integer", "minimum": 0 }

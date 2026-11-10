@@ -1495,10 +1495,27 @@ def merged_results(state, field, skip=None):
     return items
 
 
+def deferred_text(state, item, public):
+    """One deferred item as a line: a legacy string as it is; an object as its item, its owner (a later PR of this
+    feature in public, the step's folder name in done.md and prompts) and its evidence."""
+    if not isinstance(item, dict):
+        return item
+
+    text = item['item']
+
+    if item.get('owner') and public:
+        text += ' (in a later PR of this feature)'
+    elif item.get('owner'):
+        names = [step.name for step in steps(state['repo'], state['feature']) if step.id == item['owner']]
+        text += f" (for step {names[0] if names else item['owner']})"
+
+    return text + (f"; evidence: {item['evidence']}" if item.get('evidence') else '')
+
+
 def recorded_lines(state, stage_key):
     """What earlier stages already recorded, so this one adds only what is new instead of restating it."""
-    lines = [f"- {field}: {' '.join(str(item).split())}" for field in ('flags', 'owed', 'deferred')
-             for item in merged_results(state, field, skip=stage_key)]
+    lines = [f"- {field}: {' '.join(str(deferred_text(state, item, False)).split())}"
+             for field in ('flags', 'owed', 'deferred') for item in merged_results(state, field, skip=stage_key)]
 
     return ['', '## Already recorded for this step', ''] + lines if lines else []
 
@@ -2833,23 +2850,26 @@ def finish(state, context, step):
         return ['', f'## {title}', ''] + [f"- {' '.join(str(item).split())}" for item in items]
 
     # The public part goes to the PR comment; done.md is it plus what is yours alone. Built, never parsed back out of
-    # done.md, so a new section is private unless added here.
-    public = [
-        f"## Pipeline report: {state['feature']} {step.name}",
-        '',
-        f"Branch `{state['branch']}`: {plural(len(commits), 'commit')} over origin/{context['base']}, "
-        f"{plural(state['round'], 'review round')}, last review confidence "
-        f"{reviews[-1].get('confidence', '?') if reviews else '?'}.",
-    ]
+    # done.md, so a new section is private unless added here. Only a deferred item's owner differs between the two.
+    def report(public):
+        lines = [
+            f"## Pipeline report: {state['feature']} {step.name}",
+            '',
+            f"Branch `{state['branch']}`: {plural(len(commits), 'commit')} over origin/{context['base']}, "
+            f"{plural(state['round'], 'review round')}, last review confidence "
+            f"{reviews[-1].get('confidence', '?') if reviews else '?'}.",
+        ]
 
-    for title, field in (('Decisions', 'flags'), ('Questions', 'questions'), ('Owed', 'owed'), ('Deferred', 'deferred')):
-        items = [LEADING_FLAG.sub('', str(item)) for item in merged_results(state, field)]
+        for title, field in (('Decisions', 'flags'), ('Questions', 'questions'), ('Owed', 'owed'),
+                             ('Deferred', 'deferred')):
+            items = [LEADING_FLAG.sub('', str(deferred_text(state, item, public))) for item in merged_results(state, field)]
 
-        if items:
-            public += section(title, items)
+            if items:
+                lines += section(title, items)
 
-    public += ['', '## Tests', '', f"- {plural(added, 'test case')} added, {removed} removed; deleted test files: "
-                                   f"{', '.join(deleted) or 'none'}"]
+        return lines + ['', '## Tests', '', f"- {plural(added, 'test case')} added, {removed} removed; deleted test "
+                                            f"files: {', '.join(deleted) or 'none'}"]
+
     first, last = state['usage'].get('first'), state['usage'].get('last')
     usage = (f'weekly {first * 100:.0f}% → {last * 100:.0f}% ({usage_points(state):+} pts)'
              if usage_points(state) is not None else 'unknown')
@@ -2857,8 +2877,8 @@ def finish(state, context, step):
                + section('Runner notes', state['notes'] or ['none'])
                + ['', '## Memory', '', f'- MEMORY.md: {memory_lines} lines (cap 200)', '', '## Usage', '', f'- {usage}']
                + section('Permission denials', [f'`{denial}`' for denial in state['denials']] or ['none']))
-    sections = public + private
-    state['public_notice'] = '\n'.join(public)
+    sections = report(False) + private
+    state['public_notice'] = '\n'.join(report(True))
     replace_step_file(step.done_notice, '\n'.join(sections) + '\n')
     state['stage'] = 'publish'
     mark(state, 'ready', f'done notice: {step.done_notice}; publishing next')
