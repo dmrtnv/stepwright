@@ -2277,14 +2277,22 @@ def run_gates(state, context, gates):
     return failures
 
 
-def deferred_problem(item, later_ids):
+def deferred_problem(item, later_ids, path_exists):
     """Why one deferred object is refused, as a sentence for the stage; None when it passes. Evidence is data the
-    reader opens, never run: it must start with a repo-relative path[:line]."""
-    quoted, evidence, owner = SECRET_TEXT.sub('…', item.get('item', '')), item.get('evidence', ''), item.get('owner', '')
+    reader opens, never run: it must start with a repo-relative path[:line] that exists on the branch."""
+    text = item.get('item', '')
+    evidence = item.get('evidence', '').strip()
+    owner = item.get('owner', '')
+    quoted = SECRET_TEXT.sub('…', text)
     first_word = (evidence.split() or [''])[0]
+    path = first_word.split(':')[0]
 
-    if SECRET_TEXT.search(item.get('item', '')) or SECRET_TEXT.search(evidence):
+    if SECRET_TEXT.search(text) or SECRET_TEXT.search(evidence):
         return f'Deferred item "{quoted}" contains a token-shaped string (a GitHub token or a private key). Remove it.'
+
+    if not text.strip():
+        return (f'A deferred item with evidence "{evidence}" has no text. Say what is deferred, or drop it.' if evidence
+                else 'A deferred item has no text. Say what is deferred, or drop it.')
 
     if owner and owner not in later_ids:
         choices = f"Use one of {', '.join(later_ids)}, or \"\" with evidence." if later_ids else \
@@ -2296,8 +2304,12 @@ def deferred_problem(item, later_ids):
         return (f'Deferred item "{quoted}" has no owner and no evidence. Add a repo-relative path[:line], fix it now, '
                 'or drop it.')
 
-    if evidence and (not EVIDENCE_START.match(evidence) or '..' in first_word.split(':')[0].split('/')):
-        return f'Deferred item "{quoted}": evidence must start with a repo-relative path[:line], not "{first_word}".'
+    if evidence and (not EVIDENCE_START.match(evidence) or '..' in path.split('/')):
+        return (f'Deferred item "{quoted}": evidence must start with a repo-relative path[:line], not "{first_word}". '
+                'Write the path without backticks or quotes.')
+
+    if evidence and not path_exists(path):
+        return f'Deferred item "{quoted}": evidence "{path}" is not a file on this branch.'
 
     return None
 
@@ -2312,8 +2324,11 @@ def gate_deferred(stage_key):
             return []
 
         later_ids = [step.id for step in steps(state['repo'], state['feature']) if step.id > state['id']]
-        problems = [problem for problem in (deferred_problem(item, later_ids) for item in result.get('deferred', [])
-                                            if isinstance(item, dict)) if problem]
+        def path_exists(path):
+            return git_result(context['clone'], 'cat-file', '-e', f"{context['ref']}:{path}").returncode == 0
+
+        problems = [problem for problem in (deferred_problem(item, later_ids, path_exists)
+                                            for item in result.get('deferred', []) if isinstance(item, dict)) if problem]
 
         if problems:
             return ['Fix each deferred item in your result (the runner checks owner and evidence):\n'

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_core import FEATURE, IMPLEMENT, RESOLVE, RESPOND, REVIEW, STEP, RunnerCase, move_main, write  # noqa: E402
+from test_core import FEATURE, IMPLEMENT, RESOLVE, RESPOND, REVIEW, STEP, RunnerCase, git, move_main, write  # noqa: E402
 
 import core  # noqa: E402
 
@@ -22,6 +22,25 @@ def deferred(item, evidence='', owner=''):
 
 def respond_with(**result):
     return dict(RESPOND, result=dict(RESPOND['result'], **result))
+
+
+EVIDENCE_FILES = ('core.py', 'README.md', 'tests/test_core.py', '.github/workflows/ci.yml')
+
+
+class DeferredCase(RunnerCase):
+    """A feature with a later step 02, and a base branch holding the files the items' evidence names."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
+        other = self.fixture.other
+
+        for name in EVIDENCE_FILES:
+            write(other / name, 'line\n')
+
+        git(other, 'add', '-A')
+        git(other, 'commit', '-qm', 'chore: Add the evidence files')
+        git(other, 'push', '-q', 'origin', 'main')
 
 
 class SchemaTest(unittest.TestCase):
@@ -38,11 +57,7 @@ class SchemaTest(unittest.TestCase):
         self.assertIn('never a command', items['properties']['evidence']['description'])
 
 
-class RenderTest(RunnerCase):
-    def setUp(self):
-        super().setUp()
-        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
-
+class RenderTest(DeferredCase):
     def comment(self):
         return next(iter(self.github.comments.values()))
 
@@ -93,17 +108,19 @@ REFUSED = [
     (deferred(f'leak {TOKEN}', 'core.py:1'), 'contains a token-shaped string (a GitHub token or a private key). '
                                             'Remove it.'),
     (deferred('leak in evidence', f'core.py:1 "{TOKEN}"'), 'contains a token-shaped string'),
+    (deferred('a placeholder', 'N/A'), 'Deferred item "a placeholder": evidence "N/A" is not a file on this branch.'),
+    (deferred('a missing file', 'src/nowhere.py:3'), 'evidence "src/nowhere.py" is not a file on this branch.'),
+    (deferred('', 'core.py:1'), 'A deferred item with evidence "core.py:1" has no text. Say what is deferred, or drop '
+                                'it.'),
+    (deferred('backticked', '`core.py:12`'), 'not "`core.py:12`". Write the path without backticks or quotes.'),
 ]
 ACCEPTED = [deferred('handed on', '', '02'), deferred('a gap', 'core.py:12'), deferred('lines', 'README.md:1-4'),
             deferred('dotted', '.github/workflows/ci.yml:3'),
-            deferred('quoted', 'tests/test_core.py:405 "deferred: []"'), deferred('owned with proof', 'core.py', '02')]
+            deferred('quoted', 'tests/test_core.py:405 "deferred: []"'), deferred('owned with proof', 'core.py', '02'),
+            deferred('spaced', ' core.py:1'), deferred('owned, no lookup', '', '02')]
 
 
-class GateTest(RunnerCase):
-    def setUp(self):
-        super().setUp()
-        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
-
+class GateTest(DeferredCase):
     def test_each_refused_item_resumes_the_stage_with_its_reason(self):
         items = [item for item, _ in REFUSED]
         fixed = [deferred('a gap', 'core.py:12')]
@@ -122,10 +139,10 @@ class GateTest(RunnerCase):
 
     def test_valid_owners_and_evidence_pass(self):
         for item in ACCEPTED:
-            self.assertIsNone(core.deferred_problem(item, ['02']), item)
+            self.assertIsNone(core.deferred_problem(item, ['02'], EVIDENCE_FILES.__contains__), item)
 
         self.assertIn('owner "02" is not a later step of this feature. No later step exists: use "" with evidence.',
-                      core.deferred_problem(deferred('last step', '', '02'), []))
+                      core.deferred_problem(deferred('last step', '', '02'), [], EVIDENCE_FILES.__contains__))
 
     def test_a_judged_result_is_not_judged_again_and_legacy_strings_pass(self):
         state = self.state()
@@ -159,12 +176,8 @@ class GateTest(RunnerCase):
         self.assertIn('owner "02" is not a later step of this feature. No later step exists', prompts[2])
 
 
-class CarryTest(RunnerCase):
+class CarryTest(DeferredCase):
     """Items survive a fix-up rerun that replaces the stage's result; a review's never count."""
-
-    def setUp(self):
-        super().setUp()
-        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
 
     def comment(self):
         return next(iter(self.github.comments.values()))
@@ -240,12 +253,11 @@ class CarryTest(RunnerCase):
         self.assertEqual(core.merged_results(state, 'deferred'), [older, 'legacy', newer])
 
 
-class HandOffTest(RunnerCase):
+class HandOffTest(DeferredCase):
     """A later step's stages see the items earlier steps handed to it."""
 
     def setUp(self):
         super().setUp()
-        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
         write(self.fixture.feature / '03-third/brief.md', '# 03 Third\n')
         self.handed = deferred('a wider rename', 'core.py:12', '02')
         self.later = deferred('a later cleanup', '', '03')

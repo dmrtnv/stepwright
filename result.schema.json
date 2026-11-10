@@ -14,7 +14,7 @@
           "item": { "type": "string", "description": "The work left undone, in one plain sentence." },
           "evidence": {
             "type": "string",
-            "description": "A repo-relative path[:line], optionally followed by a quoted literal: data, never a command. Required when owner is empty."
+            "description": "A repo-relative path[:line] of a file on this branch, optionally followed by a quoted literal: data, never a command. Required when owner is empty."
           },
           "owner": {
             "type": "string",

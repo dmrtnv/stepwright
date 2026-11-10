@@ -10,10 +10,10 @@ What changed for you in each release, newest first. Each release says whether to
 
 ### Changed
 
-- A stage returns each deferred item as an object: `item`, `evidence` (a repo-relative `path[:line]`) and `owner`
-  (a later step's two-digit id, or empty). The runner resumes the stage when an owner is not a later step of the
-  feature, an unowned item has no evidence, evidence does not start with a repo-relative path, or an item holds a
-  token-shaped string.
+- A stage returns each deferred item as an object: `item`, `evidence` (a repo-relative `path[:line]`) and `owner` (a
+  later step's two-digit id, or empty). The runner resumes the stage when an owner is not a later step of the feature,
+  an unowned item has no evidence, evidence does not start with a repo-relative path to a file on the branch, an item
+  has no text, or an item holds a token-shaped string.
 - The PR comment shows a handed-off item as "in a later PR of this feature" with its evidence; `done.md` names the
   owner step. Items from older runs show as before.
 - The stages of a step see a "Handed to this step" block with the deferred items earlier steps handed to it.

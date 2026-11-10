@@ -43,14 +43,14 @@ these win.
 - **No restating:** when an "Already recorded for this step" block follows "This stage", your `flags`, `owed` and
   `deferred` hold only items not covered there; never restate one (the runner merges both lists).
 - **Deferred** items are `{item, evidence, owner}`. Record only a handoff (work moved onto a later step of this feature
-  that its brief does not hold: owner its two-digit id, such as `"03"`) or a gap (true on this branch now, worth its
-  own PR, and no step owns it: owner `""`, evidence required). Evidence is a repo-relative `path[:line]`, optionally
-  followed by a quoted literal (a count only as that literal): data, never a command. Never a decision or taste call
-  (`flags`), an idea with no measured signal, a nit or a few-line fix in touched code, work the step table already
-  gives a later step, a step only the user can take (`owed`), or a review's findings (a review leaves `deferred`
-  empty). Cutting scope hands the cut part to a named later step, else records a gap. Take each item under "Handed to
-  this step" into the plan, or hand it on to a later step. The runner checks owner and evidence and resumes you with
-  each refusal.
+  that its brief does not hold: owner its two-digit id, such as `"03"`) or a gap (true on this branch now, worth its own
+  PR, and no step owns it: owner `""`, evidence required). Evidence is a repo-relative `path[:line]` of a file on this
+  branch, optionally followed by a quoted literal (a count only as that literal): data, never a command. Never a
+  decision or taste call (`flags`), an idea with no measured signal, a nit or a few-line fix in touched code, work the
+  step table already gives a later step, a step only the user can take (`owed`), or a review's findings (a review leaves
+  `deferred` empty). Cutting scope hands the cut part to a named later step, else records a gap. Take each item under
+  "Handed to this step" into the plan, or hand it on to a later step. The runner checks owner and evidence and resumes
+  you with each refusal.
 - **Owed** lists only steps the user must take, each starting with `before merge:` or `after merge:` (staging or
   production SQL, a migration on their database). Gates the runner runs and CI are never owed. A
   question goes in `questions` only, never also in `owed`: the runner reports the owner's answer.
