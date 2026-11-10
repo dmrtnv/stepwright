@@ -132,6 +132,23 @@ def backlog_root(repo):
     return plans_root(repo) / '_backlog'
 
 
+def archive_root(repo):
+    """Fully merged features `pipeline archive` moved aside: the `_` keeps them out of every list."""
+    return plans_root(repo) / '_archive'
+
+
+def archived_message(feature, repos=None):
+    """`<feature> is archived: <path>` for a name that only lives under _archive/ (of `repos`, default every
+    registered one), else None."""
+    if not FEATURE_NAME.match(feature):
+        return None
+
+    found = [str(archive_root(repo) / feature) for repo in (repos or load_config()['repos'])
+             if (archive_root(repo) / feature).is_dir()]
+
+    return f'{feature} is archived: {", ".join(found)}' if found else None
+
+
 def feature_folders(repo, root=None):
     """Every folder of the repo's plans (or of `root`) that holds steps (NN-slug/), reserved names included."""
     root = root or plans_root(repo)
@@ -180,7 +197,8 @@ def repo_for(feature, repo=None, cwd=None):
     found = [name for name in repos if (plans_root(name) / feature).is_dir()]
 
     if not found:
-        raise AdapterError(f'no feature {feature} in any registered checkout ({", ".join(repos)})')
+        raise AdapterError(archived_message(feature)
+                           or f'no feature {feature} in any registered checkout ({", ".join(repos)})')
 
     if len(found) > 1:
         raise AdapterError(f'feature {feature} exists in {", ".join(found)}: pass --repo <owner>/<repo>')

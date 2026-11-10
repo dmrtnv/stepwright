@@ -126,7 +126,7 @@ Unknown keys are an error.
     runner slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature
     whose PR waits stays in WAITING with `· held`) · WAITING;
   - `--watch [-n s]` redraws in place (q quits);
-  - `--all` adds merged;
+  - `--all` adds merged features that are not archived;
   - `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command).
 - One feature in full: `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command,
   files, PR/CI, logs, last 5 history entries).
@@ -165,7 +165,9 @@ Unknown keys are an error.
   says it verified it, runs init and doctor, and prints the Rerun the gate line of each release it adds or undoes; a
   bare update never moves the runner back).
 - Clean up: `pipeline gc` (orphan sandboxes, refs and logs of merged steps, snapshot refs > 14 days, then
-  `template prune`).
+  `template prune`); the logs of archived merged steps age out too.
+- Put merged features away: `pipeline archive` (moves every feature whose steps are all merged into `_archive/`;
+  [Archive](#archive)).
 - Sandbox templates:
   - `pipeline template` (show);
   - `pipeline template build [<x.y.z>]` (now, foreground);
@@ -311,6 +313,7 @@ Tick then polls each done step's PR:
 
 - briefs, plans, reviews, PR text, done notice: `<repo>/.claude/plans/<name>/NN-<slug>/` (gitignored: back it up
   yourself).
+- archived features: `<repo>/.claude/plans/_archive/<name>/` ([Archive](#archive)).
 - parked features, queue: `<repo>/.claude/plans/_backlog/<name>/`, `<repo>/.claude/plans/README.md`
   ([Backlog](#backlog)), `pipeline queue`.
 - your controls: `<name>/.pipeline/feature.json` (hold, after, autonomy), `~/.local/state/pipeline/control.json`
@@ -339,6 +342,26 @@ Tick then polls each done step's PR:
 - Rule: never two features that add migrations at once (each PR may hold one migration, and parallel ones collide
   on the journal).
 - Plan-mode files go to `.claude/plans/_plan-mode/` (`plansDirectory`).
+
+## Archive
+
+- `pipeline archive` moves every feature whose steps are all merged into `<repo>/.claude/plans/_archive/<name>/`,
+  in every registered repo. Its `.pipeline/` folder goes with it. It runs under tick's lock.
+- It prints a line per moved feature, a line per skipped feature with its fix, an error line per failed feature, and
+  a count. It exits 1 when any feature failed.
+- It leaves unfinished features where they are. A step with no state file yet counts as unfinished, and so does a
+  PR closed without merging.
+- It skips a feature that a run holds. Run it again once the run ends.
+- It skips a feature whose name already exists in `_archive/`, even as an empty folder. Rename the live folder,
+  then run it again.
+- The `_` keeps archived features out of tick, `status` (`--all` too) and `queue`.
+- A command that takes an archived name says `<name> is archived: <path>` and exits 1. `start`, `pause`,
+  `autonomy` and `order` with `--repo` do not check yet: they write the feature's control file first.
+- `--after <name>[:NN]` reads the archive when no live folder has the name, so a wait on an archived merged
+  feature stays met. A live folder of the same name wins.
+- `pipeline gc` ages out the logs of archived merged steps. It never touches refs or sandboxes by an archived
+  feature's name, since a live feature of that name may own them.
+- To extend an archived feature, move its folder back to `<repo>/.claude/plans/<name>/` and add steps.
 
 ## New machine
 

@@ -2473,6 +2473,46 @@ class RunnerTest(RunnerCase):
         self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
         self.assertIsNone(self.sandbox_status(), 'a closed step keeps no sandbox')
 
+    def archive_closed(self):
+        """Closes step 01 and moves the feature into _archive/; returns that feature folder."""
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        archived = self.fixture.plans / '_archive' / FEATURE
+        archived.parent.mkdir(exist_ok=True)
+        os.rename(self.fixture.feature, archived)
+
+        return archived
+
+    def test_gc_ages_the_logs_of_archived_merged_steps(self):
+        logs = self.archive_closed() / '.pipeline'
+        write(logs / '01-plan.log', 'old\n')
+        os.utime(logs / '01-plan.log', (time.time() - 20 * 86400,) * 2)
+        write(logs / '01-review-1.log', 'new\n')
+        self.assertEqual(self.main('gc'), 0, self.errors)
+        self.assertFalse((logs / '01-plan.log').exists())
+        self.assertTrue((logs / '01-review-1.log').exists())
+        self.assertTrue((logs / '01.json').exists())
+        self.assertFalse(self.fixture.feature.exists(), 'gc wrote a ghost live folder')
+
+    def test_gc_keeps_the_ref_and_sandbox_of_a_live_namesake_of_an_archived_feature(self):
+        self.archive_closed()
+        write(self.fixture.step / 'brief.md', '# 01 Thing again (brief)\n')
+        self.happy_path()
+        self.main(FEATURE, '--until', 'plan')
+        self.assertTrue(self.ref())
+        self.assertEqual(self.main('gc'), 0, self.errors)
+        self.assertTrue(self.ref(), 'gc dropped the live step ref')
+        self.assertIsNotNone(self.sandbox_status(), 'gc removed the live step sandbox')
+
+    def test_gc_names_a_broken_archived_feature_and_still_removes_orphans(self):
+        state_path = self.archive_closed() / '.pipeline/01.json'
+        state_path.write_text('{"broken')
+        subprocess.run(['sbx', 'create', '--name', 'pl-shop-gone-01', '--clone', 'claude', str(self.fixture.main)],
+                       check=True, capture_output=True)
+        self.assertEqual(self.main('gc'), 1)
+        self.assertIn(str(state_path), self.errors)
+        self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
+        self.assertIn('template prune:', self.output)
+
     def test_gc_and_template_refuse_while_the_capped_sbx_daemon_is_down(self):
         with mock.patch.object(core, 'sbx_service_active', return_value=False):
             self.assertEqual(self.main('gc'), 1)
@@ -5280,11 +5320,117 @@ class ViewTest(RunnerCase):
 
     def test_extra_arguments_are_refused(self):
         for argv in (('approve', FEATURE, 'x'), ('revise', FEATURE, 'x'), ('respond', FEATURE, 'x'), ('tick', 'x'),
-                     ('gc', 'now'), ('prove-app', 'x'), ('prove-gate', 'x')):
+                     ('gc', 'now'), ('archive', 'x'), ('prove-app', 'x'), ('prove-gate', 'x')):
             self.assertEqual(self.main(*argv), 2, argv)
             self.assertIn('usage: pipeline', self.errors)
 
         self.assertEqual(self.spawned, [])
+
+    def close(self, name):
+        for found in core.steps(REPO, name):
+            core.mark(core.load_state(REPO, name, found.id), 'closed', 'merged as PR #5')
+
+    def archived(self, name=FEATURE):
+        return self.fixture.plans / '_archive' / name
+
+    def test_archive_moves_merged_features_and_leaves_unfinished_ones(self):
+        self.close(FEATURE)
+        self.feature('open')
+        self.feature('next')
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.main('status', '--all')
+        self.assertIn(f'{FEATURE} (merged)', self.output)
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE}: moved to {self.archived()}\n'
+                                      'moved 1, left 2 unfinished, skipped 0, failed 0\n')
+        self.assertFalse(self.fixture.feature.exists())
+        self.assertTrue((self.archived() / '.pipeline/01.json').exists())
+        self.assertTrue((self.archived() / STEP / 'brief.md').exists())
+        self.assertTrue((self.fixture.plans / 'open').is_dir())
+        self.main('status', '--all')
+        self.assertNotIn(f'{FEATURE} (merged)', self.output)
+        self.assertIsNone(core.hold_reason(REPO, 'next'), 'a wait on an archived merged feature is met')
+
+    def test_archive_passes_over_a_repo_without_plans(self):
+        config = json.loads(self.fixture.config.read_text())
+        config['repos']['acme/other'] = str(self.fixture.other)
+        write(self.fixture.config, json.dumps(config))
+        self.close(FEATURE)
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertIn('moved 1, left 0 unfinished, skipped 0, failed 0\n', self.output)
+        self.assertFalse((self.fixture.other / '.claude/plans').exists())
+
+    def test_archive_skips_a_running_feature_and_a_taken_name(self):
+        for name in ('busy', 'taken'):
+            self.feature(name)
+            self.close(name)
+
+        self.archived('taken').mkdir(parents=True)
+        self.hold_run_lock('busy')
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertIn('busy: skipped, because a run holds it. Run pipeline archive again once it ends.\n', self.output)
+        self.assertIn(f'taken: skipped, because {self.archived("taken")} already exists. An archived name is taken: '
+                      'rename this folder, then run pipeline archive again.\n', self.output)
+        self.assertIn('moved 0, left 1 unfinished, skipped 2, failed 0\n', self.output)
+        self.assertTrue((self.fixture.plans / 'busy/01-x').is_dir())
+        self.assertTrue((self.fixture.plans / 'taken/01-x').is_dir())
+        self.assertEqual(list(self.archived('taken').iterdir()), [])
+
+    def test_archive_refuses_while_tick_runs(self):
+        self.close(FEATURE)
+        (self.fixture.base / 'logs').mkdir(exist_ok=True)
+        holder = subprocess.Popen(['flock', str(self.fixture.base / 'logs/tick.lock'), 'sleep', '60'],
+                                  start_new_session=True)
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        self.assertEqual(self.main('archive'), 1)
+        self.assertIn('holds tick', self.errors)
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_archive_reports_a_broken_feature_and_handles_the_rest(self):
+        self.feature('done')
+        self.close('done')
+        path = core.state_file(REPO, FEATURE, '01')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"broken')
+        self.assertEqual(self.main('archive'), 1)
+        self.assertIn(f'{FEATURE}: {path}: unreadable', self.errors)
+        self.assertIn('moved 1, left 0 unfinished, skipped 0, failed 1\n', self.output)
+        self.assertTrue(self.archived('done').is_dir())
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_archive_reports_an_archive_path_that_is_a_file(self):
+        self.close(FEATURE)
+        write(self.fixture.plans / '_archive', 'not a folder\n')
+        self.assertEqual(self.main('archive'), 1)
+        self.assertEqual(len(self.errors.splitlines()), 1, self.errors)
+        self.assertIn(str(self.fixture.plans / '_archive'), self.errors)
+        self.assertIn('moved 0, left 0 unfinished, skipped 0, failed 1\n', self.output)
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_an_archived_name_says_where_it_went(self):
+        self.close(FEATURE)
+        self.main('archive')
+        message = f'{FEATURE} is archived: {self.archived()}'
+
+        for argv in ((FEATURE,), (FEATURE, '--detach'), ('show', FEATURE), ('log', FEATURE), ('answer', FEATURE),
+                     ('approve', FEATURE), ('revise', FEATURE), ('respond', FEATURE), ('start', FEATURE),
+                     ('pause', FEATURE), ('autonomy', FEATURE, 'auto'), ('order', FEATURE),
+                     (FEATURE, '--repo', REPO), ('show', FEATURE, '--repo', REPO)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv), 1, self.output + self.errors)
+                self.assertIn(message, self.errors)
+
+        self.assertEqual(self.spawned, [])
+        self.assertFalse(self.fixture.feature.exists(), 'a command wrote a ghost live folder')
+
+    def test_a_missing_name_that_is_not_archived_is_still_a_typo(self):
+        self.close(FEATURE)
+        self.main('archive')
+        self.assertEqual(self.main('thingg'), 2)
+        self.assertEqual(self.errors, "no feature or command 'thingg'; pipeline help lists the commands\n")
+        self.assertEqual(self.main('show', 'thingg'), 1)
+        self.assertIn('no feature thingg in any registered checkout', self.errors)
 
     def test_order_takes_repo(self):
         self.feature('other')
@@ -6038,6 +6184,48 @@ class ExtrasTest(RunnerCase):
         self.assertEqual(self.main('start', 'next', '--after'), 2)
         self.main('start', 'next')
         self.assertIsNone(core.feature_control(REPO, 'next')['after'], 'a plain start drops the wait')
+
+    def archive(self, name=FEATURE):
+        archive = self.fixture.plans / '_archive'
+        archive.mkdir(exist_ok=True)
+        os.rename(self.fixture.plans / name, archive / name)
+
+    def test_after_an_archived_feature_stays_met(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+
+        for after in (FEATURE, f'{FEATURE}:01'):
+            core.update_feature_control(REPO, 'next', after=after)
+            self.assertIsNone(core.hold_reason(REPO, 'next'), after)
+
+        core.update_feature_control(REPO, 'next', after=f'{FEATURE}:09')
+        self.assertEqual(core.hold_reason(REPO, 'next'),
+                         f'after {FEATURE}:09: {FEATURE} has no step 09 (pipeline start next drops it)')
+
+    def test_after_an_archived_unmerged_step_keeps_the_hold(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        write(self.fixture.feature / '02-more/brief.md', '# more\n')
+        self.archive()
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertEqual(core.hold_reason(REPO, 'next'), f'after {FEATURE} (pipeline start next drops it)')
+
+    def test_after_reads_a_live_namesake_before_the_archive(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+        write(self.fixture.step / 'brief.md', '# again\n')
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertEqual(core.hold_reason(REPO, 'next'), f'after {FEATURE} (pipeline start next drops it)')
+
+    def test_reading_an_archived_feature_writes_no_live_folder(self):
+        self.feature('next')
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        self.archive()
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.assertIsNone(core.hold_reason(REPO, 'next'))
+        self.assertFalse(self.fixture.feature.exists(), 'reading the archive wrote a ghost live folder')
 
     def test_answer_approves_a_changed_plan_only(self):
         write(self.fixture.step / 'plan.md', '# Plan\n\n## Unresolved questions\n\n1. Q1? Rec: A\n')

@@ -473,16 +473,16 @@ def push_url(repo):
 # ---------------------------------------------------------------------------------------------- features and steps
 
 
-def feature_dir(repo, feature):
-    return adapter.plans_root(repo) / feature
+def feature_dir(repo, feature, root=None):
+    return (root or adapter.plans_root(repo)) / feature
 
 
-def state_dir(repo, feature):
-    return feature_dir(repo, feature) / '.pipeline'
+def state_dir(repo, feature, root=None):
+    return feature_dir(repo, feature, root) / '.pipeline'
 
 
-def state_file(repo, feature, step_id):
-    return state_dir(repo, feature) / f'{step_id}.json'
+def state_file(repo, feature, step_id, root=None):
+    return state_dir(repo, feature, root) / f'{step_id}.json'
 
 
 class Step:
@@ -521,11 +521,12 @@ class Step:
         return f'{backend.plans_dir(name, self.feature)}/{self.name}/{Path(path).name}'
 
 
-def steps(repo, feature):
-    directory = feature_dir(repo, feature)
+def steps(repo, feature, root=None):
+    directory = feature_dir(repo, feature, root)
 
     if not FEATURE_NAME.match(feature) or not directory.is_dir():
-        raise PipelineError(f'no feature folder {directory} (a name of lowercase letters, digits and dashes)')
+        raise PipelineError((root is None and adapter.archived_message(feature, [repo]))
+                            or f'no feature folder {directory} (a name of lowercase letters, digits and dashes)')
 
     found = sorted((Step(repo, feature, path) for path in directory.iterdir()
                     if path.is_dir() and STEP_DIR.match(path.name)), key=lambda step: step.id)
@@ -561,8 +562,8 @@ def new_state(repo, feature, step_id):
     }
 
 
-def load_state(repo, feature, step_id):
-    path = state_file(repo, feature, step_id)
+def load_state(repo, feature, step_id, root=None):
+    path = state_file(repo, feature, step_id, root)
     state = new_state(repo, feature, step_id)
 
     if path.exists():
@@ -1416,21 +1417,28 @@ def hold_label(held):
 
 
 def after_unmet(repo, after):
-    """None once `<feature>[:NN]` is merged (all its steps, or step NN), else what is still awaited. A feature that is
-    not there (parked, renamed, a typo) is never merged: the hold stays and says so."""
+    """None once `<feature>[:NN]` is merged (all its steps, or step NN), else what is still awaited. The live folder
+    wins; else the one under _archive/. A feature in neither (parked, renamed, a typo) is never merged: the hold stays
+    and says so."""
     name, _, step_id = after.partition(':')
+    root = None
 
     try:
         found = steps(repo, name)
     except PipelineError:
-        return f'after {after}: no feature {name}'
+        root = adapter.archive_root(repo)
+
+        try:
+            found = steps(repo, name, root=root)
+        except PipelineError:
+            return f'after {after}: no feature {name}'
 
     targets = [step for step in found if not step_id or step.id == step_id]
 
     if not targets:
         return f'after {after}: {name} has no step {step_id}'
 
-    merged = all(load_state(repo, name, step.id)['status'] == 'closed' for step in targets)
+    merged = all(load_state(repo, name, step.id, root=root)['status'] == 'closed' for step in targets)
 
     return None if merged else f'after {after}'
 
@@ -4762,12 +4770,68 @@ def refuse_while_sbx_down(command):
     return True
 
 
+def drop_old_logs(directory, step_id, cutoff):
+    """Unlinks a step's logs, results and texts in `directory` older than `cutoff`; returns how many."""
+    removed = 0
+
+    for path in directory.glob(f'{step_id}-*'):
+        if path.suffix in ('.log', '.json', '.md') and path.stat().st_mtime < cutoff:
+            path.unlink()
+            removed += 1
+
+    return removed
+
+
+def command_archive():
+    """Moves every feature whose steps are all merged into its repo's _archive/, unless a run holds it or the name is
+    taken there."""
+    moved, left, skipped, failed = 0, 0, 0, 0
+
+    for repo in adapter.load_config()['repos']:
+        if not adapter.plans_root(repo).is_dir():
+            continue
+
+        archive = adapter.archive_root(repo)
+
+        try:
+            archive.mkdir(exist_ok=True)
+        except OSError as error:
+            print(f'{repo}: cannot create {archive} ({error.strerror}); nothing moved there', file=sys.stderr)
+            failed += 1
+            continue
+
+        for feature in adapter.repo_features(repo):
+            try:
+                state, _ = current_step(repo, feature)
+
+                if state is not None:
+                    left += 1
+                elif locked(run_lock(repo, feature)):
+                    print(f'{feature}: skipped, because a run holds it. Run pipeline archive again once it ends.')
+                    skipped += 1
+                elif (archive / feature).exists():
+                    print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
+                          'taken: rename this folder, then run pipeline archive again.')
+                    skipped += 1
+                else:
+                    os.rename(feature_dir(repo, feature), archive / feature)
+                    print(f'{feature}: moved to {archive / feature}')
+                    moved += 1
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'{feature}: {error}', file=sys.stderr)
+                failed += 1
+
+    print(f'moved {moved}, left {left} unfinished, skipped {skipped}, failed {failed}')
+
+    return 1 if failed else 0
+
+
 def command_gc():
     if refuse_while_sbx_down('gc'):
         return 1
 
     cutoff = time.time() - SNAPSHOT_DAYS * 86400
-    keep, dropped, removed = set(), 0, 0
+    keep, dropped, removed, failed = set(), 0, 0, 0
 
     for repo in adapter.load_config()['repos']:
         for tree in (adapter.checkout(repo),):
@@ -4797,10 +4861,19 @@ def command_gc():
                                    f'refs/pipeline/{feature}/{step.id}-pre-rebase-*').splitlines():
                         git(clone, 'update-ref', '-d', ref)
 
-                for path in state_dir(repo, feature).glob(f'{step.id}-*'):
-                    if path.suffix in ('.log', '.json', '.md') and path.stat().st_mtime < cutoff:
-                        path.unlink()
-                        removed += 1
+                removed += drop_old_logs(state_dir(repo, feature), step.id, cutoff)
+
+        # Archived features only age their logs: refs and sandboxes are named by feature, and a live namesake owns them.
+        archive = adapter.archive_root(repo)
+
+        for feature in adapter.feature_folders(repo, archive):
+            try:
+                for step in steps(repo, feature, root=archive):
+                    if load_state(repo, feature, step.id, root=archive)['status'] == 'closed':
+                        removed += drop_old_logs(state_dir(repo, feature, archive), step.id, cutoff)
+            except (*ERRORS, OSError, ValueError) as error:
+                print(error, file=sys.stderr)
+                failed += 1
 
     orphans = [name for name in backend.statuses() if name.startswith('pl-') and name not in keep]
 
@@ -4809,8 +4882,9 @@ def command_gc():
 
     print(f'dropped {dropped} snapshot refs older than {SNAPSHOT_DAYS} days; removed {removed} logs of merged steps '
           f"older than {LOG_DAYS} days; removed orphan sandboxes: {', '.join(orphans) or 'none'}")
+    pruned = command_template_prune()
 
-    return command_template_prune()
+    return 1 if failed else pruned
 
 
 # ---------------------------------------------------------------------------------------------- templates
@@ -6276,6 +6350,7 @@ COMMANDS = {
                  'queue'),
     'tick': ('tick', 'start what has work (the timer does it every 5 min)', 'admin'),
     'gc': ('gc', "clean merged steps' VMs, refs and logs, old snapshot refs, unused templates", 'admin'),
+    'archive': ('archive', 'move fully merged features into _archive/', 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
@@ -6397,7 +6472,7 @@ def main(argv=None):
             return {'start': command_start, 'pause': command_pause, 'order': command_order,
                     'parallel': command_parallel, 'autonomy': command_autonomy}[command](argv[1:])
 
-        if command in ('tick', 'gc') and len(argv) > 1:
+        if command in ('tick', 'gc', 'archive') and len(argv) > 1:
             return usage_error(command)
 
         if command == 'tick':
@@ -6405,6 +6480,9 @@ def main(argv=None):
 
         if command == 'gc':
             return with_lock('gc', command_gc)
+
+        if command == 'archive':
+            return with_lock('tick', command_archive)
 
         if command == 'template':
             return command_template(argv[1:])
@@ -6450,6 +6528,12 @@ def main(argv=None):
 
     try:
         if FEATURE_NAME.match(command) and not feature_anywhere(command):
+            archived = adapter.archived_message(command)
+
+            if archived:
+                print(archived, file=sys.stderr)
+                return 1
+
             # Neither a command nor a feature: a typo, most likely (a real feature is never shadowed by a suggestion).
             print(f'no feature or command {command!r}' + suggestion(command), file=sys.stderr)
             return 2
