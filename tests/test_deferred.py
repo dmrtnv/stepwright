@@ -292,5 +292,18 @@ class HandOffTest(RunnerCase):
         self.assertNotIn('from step', core.handed_lines(self.state('02'))[-1])
 
 
+class CommentSecretTest(RunnerCase):
+    def test_a_token_in_a_flag_stops_the_publish(self):
+        self.happy_path(**{'thing-01-respond-1': [respond_with(flags=[f'kept {TOKEN} for now'])]})
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('publish', 'paused'), state['reason'])
+        self.assertIn('token-shaped', state['reason'])
+        self.assertIn('"public_notice"', state['reason'])
+        self.assertIn('paused: secret in the PR comment', self.notifications)
+        self.assertEqual(self.origin_branch(), '')
+        self.assertEqual(self.github.comments, {})
+
+
 if __name__ == '__main__':
     unittest.main()

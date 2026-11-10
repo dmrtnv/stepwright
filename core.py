@@ -2869,6 +2869,13 @@ def step_publish(state, options):
 
     scan_for_secrets(state, context)
     title, body = pull_request_text(state, step)
+
+    if SECRET_TEXT.search(state['public_notice'] or ''):
+        pause(state, 'The PR comment would contain a token-shaped string (a GitHub token or a private key) from a stage '
+                     f"result: see {step.done_notice}. Remove it from that result and from \"public_notice\" in "
+                     f"{state_file(state['repo'], state['feature'], state['id'])}, then re-run.",
+              'secret in the PR comment')
+
     require_branch_rules(state, state['repo'], context['base'])
     push_branch(state, context, sha)
     update = state['update'] or {}
