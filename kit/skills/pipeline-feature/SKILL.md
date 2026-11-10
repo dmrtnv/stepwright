@@ -22,6 +22,7 @@ and line numbers against the default branch.
 1. **Name.** Lowercase letters, digits and dashes (`unique-names`, `perfect-fit-queue`), never a `pipeline` command
    name (`pipeline help` lists them: `status`, `show`, `log`, `start`, `queue`, …; such a folder is skipped). An
    existing folder is only extended (new steps get the next numbers); it is never rewritten while a step is running.
+   A name under `_archive/` is taken: move that folder back to extend it.
 2. **Interview**, short and decisive: the goal and the user-visible outcome; what is out of scope; the decisions
    only the owner can take (product rules, money, schema or stored-data one-way doors, public URLs or APIs, new
    dependencies). Everything else the plan stage decides, so don't ask it.

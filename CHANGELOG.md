@@ -6,6 +6,20 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (only the host-only pipeline-feature text changed, not the stage kit or STAGES).
+
+### Added
+
+- `pipeline archive` moves every fully merged feature into `.claude/plans/_archive/<name>/`. It leaves unfinished
+  features, and skips a feature a run holds or whose name is taken there. `--after` on an archived feature stays
+  met, and `pipeline gc` still ages out its logs.
+
+### Changed
+
+- A feature folder named `archive` is now skipped, like every command name. Rename it before you update.
+- A command given an archived feature's name answers `<name> is archived: <path>` and exits 1.
+- `pipeline status --all` no longer lists archived features.
+
 ## v0.11 - 2026-11-09
 
 **Rerun the gate:** no (no kit or `STAGES` change).
