@@ -240,5 +240,57 @@ class CarryTest(RunnerCase):
         self.assertEqual(core.merged_results(state, 'deferred'), [older, 'legacy', newer])
 
 
+class HandOffTest(RunnerCase):
+    """A later step's stages see the items earlier steps handed to it."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
+        write(self.fixture.feature / '03-third/brief.md', '# 03 Third\n')
+        self.handed = deferred('a wider rename', 'core.py:12', '02')
+        self.later = deferred('a later cleanup', '', '03')
+        first = self.state()
+        first['status'], first['stage'] = 'closed', 'done'
+        first['sessions'] = {'implement': 'a'}
+        first['results'] = {'implement': {'deferred': [self.handed, self.later, deferred('an unowned leak', 'core.py:1'),
+                                                       'a legacy item']}}
+        self.save(first)
+
+    def test_the_owner_steps_stages_get_the_items_handed_to_it(self):
+        self.script({'thing-02-plan': [{'run': ["printf '# Plan 2\\n' > $HOME/plans/thing/02-other/plan.md"]}]})
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0, self.errors)
+        prompt = ' '.join(self.claude_calls('thing-02-plan')[0]['argv'])
+        self.assertIn('## Handed to this step\n\n- a wider rename (for step 02-other); evidence: core.py:12\n', prompt)
+
+        for absent in ('a later cleanup', 'an unowned leak', 'a legacy item'):
+            self.assertNotIn(absent, prompt)
+
+    def test_an_item_handed_on_reaches_the_next_owner(self):
+        self.assertEqual(core.handed_lines(self.state('03')),
+                         ['', '## Handed to this step', '', '- a later cleanup (for step 03-third)'])
+        second = self.state('02')
+        second['sessions'] = {'plan': 'b'}
+        second['results'] = {'plan': {'deferred': [dict(self.handed, owner='03')]}}
+        self.save(second)
+        self.assertEqual(core.handed_lines(self.state('03'))[-1], '- a later cleanup (for step 03-third)\n'
+                         '- a wider rename (for step 03-third); evidence: core.py:12')
+        self.assertEqual(core.handed_lines(self.state('01')), [])
+
+    def test_a_step_nobody_handed_anything_gets_no_block(self):
+        first = self.state()
+        first['results'] = {'implement': {'deferred': [self.handed]}}
+        self.save(first)
+        self.assertEqual(core.handed_lines(self.state('03')), [])
+
+    def test_only_earlier_steps_hand_items_on(self):
+        for step_id in ('02', '03'):
+            state = self.state(step_id)
+            state['sessions'] = {'plan': step_id}
+            state['results'] = {'plan': {'deferred': [deferred(f'from step {step_id}', '', '02')]}}
+            self.save(state)
+
+        self.assertNotIn('from step', core.handed_lines(self.state('02'))[-1])
+
+
 if __name__ == '__main__':
     unittest.main()

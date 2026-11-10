@@ -1528,6 +1528,16 @@ def recorded_lines(state, stage_key):
     return ['', '## Already recorded for this step', ''] + lines if lines else []
 
 
+def handed_lines(state):
+    """The deferred items earlier steps of the feature handed to this one (their owner is this step's id)."""
+    items = [item for step in steps(state['repo'], state['feature']) if step.id < state['id']
+             for item in merged_results(load_state(state['repo'], state['feature'], step.id), 'deferred')
+             if isinstance(item, dict) and item.get('owner') == state['id']]
+    body = '\n'.join(f"- {' '.join(deferred_text(state, item, False).split())}" for item in items)
+
+    return ['', '## Handed to this step', '', cap(body, 8_000)] if items else []
+
+
 def system_prompt(state, stage_key, context):
     step = step_of(state)
     config = context['config']
@@ -1556,7 +1566,7 @@ def system_prompt(state, stage_key, context):
                      + (f" Generate with `python3 ~/.claude/pipeline/{migrations['generate']}`."
                         if migrations.get('generate') else ''))
 
-    return SYSTEM_PROMPT.read_text() + '\n'.join(lines + recorded_lines(state, stage_key) + [''])
+    return SYSTEM_PROMPT.read_text() + '\n'.join(lines + recorded_lines(state, stage_key) + handed_lines(state) + [''])
 
 
 def transcript_state(context, session):
