@@ -246,6 +246,8 @@ Unknown keys are an error.
     unless the approved plan's `## Test changes` names its exact path; either way it is flagged; the plan gate
     refuses a pattern there), and the **secret gate** (an env file, or an added line with a token-shaped string,
     named by `path:line` and never quoted).
+  - Each deferred object: its owner is a later step of the feature, else its evidence starts with a repo-relative
+    `path[:line]` that exists on the fetched ref; no token-shaped string. A review's items are not checked.
   - Red ⇒ the same session resumes with the failures, at most twice.
 - **Limits**: a usage limit sets `not_before` = reset + 2 min, marks the step `ready`, pings once and ends the run;
   tick resumes the same session after the reset.
@@ -263,6 +265,7 @@ Before any push:
 - the secret scan again, as a backstop (env files, token-shaped strings on added lines);
 - `pr.md` read safely (a symlink or a token-shaped string stops it; home paths become `~`, personal emails
   `[email]`, an AI attribution line is dropped);
+- the PR comment text (a token-shaped string in a flag, question, owed or deferred item stops it);
 - the base branch must still require a code-owner-approved PR (read with the App token);
 - and the host ref must be the gate-green commit.
 
