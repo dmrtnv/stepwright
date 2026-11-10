@@ -4769,12 +4769,24 @@ def refuse_while_sbx_down(command):
     return True
 
 
+def drop_old_logs(directory, step_id, cutoff):
+    """Unlinks a step's logs, results and texts in `directory` older than `cutoff`; returns how many."""
+    removed = 0
+
+    for path in directory.glob(f'{step_id}-*'):
+        if path.suffix in ('.log', '.json', '.md') and path.stat().st_mtime < cutoff:
+            path.unlink()
+            removed += 1
+
+    return removed
+
+
 def command_gc():
     if refuse_while_sbx_down('gc'):
         return 1
 
     cutoff = time.time() - SNAPSHOT_DAYS * 86400
-    keep, dropped, removed = set(), 0, 0
+    keep, dropped, removed, failed = set(), 0, 0, 0
 
     for repo in adapter.load_config()['repos']:
         for tree in (adapter.checkout(repo),):
@@ -4804,10 +4816,19 @@ def command_gc():
                                    f'refs/pipeline/{feature}/{step.id}-pre-rebase-*').splitlines():
                         git(clone, 'update-ref', '-d', ref)
 
-                for path in state_dir(repo, feature).glob(f'{step.id}-*'):
-                    if path.suffix in ('.log', '.json', '.md') and path.stat().st_mtime < cutoff:
-                        path.unlink()
-                        removed += 1
+                removed += drop_old_logs(state_dir(repo, feature), step.id, cutoff)
+
+        # Archived features only age their logs: refs and sandboxes are named by feature, and a live namesake owns them.
+        archive = adapter.archive_root(repo)
+
+        for feature in adapter.feature_folders(repo, archive):
+            try:
+                for step in steps(repo, feature, root=archive):
+                    if load_state(repo, feature, step.id, root=archive)['status'] == 'closed':
+                        removed += drop_old_logs(state_dir(repo, feature, archive), step.id, cutoff)
+            except (*ERRORS, OSError, ValueError) as error:
+                print(error, file=sys.stderr)
+                failed += 1
 
     orphans = [name for name in backend.statuses() if name.startswith('pl-') and name not in keep]
 
@@ -4816,8 +4837,9 @@ def command_gc():
 
     print(f'dropped {dropped} snapshot refs older than {SNAPSHOT_DAYS} days; removed {removed} logs of merged steps '
           f"older than {LOG_DAYS} days; removed orphan sandboxes: {', '.join(orphans) or 'none'}")
+    pruned = command_template_prune()
 
-    return command_template_prune()
+    return 1 if failed else pruned
 
 
 # ---------------------------------------------------------------------------------------------- templates

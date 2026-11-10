@@ -2473,6 +2473,46 @@ class RunnerTest(RunnerCase):
         self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
         self.assertIsNone(self.sandbox_status(), 'a closed step keeps no sandbox')
 
+    def archive_closed(self):
+        """Closes step 01 and moves the feature into _archive/; returns that feature folder."""
+        core.mark(self.state(), 'closed', 'merged as PR #5')
+        archived = self.fixture.plans / '_archive' / FEATURE
+        archived.parent.mkdir(exist_ok=True)
+        os.rename(self.fixture.feature, archived)
+
+        return archived
+
+    def test_gc_ages_the_logs_of_archived_merged_steps(self):
+        logs = self.archive_closed() / '.pipeline'
+        write(logs / '01-plan.log', 'old\n')
+        os.utime(logs / '01-plan.log', (time.time() - 20 * 86400,) * 2)
+        write(logs / '01-review-1.log', 'new\n')
+        self.assertEqual(self.main('gc'), 0, self.errors)
+        self.assertFalse((logs / '01-plan.log').exists())
+        self.assertTrue((logs / '01-review-1.log').exists())
+        self.assertTrue((logs / '01.json').exists())
+        self.assertFalse(self.fixture.feature.exists(), 'gc wrote a ghost live folder')
+
+    def test_gc_keeps_the_ref_and_sandbox_of_a_live_namesake_of_an_archived_feature(self):
+        self.archive_closed()
+        write(self.fixture.step / 'brief.md', '# 01 Thing again (brief)\n')
+        self.happy_path()
+        self.main(FEATURE, '--until', 'plan')
+        self.assertTrue(self.ref())
+        self.assertEqual(self.main('gc'), 0, self.errors)
+        self.assertTrue(self.ref(), 'gc dropped the live step ref')
+        self.assertIsNotNone(self.sandbox_status(), 'gc removed the live step sandbox')
+
+    def test_gc_names_a_broken_archived_feature_and_still_removes_orphans(self):
+        state_path = self.archive_closed() / '.pipeline/01.json'
+        state_path.write_text('{"broken')
+        subprocess.run(['sbx', 'create', '--name', 'pl-shop-gone-01', '--clone', 'claude', str(self.fixture.main)],
+                       check=True, capture_output=True)
+        self.assertEqual(self.main('gc'), 1)
+        self.assertIn(str(state_path), self.errors)
+        self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
+        self.assertIn('template prune:', self.output)
+
     def test_gc_and_template_refuse_while_the_capped_sbx_daemon_is_down(self):
         with mock.patch.object(core, 'sbx_service_active', return_value=False):
             self.assertEqual(self.main('gc'), 1)
