@@ -6,6 +6,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.12 - 2026-11-10
+
 **Rerun the gate:** no (only the host-only pipeline-feature text changed, not the stage kit or STAGES).
 
 ### Added
