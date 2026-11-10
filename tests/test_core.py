@@ -5320,11 +5320,117 @@ class ViewTest(RunnerCase):
 
     def test_extra_arguments_are_refused(self):
         for argv in (('approve', FEATURE, 'x'), ('revise', FEATURE, 'x'), ('respond', FEATURE, 'x'), ('tick', 'x'),
-                     ('gc', 'now'), ('prove-app', 'x'), ('prove-gate', 'x')):
+                     ('gc', 'now'), ('archive', 'x'), ('prove-app', 'x'), ('prove-gate', 'x')):
             self.assertEqual(self.main(*argv), 2, argv)
             self.assertIn('usage: pipeline', self.errors)
 
         self.assertEqual(self.spawned, [])
+
+    def close(self, name):
+        for found in core.steps(REPO, name):
+            core.mark(core.load_state(REPO, name, found.id), 'closed', 'merged as PR #5')
+
+    def archived(self, name=FEATURE):
+        return self.fixture.plans / '_archive' / name
+
+    def test_archive_moves_merged_features_and_leaves_unfinished_ones(self):
+        self.close(FEATURE)
+        self.feature('open')
+        self.feature('next')
+        core.update_feature_control(REPO, 'next', after=FEATURE)
+        self.main('status', '--all')
+        self.assertIn(f'{FEATURE} (merged)', self.output)
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE}: moved to {self.archived()}\n'
+                                      'moved 1, left 2 unfinished, skipped 0, failed 0\n')
+        self.assertFalse(self.fixture.feature.exists())
+        self.assertTrue((self.archived() / '.pipeline/01.json').exists())
+        self.assertTrue((self.archived() / STEP / 'brief.md').exists())
+        self.assertTrue((self.fixture.plans / 'open').is_dir())
+        self.main('status', '--all')
+        self.assertNotIn(f'{FEATURE} (merged)', self.output)
+        self.assertIsNone(core.hold_reason(REPO, 'next'), 'a wait on an archived merged feature is met')
+
+    def test_archive_passes_over_a_repo_without_plans(self):
+        config = json.loads(self.fixture.config.read_text())
+        config['repos']['acme/other'] = str(self.fixture.other)
+        write(self.fixture.config, json.dumps(config))
+        self.close(FEATURE)
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertIn('moved 1, left 0 unfinished, skipped 0, failed 0\n', self.output)
+        self.assertFalse((self.fixture.other / '.claude/plans').exists())
+
+    def test_archive_skips_a_running_feature_and_a_taken_name(self):
+        for name in ('busy', 'taken'):
+            self.feature(name)
+            self.close(name)
+
+        self.archived('taken').mkdir(parents=True)
+        self.hold_run_lock('busy')
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertIn('busy: skipped, because a run holds it. Run pipeline archive again once it ends.\n', self.output)
+        self.assertIn(f'taken: skipped, because {self.archived("taken")} already exists. An archived name is taken: '
+                      'rename this folder, then run pipeline archive again.\n', self.output)
+        self.assertIn('moved 0, left 1 unfinished, skipped 2, failed 0\n', self.output)
+        self.assertTrue((self.fixture.plans / 'busy/01-x').is_dir())
+        self.assertTrue((self.fixture.plans / 'taken/01-x').is_dir())
+        self.assertEqual(list(self.archived('taken').iterdir()), [])
+
+    def test_archive_refuses_while_tick_runs(self):
+        self.close(FEATURE)
+        (self.fixture.base / 'logs').mkdir(exist_ok=True)
+        holder = subprocess.Popen(['flock', str(self.fixture.base / 'logs/tick.lock'), 'sleep', '60'],
+                                  start_new_session=True)
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        self.assertEqual(self.main('archive'), 1)
+        self.assertIn('holds tick', self.errors)
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_archive_reports_a_broken_feature_and_handles_the_rest(self):
+        self.feature('done')
+        self.close('done')
+        path = core.state_file(REPO, FEATURE, '01')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"broken')
+        self.assertEqual(self.main('archive'), 1)
+        self.assertIn(f'{FEATURE}: {path}: unreadable', self.errors)
+        self.assertIn('moved 1, left 0 unfinished, skipped 0, failed 1\n', self.output)
+        self.assertTrue(self.archived('done').is_dir())
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_archive_reports_an_archive_path_that_is_a_file(self):
+        self.close(FEATURE)
+        write(self.fixture.plans / '_archive', 'not a folder\n')
+        self.assertEqual(self.main('archive'), 1)
+        self.assertEqual(len(self.errors.splitlines()), 1, self.errors)
+        self.assertIn(str(self.fixture.plans / '_archive'), self.errors)
+        self.assertIn('moved 0, left 0 unfinished, skipped 0, failed 1\n', self.output)
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_an_archived_name_says_where_it_went(self):
+        self.close(FEATURE)
+        self.main('archive')
+        message = f'{FEATURE} is archived: {self.archived()}'
+
+        for argv in ((FEATURE,), (FEATURE, '--detach'), ('show', FEATURE), ('log', FEATURE), ('answer', FEATURE),
+                     ('approve', FEATURE), ('revise', FEATURE), ('respond', FEATURE), ('start', FEATURE),
+                     ('pause', FEATURE), ('autonomy', FEATURE, 'auto'), ('order', FEATURE),
+                     (FEATURE, '--repo', REPO), ('show', FEATURE, '--repo', REPO)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv), 1, self.output + self.errors)
+                self.assertIn(message, self.errors)
+
+        self.assertEqual(self.spawned, [])
+        self.assertFalse(self.fixture.feature.exists(), 'a command wrote a ghost live folder')
+
+    def test_a_missing_name_that_is_not_archived_is_still_a_typo(self):
+        self.close(FEATURE)
+        self.main('archive')
+        self.assertEqual(self.main('thingg'), 2)
+        self.assertEqual(self.errors, "no feature or command 'thingg'; pipeline help lists the commands\n")
+        self.assertEqual(self.main('show', 'thingg'), 1)
+        self.assertIn('no feature thingg in any registered checkout', self.errors)
 
     def test_order_takes_repo(self):
         self.feature('other')

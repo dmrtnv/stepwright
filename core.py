@@ -525,7 +525,8 @@ def steps(repo, feature, root=None):
     directory = feature_dir(repo, feature, root)
 
     if not FEATURE_NAME.match(feature) or not directory.is_dir():
-        raise PipelineError(f'no feature folder {directory} (a name of lowercase letters, digits and dashes)')
+        raise PipelineError((root is None and adapter.archived_message(feature, [repo]))
+                            or f'no feature folder {directory} (a name of lowercase letters, digits and dashes)')
 
     found = sorted((Step(repo, feature, path) for path in directory.iterdir()
                     if path.is_dir() and STEP_DIR.match(path.name)), key=lambda step: step.id)
@@ -4781,6 +4782,50 @@ def drop_old_logs(directory, step_id, cutoff):
     return removed
 
 
+def command_archive():
+    """Moves every feature whose steps are all merged into its repo's _archive/, unless a run holds it or the name is
+    taken there."""
+    moved, left, skipped, failed = 0, 0, 0, 0
+
+    for repo in adapter.load_config()['repos']:
+        if not adapter.plans_root(repo).is_dir():
+            continue
+
+        archive = adapter.archive_root(repo)
+
+        try:
+            archive.mkdir(exist_ok=True)
+        except OSError as error:
+            print(f'{repo}: cannot create {archive} ({error.strerror}); nothing moved there', file=sys.stderr)
+            failed += 1
+            continue
+
+        for feature in adapter.repo_features(repo):
+            try:
+                state, _ = current_step(repo, feature)
+
+                if state is not None:
+                    left += 1
+                elif locked(run_lock(repo, feature)):
+                    print(f'{feature}: skipped, because a run holds it. Run pipeline archive again once it ends.')
+                    skipped += 1
+                elif (archive / feature).exists():
+                    print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
+                          'taken: rename this folder, then run pipeline archive again.')
+                    skipped += 1
+                else:
+                    os.rename(feature_dir(repo, feature), archive / feature)
+                    print(f'{feature}: moved to {archive / feature}')
+                    moved += 1
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'{feature}: {error}', file=sys.stderr)
+                failed += 1
+
+    print(f'moved {moved}, left {left} unfinished, skipped {skipped}, failed {failed}')
+
+    return 1 if failed else 0
+
+
 def command_gc():
     if refuse_while_sbx_down('gc'):
         return 1
@@ -6305,6 +6350,7 @@ COMMANDS = {
                  'queue'),
     'tick': ('tick', 'start what has work (the timer does it every 5 min)', 'admin'),
     'gc': ('gc', "clean merged steps' VMs, refs and logs, old snapshot refs, unused templates", 'admin'),
+    'archive': ('archive', 'move fully merged features into _archive/', 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
@@ -6426,7 +6472,7 @@ def main(argv=None):
             return {'start': command_start, 'pause': command_pause, 'order': command_order,
                     'parallel': command_parallel, 'autonomy': command_autonomy}[command](argv[1:])
 
-        if command in ('tick', 'gc') and len(argv) > 1:
+        if command in ('tick', 'gc', 'archive') and len(argv) > 1:
             return usage_error(command)
 
         if command == 'tick':
@@ -6434,6 +6480,9 @@ def main(argv=None):
 
         if command == 'gc':
             return with_lock('gc', command_gc)
+
+        if command == 'archive':
+            return with_lock('tick', command_archive)
 
         if command == 'template':
             return command_template(argv[1:])
@@ -6479,6 +6528,12 @@ def main(argv=None):
 
     try:
         if FEATURE_NAME.match(command) and not feature_anywhere(command):
+            archived = adapter.archived_message(command)
+
+            if archived:
+                print(archived, file=sys.stderr)
+                return 1
+
             # Neither a command nor a feature: a typo, most likely (a real feature is never shadowed by a suggestion).
             print(f'no feature or command {command!r}' + suggestion(command), file=sys.stderr)
             return 2
