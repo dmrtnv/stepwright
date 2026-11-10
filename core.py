@@ -131,6 +131,7 @@ STEP_DIR = adapter.STEP_DIR
 LIMIT_TEXT = re.compile(r"hit your [^.\n]{0,40}limit|usage limit|overloaded", re.IGNORECASE)
 TRAILER = re.compile(r'^co-authored-by:.*(claude|anthropic)|generated with \[?claude code', re.IGNORECASE | re.MULTILINE)
 LEADING_FLAG = re.compile(r'^\s*⚑\s*')
+EVIDENCE_START = re.compile(r'^[\w.-][\w./-]*(:\d+(-\d+)?)?(\s|$)')
 DATA_LOSS = re.compile(r'\b(DROP TABLE|DROP COLUMN|ALTER COLUMN\b.*\bTYPE\b|DROP TYPE|TRUNCATE|DELETE FROM)\b', re.IGNORECASE)
 TEST_FILE = re.compile(r'(^|/)(test|tests|e2e|__tests__)/|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$')
 PATH_PATTERN = re.compile(r'\*|\{[^}]*,[^}]*\}|\.\w+\(x\)')
@@ -2259,10 +2260,61 @@ def run_gates(state, context, gates):
     return failures
 
 
+def deferred_problem(item, later_ids):
+    """Why one deferred object is refused, as a sentence for the stage; None when it passes. Evidence is data the
+    reader opens, never run: it must start with a repo-relative path[:line]."""
+    quoted, evidence, owner = SECRET_TEXT.sub('…', item.get('item', '')), item.get('evidence', ''), item.get('owner', '')
+    first_word = (evidence.split() or [''])[0]
+
+    if SECRET_TEXT.search(item.get('item', '')) or SECRET_TEXT.search(evidence):
+        return f'Deferred item "{quoted}" contains a token-shaped string (a GitHub token or a private key). Remove it.'
+
+    if owner and owner not in later_ids:
+        choices = f"Use one of {', '.join(later_ids)}, or \"\" with evidence." if later_ids else \
+            'No later step exists: use "" with evidence.'
+
+        return f'Deferred item "{quoted}": owner "{owner}" is not a later step of this feature. {choices}'
+
+    if not owner and not evidence:
+        return (f'Deferred item "{quoted}" has no owner and no evidence. Add a repo-relative path[:line], fix it now, '
+                'or drop it.')
+
+    if evidence and (not EVIDENCE_START.match(evidence) or '..' in first_word.split(':')[0].split('/')):
+        return f'Deferred item "{quoted}": evidence must start with a repo-relative path[:line], not "{first_word}".'
+
+    return None
+
+
+def gate_deferred(stage_key):
+    """The stage's deferred objects, judged once per result: owner a later step of this feature, or evidence. A review
+    result is never judged (its items are not reported); legacy string items pass."""
+    def gate_deferred(state, context):
+        result = state['results'].get(stage_key)
+
+        if stage_key.startswith('review-') or not result or result.get('deferred_checked'):
+            return []
+
+        later_ids = [step.id for step in steps(state['repo'], state['feature']) if step.id > state['id']]
+        problems = [problem for problem in (deferred_problem(item, later_ids) for item in result.get('deferred', [])
+                                            if isinstance(item, dict)) if problem]
+
+        if problems:
+            return ['Fix each deferred item in your result (the runner checks owner and evidence):\n'
+                    + '\n'.join(f'- {problem}' for problem in problems)]
+
+        result['deferred_checked'] = True
+        save_state(state)
+
+        return []
+
+    return gate_deferred
+
+
 def gates_loop(state, stage_key, context, gates, fresh_prompt):
-    """Runs the gates; on failure resumes the stage session with the failures, at most GATE_RESUMES times."""
+    """Runs the gates (and the deferred gate); on failure resumes the stage session with the failures, at most
+    GATE_RESUMES times."""
     for attempt in range(GATE_RESUMES + 1):
-        failures = run_gates(state, context, gates)
+        failures = run_gates(state, context, gates + [gate_deferred(stage_key)])
 
         if not failures:
             return
