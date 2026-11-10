@@ -559,7 +559,7 @@ def new_state(repo, feature, step_id):
         'pr': None, 'published_sha': None, 'published_at': None,
         'ci': {'sha': None, 'fixes': 0, 'reviewed': None, 'reruns': 0},
         'update': None, 'responded_through': None, 'not_before': None, 'evidence_comment': None, 'merged': None,
-        'public_notice': None,
+        'public_notice': None, 'retired_deferred': [],
         'usage': {}, 'denials': [], 'copy_errors': {}, 'notes': [], 'history': [],
     }
 
@@ -1486,14 +1486,21 @@ def stage_settings(state, stage_key, context):
 
 def merged_results(state, field, skip=None):
     """A result field across the step's stages in run order, exact repeats dropped. `skip` leaves out a stage that is
-    about to replace its own result."""
-    items = []
+    about to replace its own result. Deferred items start with those of results a fix-up rerun replaced, and leave out
+    a review's (its findings are not deferred work)."""
+    items = list(state['retired_deferred']) if field == 'deferred' else []
 
     for key in state['sessions']:
-        if key != skip and key in state['results']:
+        if key != skip and key in state['results'] and not (field == 'deferred' and key.startswith('review-')):
             items += [item for item in state['results'][key].get(field, []) if item not in items]
 
     return items
+
+
+def retire_result(state, key):
+    """Drops a stage's result before a fix-up rerun replaces it, keeping its deferred items for the report."""
+    result = state['results'].pop(key, None) or {}
+    state['retired_deferred'] += [item for item in result.get('deferred', []) if item not in state['retired_deferred']]
 
 
 def deferred_text(state, item, public):
@@ -2505,8 +2512,9 @@ def sync_with_main(state, context, fixer_key, fixer_prompt):
                 pause(state, f"rebase onto origin/{context['base']} conflicts and no session can resolve it (backup "
                              f'{backup}):\n{tail(rebased.stdout + rebased.stderr, 20)}', 'rebase conflict')
 
+            gates_loop(state, fixer_key, context, [], fixer_prompt)
             state['pending'][fixer_key] = REBASE.format(base=context['base'], backup=backup)
-            state['results'].pop(fixer_key, None)
+            retire_result(state, fixer_key)
             run_stage(state, fixer_key, context, fixer_prompt)
         else:
             sync_ref(state, context)
@@ -2647,7 +2655,7 @@ def step_update(state, options):
 
     if update.get('ci') and not update.get('ci_fixed'):
         state['pending'][fixer] = update['ci']
-        state['results'].pop(fixer, None)
+        retire_result(state, fixer)
         update['ci_started'] = True
         state['update'] = update
         save_state(state)

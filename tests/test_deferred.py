@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_core import FEATURE, IMPLEMENT, RESPOND, REVIEW, STEP, RunnerCase, write  # noqa: E402
+from test_core import FEATURE, IMPLEMENT, RESOLVE, RESPOND, REVIEW, STEP, RunnerCase, move_main, write  # noqa: E402
 
 import core  # noqa: E402
 
@@ -157,6 +157,87 @@ class GateTest(RunnerCase):
         self.assertEqual(len(prompts), 3)
         self.assertIn('broken', prompts[1])
         self.assertIn('owner "02" is not a later step of this feature. No later step exists', prompts[2])
+
+
+class CarryTest(RunnerCase):
+    """Items survive a fix-up rerun that replaces the stage's result; a review's never count."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.fixture.feature / '02-other/brief.md', '# 02 Other\n')
+
+    def comment(self):
+        return next(iter(self.github.comments.values()))
+
+    def test_a_ci_fix_keeps_the_items_of_the_result_it_replaces(self):
+        handoff = deferred('a wider rename', 'core.py:12', '02')
+        fix = {'run': ["echo fixed >> thing.txt && git add -A && git commit -qm 'fix: Make CI pass'"]}
+        self.happy_path(**{'thing-01-respond-1': [respond_with(deferred=[handoff]), fix]})
+        self.main(FEATURE)
+        self.ci(self.state()['published_sha'], 'success', 'failure')
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(len(self.claude_calls('thing-01-respond-1')), 2, 'the CI fix ran')
+        self.assertEqual(state['results']['respond-1']['deferred'], [])
+        self.assertEqual(core.merged_results(state, 'deferred'), [handoff])
+        self.assertIn('- a wider rename (in a later PR of this feature); evidence: core.py:12', self.comment())
+
+    def test_a_conflict_during_the_final_respond_judges_its_items_before_the_rebase(self):
+        conflicting = respond_with(deferred=[deferred('no such step', '', '07')])
+        conflicting['run'] = RESPOND['run'] + [move_main('main', 'thing.txt')]
+        fixed = deferred('a gap', 'core.py:12')
+        self.published(**{'thing-01-respond-1': [conflicting, {'result': {'deferred': [fixed]}},
+                                                 dict(RESOLVE, result={'deferred': []})]})
+        prompts = [call['prompt'] for call in self.claude_calls('thing-01-respond-1')]
+        self.assertEqual(len(prompts), 3, prompts)
+        self.assertIn('owner "07" is not a later step', prompts[1])
+        self.assertIn('conflicts', prompts[2])
+        self.assertIn('- deferred: a gap; evidence: core.py:12', ' '.join(self.claude_calls('thing-01-respond-1')[2]['argv']))
+        state = self.state()
+        self.assertEqual(state['retired_deferred'], [fixed])
+        self.assertEqual(core.merged_results(state, 'deferred'), [fixed])
+        self.assertIn('- a gap; evidence: core.py:12', self.comment())
+
+    def test_a_blocked_ci_fix_drops_its_own_items(self):
+        stuck = {'result': {'status': 'blocked', 'summary': 'the log shows no cause', 'questions': [],
+                            'deferred': [deferred('a blocked leftover', 'core.py:1')]}}
+        kept = deferred('a wider rename', 'core.py:12', '02')
+        self.happy_path(**{'thing-01-respond-1': [respond_with(deferred=[kept]), stuck]})
+        self.main(FEATURE)
+        sha = self.state()['published_sha']
+        self.ci(sha, 'success', 'failure')
+        self.main(FEATURE)
+        self.assertEqual(self.state()['status'], 'paused', self.state()['reason'])
+        self.ci(sha, 'success', 'success')
+        self.main(FEATURE)
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('done', 'done'), state['reason'])
+        self.assertEqual(core.merged_results(state, 'deferred'), [kept])
+        self.assertNotIn('a blocked leftover', self.comment())
+
+    def test_a_review_result_never_reaches_the_comment_or_already_recorded(self):
+        review = dict(REVIEW, result={'deferred': [deferred('a review finding', 'core.py:9')]})
+        self.published(**{'thing-01-review-1': [review]})
+        self.assertNotIn('a review finding', ' '.join(self.claude_calls('thing-01-respond-1')[0]['argv']))
+        self.assertNotIn('a review finding', self.comment())
+        self.assertEqual(core.merged_results(self.state(), 'deferred'), [])
+
+    def test_a_retired_item_is_kept_once_and_first(self):
+        state = core.new_state('acme/shop', FEATURE, '01')
+        self.assertEqual(state['retired_deferred'], [])
+        older, newer = deferred('older', 'core.py:1'), deferred('newer', 'core.py:2')
+        state['sessions'] = {'implement': 'a', 'respond-1': 'b'}
+        state['results'] = {'implement': {'deferred': [newer]}, 'respond-1': {'deferred': [older, 'legacy'],
+                                                                              'deferred_checked': True}}
+        core.retire_result(state, 'respond-1')
+        core.retire_result(state, 'respond-1')
+        self.assertNotIn('respond-1', state['results'])
+        self.assertEqual(state['retired_deferred'], [older, 'legacy'])
+        state['results']['respond-1'] = {'deferred': [older]}
+        core.retire_result(state, 'respond-1')
+        self.assertEqual(state['retired_deferred'], [older, 'legacy'])
+        self.assertEqual(core.merged_results(state, 'deferred'), [older, 'legacy', newer])
 
 
 if __name__ == '__main__':
