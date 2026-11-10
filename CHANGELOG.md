@@ -17,7 +17,8 @@ What changed for you in each release, newest first. Each release says whether to
 ### Changed
 
 - A feature folder named `archive` is now skipped, like every command name. Rename it before you update.
-- A command given an archived feature's name answers `<name> is archived: <path>` and exits 1.
+- A command given an archived feature's name answers `<name> is archived: <path>` and exits 1. `start`, `pause`,
+  `autonomy` and `order` with `--repo` do not check yet.
 - `pipeline status --all` no longer lists archived features.
 
 ## v0.11 - 2026-11-09

@@ -355,7 +355,8 @@ Tick then polls each done step's PR:
 - It skips a feature whose name already exists in `_archive/`, even as an empty folder. Rename the live folder,
   then run it again.
 - The `_` keeps archived features out of tick, `status` (`--all` too) and `queue`.
-- A command that takes an archived name says `<name> is archived: <path>` and exits 1.
+- A command that takes an archived name says `<name> is archived: <path>` and exits 1. `start`, `pause`,
+  `autonomy` and `order` with `--repo` do not check yet: they write the feature's control file first.
 - `--after <name>[:NN]` reads the archive when no live folder has the name, so a wait on an archived merged
   feature stays met. A live folder of the same name wins.
 - `pipeline gc` ages out the logs of archived merged steps. It never touches refs or sandboxes by an archived
