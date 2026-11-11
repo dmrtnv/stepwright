@@ -466,10 +466,15 @@ def test_9_stage_argv():
         return result, init, final, structured
 
     result, init, final, structured = call('Do not use any tool. Finish at once with the structured result: status '
-                                           'done, summary exactly "stage", and empty lists for the rest.', False)
+                                           'done, summary exactly "stage", one deferred item (item "probe", evidence '
+                                           '"README.md:1", owner ""), and empty lists for the rest.', False)
     expect(9, 'stage argv: structured result', structured.get('status') == 'done' and structured.get('summary') == 'stage',
            f'rc={result.returncode} {final.get("subtype")} {str(structured or final.get("result"))[:160]!r} '
            f'{tail(result.stderr, 3)}')
+    deferred = structured.get('deferred')
+    expect(9, 'stage argv: one deferred object', isinstance(deferred, list) and len(deferred) == 1
+           and isinstance(deferred[0], dict) and set(deferred[0]) == {'item', 'evidence', 'owner'}
+           and bool(deferred[0].get('item')), str(deferred)[:160])
     expect(9, 'stage argv: init model and mode', (str(init.get('model')).removesuffix('[1m]'), init.get('permissionMode'))
            == (config['model'], 'auto'), f'{init.get("model")} {init.get("permissionMode")}')
     expect(9, 'stage argv: session id honored', final.get('session_id') == session, str(final.get('session_id')))

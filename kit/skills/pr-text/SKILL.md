@@ -44,8 +44,8 @@ The body is the squash commit body: never paste file contents, command output, c
      - data-loss risk, quoting the SQL;
      - steps owed after merge (migrations to run, data SQL, flags to set);
      - rule exceptions: each repo rule broken and why; each rule newly baselined, with its site count;
-     - follow-ups and who owns them, under "Follow-ups:" only: deferred and out-of-scope items go there, never in
-       an ad-hoc "Not in this PR:" block.
+     - follow-ups nobody owns yet, under "Follow-ups:" only: deferred and out-of-scope items go there, never in an
+       ad-hoc "Not in this PR:" block; never a later PR of the same feature, a decision or a conditional idea.
   4. A migrations line, always: say what the migration does, or "No migrations" / "No schema or data migration".
 
 ## Output

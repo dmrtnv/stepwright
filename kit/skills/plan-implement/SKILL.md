@@ -19,7 +19,8 @@ migration recipe, e2e setup and database rules.
 ## Per step (one logical commit each)
 
 1. Write or change the step's tests first and run them: they must fail for the right reason. Record the output.
-2. Implement it, following the plan's Decisions. A deviation is decided by the ladder and recorded. If the plan
+2. Implement it, following the plan's Decisions. A deviation is decided by the ladder and recorded. Cutting scope:
+   hand the cut part to a named later step, else record it as a deferred item with evidence. If the plan
    contradicts reality in a way only the user can settle, stop as blocked with one-line questions.
 3. Run the step's targeted tests plus lint and types for the touched packages. Run one suite at a time, and before
    a test run, wait until no other run is active (a pipeline sandbox runs nothing else).
@@ -56,7 +57,7 @@ owner's approval. Never `git stash`: commit a WIP and fold it in later with
 4. **Shipped.** Append `## Shipped` to the plan:
    - commits (hash + subject);
    - deviations and why;
-   - deferred items → which plan owns them;
+   - deferred items → owner (a later step, or none with evidence);
    - owed: steps only the user can run, such as migrations on their database after merge, data SQL, or e2e runs
      that couldn't run here.
 5. **Wrap-up.** Follow `~/.claude/skills/wrap-up/SKILL.md` for this session.

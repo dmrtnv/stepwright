@@ -131,6 +131,7 @@ STEP_DIR = adapter.STEP_DIR
 LIMIT_TEXT = re.compile(r"hit your [^.\n]{0,40}limit|usage limit|overloaded", re.IGNORECASE)
 TRAILER = re.compile(r'^co-authored-by:.*(claude|anthropic)|generated with \[?claude code', re.IGNORECASE | re.MULTILINE)
 LEADING_FLAG = re.compile(r'^\s*⚑\s*')
+EVIDENCE_START = re.compile(r'^[\w.-][\w./-]*(:\d+(-\d+)?)?(\s|$)')
 DATA_LOSS = re.compile(r'\b(DROP TABLE|DROP COLUMN|ALTER COLUMN\b.*\bTYPE\b|DROP TYPE|TRUNCATE|DELETE FROM)\b', re.IGNORECASE)
 TEST_FILE = re.compile(r'(^|/)(test|tests|e2e|__tests__)/|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$')
 PATH_PATTERN = re.compile(r'\*|\{[^}]*,[^}]*\}|\.\w+\(x\)')
@@ -558,7 +559,7 @@ def new_state(repo, feature, step_id):
         'pr': None, 'published_sha': None, 'published_at': None,
         'ci': {'sha': None, 'fixes': 0, 'reviewed': None, 'reruns': 0},
         'update': None, 'responded_through': None, 'not_before': None, 'evidence_comment': None, 'merged': None,
-        'public_notice': None,
+        'public_notice': None, 'retired_deferred': [],
         'usage': {}, 'denials': [], 'copy_errors': {}, 'notes': [], 'history': [],
     }
 
@@ -1485,22 +1486,56 @@ def stage_settings(state, stage_key, context):
 
 def merged_results(state, field, skip=None):
     """A result field across the step's stages in run order, exact repeats dropped. `skip` leaves out a stage that is
-    about to replace its own result."""
-    items = []
+    about to replace its own result. Deferred items start with those of results a fix-up rerun replaced, and leave out
+    a review's (its findings are not deferred work)."""
+    items = list(state['retired_deferred']) if field == 'deferred' else []
 
     for key in state['sessions']:
-        if key != skip and key in state['results']:
+        if key != skip and key in state['results'] and not (field == 'deferred' and key.startswith('review-')):
             items += [item for item in state['results'][key].get(field, []) if item not in items]
 
     return items
 
 
+def retire_result(state, key):
+    """Drops a stage's result before a fix-up rerun replaces it, keeping its deferred items for the report."""
+    result = state['results'].pop(key, None) or {}
+    state['retired_deferred'] += [item for item in result.get('deferred', []) if item not in state['retired_deferred']]
+
+
+def deferred_text(state, item, public):
+    """One deferred item as a line: a legacy string as it is; an object as its item, its owner (a later PR of this
+    feature in public, the step's folder name in done.md and prompts) and its evidence."""
+    if not isinstance(item, dict):
+        return item
+
+    text = item['item']
+
+    if item.get('owner') and public:
+        text += ' (in a later PR of this feature)'
+    elif item.get('owner'):
+        names = [step.name for step in steps(state['repo'], state['feature']) if step.id == item['owner']]
+        text += f" (for step {names[0] if names else item['owner']})"
+
+    return text + (f"; evidence: {item['evidence']}" if item.get('evidence') else '')
+
+
 def recorded_lines(state, stage_key):
     """What earlier stages already recorded, so this one adds only what is new instead of restating it."""
-    lines = [f"- {field}: {' '.join(str(item).split())}" for field in ('flags', 'owed', 'deferred')
-             for item in merged_results(state, field, skip=stage_key)]
+    lines = [f"- {field}: {' '.join(str(deferred_text(state, item, False)).split())}"
+             for field in ('flags', 'owed', 'deferred') for item in merged_results(state, field, skip=stage_key)]
 
     return ['', '## Already recorded for this step', ''] + lines if lines else []
+
+
+def handed_lines(state):
+    """The deferred items earlier steps of the feature handed to this one (their owner is this step's id)."""
+    items = [item for step in steps(state['repo'], state['feature']) if step.id < state['id']
+             for item in merged_results(load_state(state['repo'], state['feature'], step.id), 'deferred')
+             if isinstance(item, dict) and item.get('owner') == state['id']]
+    body = '\n'.join(f"- {' '.join(deferred_text(state, item, False).split())}" for item in items)
+
+    return ['', '## Handed to this step', '', cap(body, 8_000)] if items else []
 
 
 def system_prompt(state, stage_key, context):
@@ -1531,7 +1566,7 @@ def system_prompt(state, stage_key, context):
                      + (f" Generate with `python3 ~/.claude/pipeline/{migrations['generate']}`."
                         if migrations.get('generate') else ''))
 
-    return SYSTEM_PROMPT.read_text() + '\n'.join(lines + recorded_lines(state, stage_key) + [''])
+    return SYSTEM_PROMPT.read_text() + '\n'.join(lines + recorded_lines(state, stage_key) + handed_lines(state) + [''])
 
 
 def transcript_state(context, session):
@@ -2242,10 +2277,76 @@ def run_gates(state, context, gates):
     return failures
 
 
+def deferred_problem(item, later_ids, path_exists):
+    """Why one deferred object is refused, as a sentence for the stage; None when it passes. Evidence is data the
+    reader opens, never run: it must start with a repo-relative path[:line] that exists on the branch."""
+    text = item.get('item', '')
+    evidence = item.get('evidence', '').strip()
+    owner = item.get('owner', '')
+    quoted = SECRET_TEXT.sub('…', text)
+    first_word = (evidence.split() or [''])[0]
+    path = first_word.split(':')[0]
+
+    if SECRET_TEXT.search(text) or SECRET_TEXT.search(evidence):
+        return f'Deferred item "{quoted}" contains a token-shaped string (a GitHub token or a private key). Remove it.'
+
+    if not text.strip():
+        return (f'A deferred item with evidence "{evidence}" has no text. Say what is deferred, or drop it.' if evidence
+                else 'A deferred item has no text. Say what is deferred, or drop it.')
+
+    if owner and owner not in later_ids:
+        choices = f"Use one of {', '.join(later_ids)}, or \"\" with evidence." if later_ids else \
+            'No later step exists: use "" with evidence.'
+
+        return f'Deferred item "{quoted}": owner "{owner}" is not a later step of this feature. {choices}'
+
+    if not owner and not evidence:
+        return (f'Deferred item "{quoted}" has no owner and no evidence. Add a repo-relative path[:line], fix it now, '
+                'or drop it.')
+
+    if evidence and (not EVIDENCE_START.match(evidence) or '..' in path.split('/')):
+        return (f'Deferred item "{quoted}": evidence must start with a repo-relative path[:line], not "{first_word}". '
+                'Write the path without backticks or quotes.')
+
+    if evidence and not path_exists(path):
+        return f'Deferred item "{quoted}": evidence "{path}" is not a file on this branch.'
+
+    return None
+
+
+def gate_deferred(stage_key):
+    """The stage's deferred objects, judged once per result: owner a later step of this feature, or evidence. A review
+    result is never judged (its items are not reported); legacy string items pass."""
+    def gate_deferred(state, context):
+        result = state['results'].get(stage_key)
+
+        if stage_key.startswith('review-') or not result or result.get('deferred_checked'):
+            return []
+
+        later_ids = [step.id for step in steps(state['repo'], state['feature']) if step.id > state['id']]
+        def path_exists(path):
+            return git_result(context['clone'], 'cat-file', '-e', f"{context['ref']}:{path}").returncode == 0
+
+        problems = [problem for problem in (deferred_problem(item, later_ids, path_exists)
+                                            for item in result.get('deferred', []) if isinstance(item, dict)) if problem]
+
+        if problems:
+            return ['Fix each deferred item in your result (the runner checks owner and evidence):\n'
+                    + '\n'.join(f'- {problem}' for problem in problems)]
+
+        result['deferred_checked'] = True
+        save_state(state)
+
+        return []
+
+    return gate_deferred
+
+
 def gates_loop(state, stage_key, context, gates, fresh_prompt):
-    """Runs the gates; on failure resumes the stage session with the failures, at most GATE_RESUMES times."""
+    """Runs the gates (and the deferred gate); on failure resumes the stage session with the failures, at most
+    GATE_RESUMES times."""
     for attempt in range(GATE_RESUMES + 1):
-        failures = run_gates(state, context, gates)
+        failures = run_gates(state, context, gates + [gate_deferred(stage_key)])
 
         if not failures:
             return
@@ -2436,8 +2537,9 @@ def sync_with_main(state, context, fixer_key, fixer_prompt):
                 pause(state, f"rebase onto origin/{context['base']} conflicts and no session can resolve it (backup "
                              f'{backup}):\n{tail(rebased.stdout + rebased.stderr, 20)}', 'rebase conflict')
 
+            gates_loop(state, fixer_key, context, [], fixer_prompt)
             state['pending'][fixer_key] = REBASE.format(base=context['base'], backup=backup)
-            state['results'].pop(fixer_key, None)
+            retire_result(state, fixer_key)
             run_stage(state, fixer_key, context, fixer_prompt)
         else:
             sync_ref(state, context)
@@ -2578,7 +2680,7 @@ def step_update(state, options):
 
     if update.get('ci') and not update.get('ci_fixed'):
         state['pending'][fixer] = update['ci']
-        state['results'].pop(fixer, None)
+        retire_result(state, fixer)
         update['ci_started'] = True
         state['update'] = update
         save_state(state)
@@ -2782,6 +2884,13 @@ def step_publish(state, options):
 
     scan_for_secrets(state, context)
     title, body = pull_request_text(state, step)
+
+    if SECRET_TEXT.search(state['public_notice'] or ''):
+        pause(state, 'The PR comment would contain a token-shaped string (a GitHub token or a private key) from a stage '
+                     f"result: see {step.done_notice}. Remove it from that result and from \"public_notice\" in "
+                     f"{state_file(state['repo'], state['feature'], state['id'])}, then re-run.",
+              'secret in the PR comment')
+
     require_branch_rules(state, state['repo'], context['base'])
     push_branch(state, context, sha)
     update = state['update'] or {}
@@ -2833,23 +2942,26 @@ def finish(state, context, step):
         return ['', f'## {title}', ''] + [f"- {' '.join(str(item).split())}" for item in items]
 
     # The public part goes to the PR comment; done.md is it plus what is yours alone. Built, never parsed back out of
-    # done.md, so a new section is private unless added here.
-    public = [
-        f"## Pipeline report: {state['feature']} {step.name}",
-        '',
-        f"Branch `{state['branch']}`: {plural(len(commits), 'commit')} over origin/{context['base']}, "
-        f"{plural(state['round'], 'review round')}, last review confidence "
-        f"{reviews[-1].get('confidence', '?') if reviews else '?'}.",
-    ]
+    # done.md, so a new section is private unless added here. Only a deferred item's owner differs between the two.
+    def report(public):
+        lines = [
+            f"## Pipeline report: {state['feature']} {step.name}",
+            '',
+            f"Branch `{state['branch']}`: {plural(len(commits), 'commit')} over origin/{context['base']}, "
+            f"{plural(state['round'], 'review round')}, last review confidence "
+            f"{reviews[-1].get('confidence', '?') if reviews else '?'}.",
+        ]
 
-    for title, field in (('Decisions', 'flags'), ('Questions', 'questions'), ('Owed', 'owed'), ('Deferred', 'deferred')):
-        items = [LEADING_FLAG.sub('', str(item)) for item in merged_results(state, field)]
+        for title, field in (('Decisions', 'flags'), ('Questions', 'questions'), ('Owed', 'owed'),
+                             ('Deferred', 'deferred')):
+            items = [LEADING_FLAG.sub('', str(deferred_text(state, item, public))) for item in merged_results(state, field)]
 
-        if items:
-            public += section(title, items)
+            if items:
+                lines += section(title, items)
 
-    public += ['', '## Tests', '', f"- {plural(added, 'test case')} added, {removed} removed; deleted test files: "
-                                   f"{', '.join(deleted) or 'none'}"]
+        return lines + ['', '## Tests', '', f"- {plural(added, 'test case')} added, {removed} removed; deleted test "
+                                            f"files: {', '.join(deleted) or 'none'}"]
+
     first, last = state['usage'].get('first'), state['usage'].get('last')
     usage = (f'weekly {first * 100:.0f}% → {last * 100:.0f}% ({usage_points(state):+} pts)'
              if usage_points(state) is not None else 'unknown')
@@ -2857,8 +2969,8 @@ def finish(state, context, step):
                + section('Runner notes', state['notes'] or ['none'])
                + ['', '## Memory', '', f'- MEMORY.md: {memory_lines} lines (cap 200)', '', '## Usage', '', f'- {usage}']
                + section('Permission denials', [f'`{denial}`' for denial in state['denials']] or ['none']))
-    sections = public + private
-    state['public_notice'] = '\n'.join(public)
+    sections = report(False) + private
+    state['public_notice'] = '\n'.join(report(True))
     replace_step_file(step.done_notice, '\n'.join(sections) + '\n')
     state['stage'] = 'publish'
     mark(state, 'ready', f'done notice: {step.done_notice}; publishing next')

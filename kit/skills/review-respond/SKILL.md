@@ -40,7 +40,8 @@ installed library source).
   4. then one commit via the commit-message skill in commit mode.
 - Improvements and refactors: apply those with zero user-facing change that clearly pay off. In the pipeline, apply
   them only in round 1; later rounds are final and nobody re-reviews them.
-- Pre-existing findings become follow-ups, unless the fix is trivial and in touched code.
+- A pre-existing finding the review marked CONFIRMED and worth its own PR becomes a deferred item with evidence,
+  unless the fix is trivial and in touched code. PLAUSIBLE findings and nits do not.
 - A recurring finding class gets a lint rule or test proposal (or a brief) instead of a one-off patch. Apply it only
   in round 1.
 - Schema fixes follow the project's migration rules.
@@ -56,7 +57,7 @@ record durable learnings.
   - the verdict table;
   - fixes with their commits;
   - ⚑ judgment calls;
-  - deferred items → which plan owns them.
+  - deferred items → owner (a later step, or none with evidence).
 - Rewrite `pr.md` beside the plan **every round**, even with zero findings: read `~/.claude/skills/pr-text/SKILL.md`
   first, every round, and follow it with this plan as input. The title goes on line 1. Then run
   `python3 ~/.claude/skills/pr-text/check.py <pr.md>` and fix until it prints nothing; the runner's gate runs it

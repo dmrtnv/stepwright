@@ -6,6 +6,23 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** yes (the stage kit, the result schema and test 9 changed).
+
+### Changed
+
+- A stage returns each deferred item as an object: `item`, `evidence` (a repo-relative `path[:line]`) and `owner` (a
+  later step's two-digit id, or empty). The runner resumes the stage when an owner is not a later step of the feature,
+  an unowned item has no evidence, evidence does not start with a repo-relative path to a file on the branch, an item
+  has no text, or an item holds a token-shaped string.
+- The PR comment shows a handed-off item as "in a later PR of this feature" with its evidence; `done.md` names the
+  owner step. Items from older runs show as before.
+- The stages of a step see a "Handed to this step" block with the deferred items earlier steps handed to it.
+- A CI fix or a rebase fix no longer drops the stage's earlier deferred items from the PR comment. A blocked CI
+  fix's own items are still dropped with its result.
+- Deferred items in a review result no longer reach the PR comment or later stages.
+- A token-shaped string anywhere in the PR comment now pauses the publish, not only one in `pr.md` or the diff.
+- The stage rules say what a deferred item is and is not, and `owed` no longer lists a follow-up brief.
+
 ## v0.13 - 2026-11-11
 
 **Rerun the gate:** no (no kit or `STAGES` change).
