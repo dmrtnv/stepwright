@@ -155,6 +155,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline update`: move to the newest release.
 - `pipeline gc`: clean up after merged steps.
 - `pipeline archive`: move fully merged features into `_archive/`.
+- `pipeline deferred`: the open deferred items of merged steps. `pipeline deferred close` records a verdict.
 
 Re-running is always safe. Every command, in detail: [Everyday use](docs/how-it-works.md#everyday-use).
 

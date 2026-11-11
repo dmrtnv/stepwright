@@ -130,6 +130,20 @@ Unknown keys are an error.
   - `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command).
 - One feature in full: `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command,
   files, PR/CI, logs, last 5 history entries).
+- Sweep deferred items: `pipeline deferred [<name>] [--json] [--repo <o>/<r>]`:
+  - lists each open item of a merged step as `<name> NN.K  PR #n  <owner>  <item>`, then its evidence; the owner
+    reads `step NN` for a handoff and `no owner` for a gap;
+  - covers live and `_backlog/` features (a name narrows the list), and ends with one metrics line over every
+    feature of the repos in scope, `_archive/` included: handoffs and gaps per merged PR, the share of finished
+    features' items with a verdict (`re-read`), the share of verdicts that are `owned` (`survive`), the verdict
+    counts and the old free-text items (`legacy`);
+  - `--json` prints `{"items": [...], "metrics": {...}}` with the raw text; the text view turns control characters
+    into spaces;
+  - `pipeline deferred close <name> <NN.K> done|moot|wontdo "<why>"` or `… <NN.K> owned <feature> ["<note>"]`
+    records one verdict per item (another live or parked feature takes an owned item), under the feature's run lock. A
+    second close replaces the verdict and prints the old one. Usage mistakes exit 2, a refused item exits 1;
+  - a fully merged feature with open items shows under NEEDS YOU as `n deferred to sweep → /deferred-sweep <name>`
+    (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so.
 - What a stage is doing: `pipeline log <name>` (`HH:MM tool target` lines of the newest stage log; `-f` follows).
 - Answer a plan's questions: `pipeline answer <name>`:
   - `plan.md` opens in `$VISUAL`/`$EDITOR`; answer under `## Unresolved questions`, save: a changed file approves;
@@ -324,6 +338,7 @@ Tick then polls each done step's PR:
 - your controls: `<name>/.pipeline/feature.json` (hold, after, autonomy), `~/.local/state/pipeline/control.json`
   (parallel, drain, order).
 - step state (read, don't edit): `<name>/.pipeline/NN.json`.
+- deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close`).
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
   `tail -n 1 <log> | jq .structured_output`.
 - gate and setup output: `<name>/.pipeline/NN-gates.log`, `NN-setup.log`.
@@ -357,6 +372,8 @@ Tick then polls each done step's PR:
 - It leaves unfinished features where they are. A step with no state file yet counts as unfinished, and so does a
   PR closed without merging.
 - It skips a feature that a run holds. Run it again once the run ends.
+- It skips a feature with open deferred items. Run `/deferred-sweep <name>` (or `pipeline deferred close` each
+  item), then run it again. An unreadable `deferred.json` counts as failed.
 - It skips a feature whose name already exists in `_archive/`, even as an empty folder. Rename the live folder,
   then run it again.
 - The `_` keeps archived features out of tick, `status` (`--all` too) and `queue`.
