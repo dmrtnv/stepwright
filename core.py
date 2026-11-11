@@ -4932,6 +4932,241 @@ def drop_old_logs(directory, step_id, cutoff):
     return removed
 
 
+# ---------------------------------------------------------------------------------------------- deferred items
+
+
+DEFERRED_VERDICTS = ('done', 'moot', 'wontdo', 'owned')
+DEFERRED_ID = re.compile(r'^(\d{2})\.(\d+)$')
+DEFERRED_NOTE_CHARACTERS = 300
+DEFERRED_FLAG = re.compile(r'^--?[A-Za-z][\w-]*$')
+DEFERRED_COUNTS = ('merged_prs', 'handoff', 'gap', 'legacy', 'finished_items', 'finished_with_verdict', 'verdicts',
+                   'done', 'moot', 'wontdo', 'owned', 'unreadable')
+
+
+def printable(text):
+    """One line where every control, format or unassigned character is a space, so agent text never drives a
+    terminal (ESC and C1 sequences, a carriage return, bidi overrides)."""
+    return ' '.join(''.join(' ' if unicodedata.category(character)[0] == 'C' else character
+                            for character in text).split())
+
+
+def deferred_file(repo, feature, root=None):
+    """The feature's verdicts on its deferred items: `{"NN.K": {verdict, owner, note, at}}`."""
+    return state_dir(repo, feature, root) / 'deferred.json'
+
+
+def read_verdicts(repo, feature, root=None):
+    """The verdicts, {} when none was recorded; a broken file is an error, so the next close never wipes it."""
+    path = deferred_file(repo, feature, root)
+
+    try:
+        verdicts = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        raise PipelineError(f'{path}: unreadable ({error}); fix or delete it') from None
+
+    if not isinstance(verdicts, dict) or not all(isinstance(value, dict) and value.get('verdict') in DEFERRED_VERDICTS
+                                                 for value in verdicts.values()):
+        raise PipelineError(f'{path}: unreadable (not an object of verdicts); fix or delete it')
+
+    return verdicts
+
+
+def save_verdicts(repo, feature, root, verdicts):
+    """Written whole and atomically, and never into a folder that is gone (`pipeline archive` may have moved it)."""
+    path = deferred_file(repo, feature, root)
+    temporary = path.with_name(path.name + '.tmp')
+
+    try:
+        temporary.write_text(json.dumps(verdicts, indent=2) + '\n')
+        os.replace(temporary, path)
+    except OSError as error:
+        raise PipelineError(f'{path}: cannot write ({error.strerror}); nothing was recorded') from None
+
+
+def deferred_entries(repo, feature, root=None):
+    """(id, state, item, verdict) for every deferred item of every merged step. The id `NN.K` counts K from 1 over
+    the step's merged items, legacy strings included: the one numbering the list, close and every nudge share."""
+    entries = []
+
+    for step in steps(repo, feature, root):
+        state = load_state(repo, feature, step.id, root)
+
+        if state['status'] == 'closed':
+            entries += [(f'{step.id}.{index}', state, item)
+                        for index, item in enumerate(merged_results(state, 'deferred'), 1)]
+
+    verdicts = read_verdicts(repo, feature, root)
+
+    return [(item_id, state, item, verdicts.get(item_id)) for item_id, state, item in entries]
+
+
+def open_deferred(repo, feature, root=None):
+    return [entry for entry in deferred_entries(repo, feature, root)
+            if isinstance(entry[2], dict) and entry[3] is None]
+
+
+def sweep_due(repo, feature):
+    """(open items, None) of a fully merged feature, (0, None) while a step is open, or (0, the read error as a line)."""
+    try:
+        if current_step(repo, feature)[0] is not None:
+            return 0, None
+
+        return len(open_deferred(repo, feature)), None
+    except (*ERRORS, OSError, ValueError) as error:
+        return 0, f'deferred items unreadable: {headline(str(error))[:160]}'
+
+
+def sweep_line(repo, feature):
+    count, problem = sweep_due(repo, feature)
+
+    return problem or (f'{count} deferred to sweep → /deferred-sweep {feature}' if count else None)
+
+
+def sweep_next(repo, feature):
+    count, problem = sweep_due(repo, feature)
+
+    return problem or (f'next: /deferred-sweep {feature} ({count} deferred to sweep)' if count else None)
+
+
+def sweepable_features(repo):
+    """(feature, root) of every live and parked feature: what `pipeline deferred close` takes."""
+    return [(feature, root) for root in (adapter.plans_root(repo), adapter.backlog_root(repo))
+            for feature in adapter.feature_folders(repo, root) if feature not in adapter.RESERVED]
+
+
+def deferred_place(feature, repo=None):
+    """(repo, root) of a feature in the plans or _backlog/ of `repo`, else of the one registered checkout that has it."""
+    repos = [repo] if repo else list(adapter.load_config()['repos'])
+    found = [(name, root) for name in repos for listed, root in sweepable_features(name) if listed == feature]
+
+    if not found:
+        raise PipelineError(adapter.archived_message(feature, repos) or
+                            f'no feature {feature} in the plans or _backlog/ of '
+                            f'{repo if repo else "any registered checkout"}')
+
+    if len(found) > 1:
+        places = ', '.join(str(root / feature) for _, root in found)
+        fix = 'pass --repo <owner>/<repo>' if len({name for name, _ in found}) > 1 else 'keep one of them'
+        raise PipelineError(f'{feature} is in {places}: {fix}')
+
+    return found[0]
+
+
+def deferred_pr(state):
+    return (state['merged'] or {}).get('number') or (state['pr'] or {}).get('number')
+
+
+def feature_name_check(name):
+    if not FEATURE_NAME.match(name):
+        raise PipelineError(f'{name} is not a feature name (lowercase letters, digits and dashes)')
+
+
+def add_deferred_counts(counts, states, entries):
+    """Adds one feature's counts: merged PRs, handoffs and gaps, legacy items, and the verdicts."""
+    finished = all(state['status'] == 'closed' for state in states)
+    counts['merged_prs'] += sum(state['status'] == 'closed' for state in states)
+
+    for _, _, item, verdict in entries:
+        if not isinstance(item, dict):
+            counts['legacy'] += 1
+            continue
+
+        counts['handoff' if item.get('owner') else 'gap'] += 1
+        counts['finished_items'] += finished
+        counts['finished_with_verdict'] += finished and verdict is not None
+
+        if verdict is not None:
+            counts['verdicts'] += 1
+            counts[verdict['verdict']] += 1
+
+
+def metrics_line(counts):
+    def ratio(part, whole, percent=False):
+        if not whole:
+            return 'n/a'
+
+        return f'{round(100 * part / whole)}%' if percent else f'{part / whole:.2f}'
+
+    prs = counts['merged_prs']
+    line = (f"per merged PR: {ratio(counts['handoff'], prs)} handoff, {ratio(counts['gap'], prs)} gap "
+            f"({plural(prs, 'PR')}) · re-read {ratio(counts['finished_with_verdict'], counts['finished_items'], True)} "
+            f"({counts['finished_with_verdict']} of {counts['finished_items']}) · survive "
+            f"{ratio(counts['owned'], counts['verdicts'], True)} ({counts['owned']} owned of {counts['verdicts']}) · "
+            f"done {counts['done']} · moot {counts['moot']} · won't do {counts['wontdo']} · legacy {counts['legacy']}")
+
+    return line + (f" · partial: {plural(counts['unreadable'], 'feature')} unreadable" if counts['unreadable'] else '')
+
+
+def command_deferred(argv):
+    """The open deferred items of merged steps (live and parked features), then the metrics of every feature of the
+    repos in scope, archived ones included."""
+    rest = list(argv)
+    as_json = rest.count('--json') == 1
+    rest = [word for word in rest if word != '--json'] if as_json else rest
+    repo = pick_repo(rest) if '--repo' in rest else None
+
+    if len(rest) > 1 or any(word.startswith('-') for word in rest):
+        return usage_error('deferred')
+
+    if rest:
+        feature_name_check(rest[0])
+        repo, root = deferred_place(rest[0], repo)
+        listed = [(repo, rest[0], root)]
+    else:
+        listed = None
+
+    repos = [repo] if repo else list(adapter.load_config()['repos'])
+    features = [(name, feature, root, listed is None) for name in repos for feature, root in sweepable_features(name)]
+    features += [(name, feature, adapter.archive_root(name), False) for name in repos
+                 for feature in adapter.feature_folders(name, adapter.archive_root(name))]
+    features = [(name, feature, root, shown or (name, feature, root) in (listed or []))
+                for name, feature, root, shown in features]
+    counts = dict.fromkeys(DEFERRED_COUNTS, 0)
+    items, failed = [], False
+
+    for name, feature, root, shown in features:
+        try:
+            states = [load_state(name, feature, step.id, root) for step in steps(name, feature, root)]
+            entries = deferred_entries(name, feature, root)
+        except (*ERRORS, OSError, ValueError) as error:
+            print(f'{adapter.short(name)}/{feature}: {error}', file=sys.stderr)
+            counts['unreadable'] += 1
+            failed = failed or shown
+            continue
+
+        add_deferred_counts(counts, states, entries)
+
+        if shown:
+            items += [{'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
+                       'owner': item.get('owner') or '', 'item': item.get('item') or '',
+                       'evidence': item.get('evidence') or ''}
+                      for item_id, state, item, verdict in entries if isinstance(item, dict) and verdict is None]
+
+    if as_json:
+        print(json.dumps({'items': items, 'metrics': counts}, indent=2))
+        return 1 if failed else 0
+
+    several = len({item['repo'] for item in items}) > 1
+
+    for entry in items:
+        name = f"{adapter.short(entry['repo'])}/{entry['feature']}" if several else entry['feature']
+        pr = f"PR #{entry['pr']}" if entry['pr'] else 'no PR'
+        owner = f"step {printable(entry['owner'])}" if entry['owner'] else 'no owner'
+        print(f"{name} {entry['id']}  {pr}  {owner}  {printable(entry['item'])}")
+
+        if printable(entry['evidence']):
+            print(f"  evidence: {printable(entry['evidence'])}")
+
+    if not items:
+        print('no open deferred items')
+
+    print(f'\n{metrics_line(counts)}')
+
+    return 1 if failed else 0
+
+
 def command_archive():
     """Moves every feature whose steps are all merged into its repo's _archive/, unless a run holds it or the name is
     taken there."""
@@ -6487,6 +6722,9 @@ COMMANDS = {
     'revise': ('revise <feature> [--repo <o>/<r>]', 'send the plan back (`## Feedback` in plan.md)', 'daily'),
     'respond': ('respond <feature> [--repo <o>/<r>]', 'turn your PR comments into a respond round, now', 'daily'),
     'queue': ('queue', 'running, queued in start order, held, waiting, needs you, backlog', 'queue'),
+    'deferred': ('deferred [<feature>] [--json] [--repo <o>/<r>] | deferred close <feature> <NN.K> done|moot|wontdo '
+                 '<note> | deferred close <feature> <NN.K> owned <target> [<note>]',
+                 'open deferred items of merged steps, with metrics; close records one verdict per item', 'queue'),
     'start': ('start [<feature>] [--repo <o>/<r>] [--after <feature>[:NN]]',
               'unpark from _backlog, lift the hold, start it (paused: now) or once that merged; none: end the drain',
               'queue'),
@@ -6604,6 +6842,9 @@ def main(argv=None):
 
         if command == 'stop':
             return command_stop(argv[1:])
+
+        if command == 'deferred':
+            return command_deferred(argv[1:])
 
         if command == 'queue':
             return command_queue() if len(argv) == 1 else usage_error(command)
