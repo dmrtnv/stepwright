@@ -6,6 +6,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.14 - 2026-11-12
+
 **Rerun the gate:** yes (the stage kit, the result schema and test 9 changed).
 
 ### Added
