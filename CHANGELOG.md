@@ -14,6 +14,9 @@ What changed for you in each release, newest first. Each release says whether to
   owner and evidence, and ends with a metrics line over every feature, archived ones included.
 - `pipeline deferred close <name> <NN.K> done|moot|wontdo "<why>"` or `… owned <feature> ["<note>"]` records one
   verdict per item in `<name>/.pipeline/deferred.json`.
+- `/deferred-sweep [<name>]`, a host skill, re-checks each open deferred item of a finished feature on the default
+  branch, files the ones still worth a PR as step briefs (by default into `follow-ups`) and records a verdict for
+  each. A won't do, or a brief for a live feature, waits for your answer.
 
 ### Changed
 

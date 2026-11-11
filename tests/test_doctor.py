@@ -415,6 +415,13 @@ class KitTest(DoctorCase):
         self.assertFail('kit skills/review-branch', 'your own copy, not the kit\'s',
                         f'move {link} aside, then ln -s {self.kit}/skills/review-branch {self.home}/.claude/skills/')
 
+    def test_your_own_deferred_sweep_copy_fails(self):
+        link = self.home / '.claude/skills/deferred-sweep'
+        link.unlink()
+        link.mkdir()
+        self.assertFail('kit skills/deferred-sweep', "your own copy, not the kit's",
+                        f'move {link} aside, then ln -s {self.kit}/skills/deferred-sweep {self.home}/.claude/skills/')
+
     def test_your_own_pr_text_with_check_py_passes(self):
         link = self.home / '.claude/skills/pr-text'
         link.unlink()

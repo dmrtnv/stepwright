@@ -355,6 +355,7 @@ class KitCopyCase(unittest.TestCase):
         gate.copy_kit(gate.SANDBOX_A, self.checkout)
         skills = self.captured / 'skills'
         self.assertNotIn('pipeline-feature', {path.name for path in skills.iterdir()})
+        self.assertNotIn('deferred-sweep', {path.name for path in skills.iterdir()})
         self.assertEqual((skills / 'plan-harden/SKILL.md').read_text(),
                          (REAL_KIT / 'skills/plan-harden/SKILL.md').read_text())
         self.assertEqual((self.captured / 'agents/web-researcher.md').read_text(), '# stale\n',
