@@ -310,6 +310,8 @@ class CloseTest(DeferredCommandCase):
                                                  f'{self.root("backlog")}',
             ('Bad_x', '01.2', 'done', 'why'): 'Bad_x is not a feature name (lowercase letters, digits and dashes)',
             (FEATURE, '01.2', 'owned', 'Bad_y'): 'Bad_y is not a feature name (lowercase letters, digits and dashes)',
+            (FEATURE, '01.2', 'owned', FEATURE): f'{FEATURE} cannot own its own item: name the feature that takes the '
+                                                 'work on',
         }
 
         for argv, message in cases.items():

@@ -140,7 +140,7 @@ Unknown keys are an error.
   - `--json` prints `{"items": [...], "metrics": {...}}` with the raw text; the text view turns control characters
     into spaces;
   - `pipeline deferred close <name> <NN.K> done|moot|wontdo "<why>"` or `… <NN.K> owned <feature> ["<note>"]`
-    records one verdict per item (a live or parked feature takes an owned item), under the feature's run lock. A
+    records one verdict per item (another live or parked feature takes an owned item), under the feature's run lock. A
     second close replaces the verdict and prints the old one. Usage mistakes exit 2, a refused item exits 1;
   - a fully merged feature with open items shows under NEEDS YOU as `n deferred to sweep → /deferred-sweep <name>`
     (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so.

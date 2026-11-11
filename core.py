@@ -5208,6 +5208,9 @@ def command_deferred_close(argv):
     if target:
         feature_name_check(target)
 
+    if target == feature:
+        raise PipelineError(f'{feature} cannot own its own item: name the feature that takes the work on')
+
     match = DEFERRED_ID.match(item_id)
 
     if not match:
