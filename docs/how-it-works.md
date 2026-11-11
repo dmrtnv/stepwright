@@ -55,7 +55,7 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
 - sandboxes: `sbx ls`: `pl-<repo>-<feature>-<NN>`, stopped between stages, removed on merge.
 - stage rules: `system.md` (appended to every stage's system prompt), `result.schema.json`.
 - kit copied into each VM:
-  - kit skills and agents from the kit dir (minus `pipeline-feature`);
+  - kit skills and agents from the kit dir (minus `pipeline-feature` and `deferred-sweep`);
   - your `~/.claude/CLAUDE.md`, your `~/.claude/rules/` and other skills and agents (your own convention entries
     win: INSTALL step 2);
   - the repo's memory (`~/.claude/projects/<checkout>/memory`);
@@ -143,7 +143,11 @@ Unknown keys are an error.
     records one verdict per item (another live or parked feature takes an owned item), under the feature's run lock. A
     second close replaces the verdict and prints the old one. Usage mistakes exit 2, a refused item exits 1;
   - a fully merged feature with open items shows under NEEDS YOU as `n deferred to sweep → /deferred-sweep <name>`
-    (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so.
+    (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so;
+  - `/deferred-sweep [<name>] [--repo <o>/<r>]` in a Claude session on the host re-checks each open item of a fully
+    merged feature on the default branch with read-only git and records a verdict for each. An item still worth a PR
+    becomes a step brief in a matching feature, else in `follow-ups` (created parked in `_backlog/`), with a queue
+    row. A won't do, or a brief for a live feature (the next tick starts it), waits for your answer to one question.
 - What a stage is doing: `pipeline log <name>` (`HH:MM tool target` lines of the newest stage log; `-f` follows).
 - Answer a plan's questions: `pipeline answer <name>`:
   - `plan.md` opens in `$VISUAL`/`$EDITOR`; answer under `## Unresolved questions`, save: a changed file approves;
@@ -339,6 +343,8 @@ Tick then polls each done step's PR:
   (parallel, drain, order).
 - step state (read, don't edit): `<name>/.pipeline/NN.json`.
 - deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close`).
+- deferred items filed by `/deferred-sweep`: a step of a matching feature, else of `follow-ups` (live, or
+  `<repo>/.claude/plans/_backlog/follow-ups/`).
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
   `tail -n 1 <log> | jq .structured_output`.
 - gate and setup output: `<name>/.pipeline/NN-gates.log`, `NN-setup.log`.
