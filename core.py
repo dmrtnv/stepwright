@@ -5019,6 +5019,13 @@ def deferred_entries(repo, feature, root=None):
     return [(item_id, state, item, verdicts.get(item_id)) for item_id, state, item in entries]
 
 
+def deferred_field(item, field):
+    """A field of a deferred item as text, empty when a hand edit left it missing or not a string."""
+    value = item.get(field)
+
+    return value if isinstance(value, str) else ''
+
+
 def open_deferred(repo, feature, root=None):
     return [entry for entry in deferred_entries(repo, feature, root)
             if isinstance(entry[2], dict) and entry[3] is None]
@@ -5160,8 +5167,8 @@ def command_deferred(argv):
 
         if shown:
             items += [{'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
-                       'owner': item.get('owner') or '', 'item': item.get('item') or '',
-                       'evidence': item.get('evidence') or ''}
+                       'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
+                       'evidence': deferred_field(item, 'evidence')}
                       for item_id, state, item, verdict in entries if isinstance(item, dict) and verdict is None]
 
     if as_json:

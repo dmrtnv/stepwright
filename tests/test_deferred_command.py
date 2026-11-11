@@ -124,6 +124,10 @@ class ListTest(DeferredCommandCase):
         self.seed(FEATURE, '01', [{'item': 'edited', 'evidence': None, 'owner': None}])
         self.assertEqual(self.listing(), 'thing 01.1  PR #5  no owner  edited')
 
+    def test_a_hand_edited_item_with_non_text_fields_still_lists(self):
+        self.seed(FEATURE, '01', [{'item': 'edited', 'evidence': ['x'], 'owner': 2}, {'item': 5}])
+        self.assertEqual(self.listing(), 'thing 01.1  PR #5  no owner  edited\nthing 01.2  PR #5  no owner  ')
+
     def test_the_footer_counts_every_feature_of_the_repo(self):
         self.seed(FEATURE, '01', ['old note', HANDOFF, GAP], number=5)
         self.seed(FEATURE, '02', [deferred('c')], number=6)
