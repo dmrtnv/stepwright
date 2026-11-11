@@ -5145,11 +5145,10 @@ def command_deferred(argv):
         listed = None
 
     repos = [repo] if repo else list(adapter.load_config()['repos'])
-    features = [(name, feature, root, listed is None) for name in repos for feature, root in sweepable_features(name)]
+    features = [(name, feature, root, listed is None or (name, feature, root) in listed)
+                for name in repos for feature, root in sweepable_features(name)]
     features += [(name, feature, adapter.archive_root(name), False) for name in repos
                  for feature in adapter.feature_folders(name, adapter.archive_root(name))]
-    features = [(name, feature, root, shown or (name, feature, root) in (listed or []))
-                for name, feature, root, shown in features]
     counts = dict.fromkeys(DEFERRED_COUNTS, 0)
     items, failed = [], False
 
@@ -5181,10 +5180,11 @@ def command_deferred(argv):
         name = f"{adapter.short(entry['repo'])}/{entry['feature']}" if several else entry['feature']
         pr = f"PR #{entry['pr']}" if entry['pr'] else 'no PR'
         owner = f"step {printable(entry['owner'])}" if entry['owner'] else 'no owner'
+        evidence = printable(entry['evidence'])
         print(f"{name} {entry['id']}  {pr}  {owner}  {printable(entry['item'])}")
 
-        if printable(entry['evidence']):
-            print(f"  evidence: {printable(entry['evidence'])}")
+        if evidence:
+            print(f'  evidence: {evidence}')
 
     if not items:
         print('no open deferred items')
