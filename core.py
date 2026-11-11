@@ -5102,6 +5102,9 @@ def metrics_line(counts):
 def command_deferred(argv):
     """The open deferred items of merged steps (live and parked features), then the metrics of every feature of the
     repos in scope, archived ones included."""
+    if argv and argv[0] == 'close':
+        return command_deferred_close(argv[1:])
+
     rest = list(argv)
     as_json = rest.count('--json') == 1
     rest = [word for word in rest if word != '--json'] if as_json else rest
@@ -5165,6 +5168,75 @@ def command_deferred(argv):
     print(f'\n{metrics_line(counts)}')
 
     return 1 if failed else 0
+
+
+def verdict_text(verdict):
+    return f"owned by {verdict['owner']}" if verdict['verdict'] == 'owned' else verdict['verdict']
+
+
+def command_deferred_close(argv):
+    """Records one verdict on one deferred item of a merged step: done, moot or wontdo with a note saying why, or
+    owned by a live or parked feature that takes the work on. A second close replaces the first."""
+    rest = list(argv)
+    repo = pick_repo(rest) if '--repo' in rest else None
+    verdict = rest[2] if len(rest) > 2 else None
+    sizes = (4, 5) if verdict == 'owned' else (4,)
+
+    if verdict not in DEFERRED_VERDICTS or len(rest) not in sizes or any(DEFERRED_FLAG.match(word) for word in rest):
+        return usage_error('deferred')
+
+    feature, item_id = rest[0], rest[1]
+    target = rest[3] if verdict == 'owned' else ''
+    note = printable(rest[-1] if len(rest) == 5 or verdict != 'owned' else '')[:DEFERRED_NOTE_CHARACTERS]
+    feature_name_check(feature)
+
+    if target:
+        feature_name_check(target)
+
+    match = DEFERRED_ID.match(item_id)
+
+    if not match:
+        raise PipelineError(f'{item_id} is not an item id: use NN.K as pipeline deferred lists it')
+
+    step_id, index = match.group(1), int(match.group(2))
+    item_id = f'{step_id}.{index}'
+    repo, root = deferred_place(feature, repo)
+
+    def record():
+        state = next((load_state(repo, feature, step.id, root) for step in steps(repo, feature, root)
+                      if step.id == step_id), None)
+
+        if state is None:
+            raise PipelineError(f'{feature} has no step {step_id}')
+
+        if state['status'] != 'closed':
+            raise PipelineError(f"{feature} step {step_id} is not merged yet: only a merged step's items take a verdict")
+
+        entry = next((entry for entry in deferred_entries(repo, feature, root) if entry[0] == item_id), None)
+
+        if entry is None:
+            raise PipelineError(f'{feature} step {step_id} has no deferred item {index}')
+
+        if not isinstance(entry[2], dict):
+            raise PipelineError(f'{feature} {item_id} is a legacy item: it takes no verdict')
+
+        if verdict != 'owned' and not note:
+            raise PipelineError(f'a {verdict} verdict needs a note that says why')
+
+        if target and target not in [name for name, _ in sweepable_features(repo)]:
+            raise PipelineError(f'no feature {target} with a step folder in {adapter.plans_root(repo)} or '
+                                f'{adapter.backlog_root(repo)}')
+
+        verdicts = read_verdicts(repo, feature, root)
+        previous = verdicts.get(item_id)
+        verdicts[item_id] = {'verdict': verdict, 'owner': target, 'note': note, 'at': now_iso()}
+        save_verdicts(repo, feature, root, verdicts)
+        print(f'{feature} {item_id}: {verdict_text(verdicts[item_id])}' +
+              (f' (was {verdict_text(previous)})' if previous else ''))
+
+        return 0
+
+    return with_lock(run_lock(repo, feature), record)
 
 
 def command_archive():

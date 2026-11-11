@@ -3,8 +3,11 @@
 Run: python3 -m unittest discover tests
 """
 import json
+import subprocess
 import sys
+import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -197,6 +200,142 @@ class ListTest(DeferredCommandCase):
     def test_a_folder_named_deferred_is_reserved(self):
         self.seed('deferred', '01', [GAP])
         self.assertNotIn(('acme/shop', 'deferred'), core.adapter.all_features())
+
+
+class CloseTest(DeferredCommandCase):
+    def setUp(self):
+        super().setUp()
+        self.seed(FEATURE, '01', ['an old note', GAP, HANDOFF])
+        self.seed(FEATURE, '02', [deferred('later')], closed=False, number=6)
+        self.seed('follow-ups', '01', [], closed=False, where='backlog')
+
+    def stored(self, feature=FEATURE, where='live'):
+        path = core.deferred_file(REPO, feature, self.root(where))
+
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def close(self, *argv):
+        return self.main('deferred', 'close', *argv)
+
+    def test_each_verdict_is_recorded_and_the_item_leaves_the_list(self):
+        for verdict in ('done', 'moot', 'wontdo'):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(self.close(FEATURE, '01.2', verdict, 'fixed in 01'), 0, self.errors)
+                self.assertTrue(self.output.startswith(f'{FEATURE} 01.2: {verdict}'), self.output)
+                stored = self.stored()['01.2']
+                self.assertEqual(set(stored), {'verdict', 'owner', 'note', 'at'})
+                self.assertEqual((stored['verdict'], stored['owner'], stored['note']), (verdict, '', 'fixed in 01'))
+                self.assertNotIn('01.2', self.listing())
+
+    def test_owned_takes_a_parked_target_with_or_without_a_note(self):
+        self.assertEqual(self.close(FEATURE, '01.2', 'owned', 'follow-ups'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: owned by follow-ups\n')
+        self.assertEqual(self.close(FEATURE, '01.3', 'owned', 'follow-ups', 'a later brief'), 0, self.errors)
+        stored = self.stored()
+        self.assertEqual((stored['01.2']['owner'], stored['01.2']['note']), ('follow-ups', ''))
+        self.assertEqual((stored['01.3']['owner'], stored['01.3']['note']), ('follow-ups', 'a later brief'))
+        self.assertEqual(self.listing(), 'no open deferred items')
+
+    def test_a_re_close_replaces_the_verdict_and_says_what_it_was(self):
+        self.close(FEATURE, '01.2', 'owned', 'follow-ups')
+        self.assertEqual(self.close(FEATURE, '01.2', 'moot', 'gone'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: moot (was owned by follow-ups)\n')
+        self.assertEqual(self.close(FEATURE, '01.2', 'done', 'fixed'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: done (was moot)\n')
+        self.assertEqual(self.stored()['01.2']['verdict'], 'done')
+
+    def test_the_note_is_one_printable_line_cut_at_300(self):
+        self.close(FEATURE, '01.2', 'done', '  first\nsecond\x1b[2J  ' + 'x' * 400)
+        note = self.stored()['01.2']['note']
+        self.assertTrue(note.startswith('first second [2J xxx'), note)
+        self.assertEqual(len(note), 300)
+
+    def test_the_id_is_stored_in_normal_form(self):
+        self.assertEqual(self.close(FEATURE, '01.002', 'done', 'why'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: done\n')
+        self.assertEqual(list(self.stored()), ['01.2'])
+
+    def test_the_id_close_takes_is_the_one_the_list_printed_for_a_repeated_item(self):
+        self.seed('twice', '01', [GAP], respond=[GAP, HANDOFF])
+        self.assertIn('twice 01.2  PR #5  step 02  a wider rename', self.listing('twice'))
+        self.assertEqual(self.close('twice', '01.2', 'done', 'why'), 0, self.errors)
+        self.assertEqual(self.listing('twice'),
+                         'twice 01.1  PR #5  no owner  the old cache leaks\n  evidence: README.md:1-4')
+
+    def test_a_parked_feature_takes_a_verdict(self):
+        self.seed('parked', '01', [GAP], where='backlog')
+        self.assertEqual(self.close('parked', '01.1', 'wontdo', 'not worth it'), 0, self.errors)
+        self.assertEqual(self.stored('parked', 'backlog')['01.1']['verdict'], 'wontdo')
+
+    def test_a_folder_moved_away_before_the_write_fails_without_a_ghost_folder(self):
+        original = core.read_verdicts
+        moved = self.fixture.base / 'moved'
+
+        def read_then_move(*arguments):
+            verdicts = original(*arguments)
+
+            if self.fixture.feature.exists():
+                self.fixture.feature.rename(moved)
+
+            return verdicts
+
+        with unittest.mock.patch.object(core, 'read_verdicts', read_then_move):
+            self.assertEqual(self.close(FEATURE, '01.2', 'done', 'why'), 1)
+
+        self.assertEqual(len(self.errors.splitlines()), 1, self.errors)
+        self.assertIn('nothing was recorded', self.errors)
+        self.assertFalse(self.fixture.feature.exists(), 'the write recreated the moved folder')
+        self.assertFalse((moved / '.pipeline/deferred.json').exists())
+
+    def test_a_note_that_is_a_help_word_prints_help_and_records_nothing(self):
+        self.assertEqual(self.close(FEATURE, '01.2', 'done', '-h'), 0)
+        self.assertTrue(self.output.startswith('usage: pipeline deferred'), self.output)
+        self.assertIsNone(self.stored())
+
+    def test_refusals_exit_1_with_one_line_and_write_nothing(self):
+        write(self.root() / 'empty' / 'notes.md', 'no steps\n')
+        cases = {
+            (FEATURE, '02.1', 'done', 'why'): f'{FEATURE} step 02 is not merged yet: only a merged step\'s items take a '
+                                              'verdict',
+            (FEATURE, '01x', 'done', 'why'): '01x is not an item id: use NN.K as pipeline deferred lists it',
+            (FEATURE, '07.1', 'done', 'why'): f'{FEATURE} has no step 07',
+            (FEATURE, '01.9', 'done', 'why'): f'{FEATURE} step 01 has no deferred item 9',
+            (FEATURE, '01.0', 'done', 'why'): f'{FEATURE} step 01 has no deferred item 0',
+            (FEATURE, '01.1', 'done', 'why'): f'{FEATURE} 01.1 is a legacy item: it takes no verdict',
+            (FEATURE, '01.2', 'moot', ' \n '): 'a moot verdict needs a note that says why',
+            (FEATURE, '01.2', 'owned', 'nowhere'): f'no feature nowhere with a step folder in {self.root()} or '
+                                                   f'{self.root("backlog")}',
+            (FEATURE, '01.2', 'owned', 'empty'): f'no feature empty with a step folder in {self.root()} or '
+                                                 f'{self.root("backlog")}',
+            ('Bad_x', '01.2', 'done', 'why'): 'Bad_x is not a feature name (lowercase letters, digits and dashes)',
+            (FEATURE, '01.2', 'owned', 'Bad_y'): 'Bad_y is not a feature name (lowercase letters, digits and dashes)',
+        }
+
+        for argv, message in cases.items():
+            with self.subTest(argv=argv):
+                self.assertEqual(self.close(*argv), 1, self.output)
+                self.assertEqual(self.errors, message + '\n')
+                self.assertIsNone(self.stored())
+
+    def test_a_held_run_lock_refuses(self):
+        (self.fixture.base / 'logs').mkdir(exist_ok=True)
+        holder = subprocess.Popen(['flock', str(self.fixture.base / f'logs/run-shop-{FEATURE}.lock'), 'sleep', '60'],
+                                  start_new_session=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        self.assertEqual(self.close(FEATURE, '01.2', 'done', 'why'), 1)
+        self.assertIn(f'holds run-shop-{FEATURE}', self.errors)
+        self.assertIsNone(self.stored())
+
+    def test_bad_grammar_prints_usage_and_exits_2(self):
+        for argv in ((FEATURE, '01.2', 'done'), (FEATURE, '01.2', 'fixed', 'why'), (FEATURE, '01.2', 'done', 'a', 'b'),
+                     (FEATURE, '01.2', 'owned'), (FEATURE, '01.2', 'owned', 'follow-ups', 'a', 'b'),
+                     (FEATURE, '01.2', 'done', 'why', '--force'), ()):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.close(*argv), 2)
+                self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
+                self.assertIsNone(self.stored())
 
 
 if __name__ == '__main__':
