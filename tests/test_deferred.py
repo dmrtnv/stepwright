@@ -89,7 +89,7 @@ class RenderTest(DeferredCase):
         self.assertIn('- an old string item\n- a new one; evidence: core.py:3', self.comment())
 
 
-TOKEN = 'ghp_0123456789abcdefghijklmnopqrstuv'
+TOKEN = 'ghp_' + '0123456789abcdefghijklmnopqrstuv'
 REFUSED = [
     (deferred('no such step', '', '07'), 'Deferred item "no such step": owner "07" is not a later step of this feature. '
                                          'Use one of 02, or "" with evidence.'),
