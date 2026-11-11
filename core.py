@@ -67,6 +67,7 @@ GITHUB_API_VERSION = '2022-11-28'
 TOKEN_MARGIN_SECONDS = 120
 SECRET_PATH = re.compile(r'(^|/)(\.env(\.[^/]*)?|[^/]+\.env)$')
 SECRET_TEXT = re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----')
+DIFF_HUNK = re.compile(r'@@ -\d+(?:,\d+)? \+(\d+)')
 EVIDENCE_MARKER = '<!-- pipeline-evidence -->'
 # PR text is team-visible: home paths (yours or the VM's) are shortened and personal emails hidden; noreply ones stay.
 HOME_PATH = re.compile(r'/home/[\w.-]+')
@@ -2190,7 +2191,45 @@ def check_pr_text(text):
             '`python3 ~/.claude/skills/pr-text/check.py <pr.md>` prints nothing):\n' + '\n'.join(found)]
 
 
-BRANCH_GATES = [gate_tree, gate_checks, gate_commits, gate_trailer, gate_protected, gate_migrations, gate_tamper]
+def secrets_in_diff(context):
+    """The env files the branch changes and the `path:line` of each line it adds with a token-shaped string. Only added
+    lines count: what the base already has has already left the machine. The token itself is never returned."""
+    base = merge_base(context)
+    env_files = [name for name in changed_files(context, base) if SECRET_PATH.search(name) and not name.endswith('.example')]
+    places, path, line_number, in_header = [], None, 0, False
+
+    for line in git(context['clone'], 'diff', '-U0', '--no-renames', '--no-ext-diff', base, context['ref']).splitlines():
+        if line.startswith('diff --git '):
+            in_header = True
+        elif in_header and line.startswith('+++ '):
+            path = line[4:].strip('"').removeprefix('b/')
+        elif line.startswith('@@ '):
+            in_header, line_number = False, int(DIFF_HUNK.match(line).group(1))
+        elif not in_header and line.startswith('+'):
+            if SECRET_TEXT.search(line):
+                places.append(f'{path}:{line_number}')
+            line_number += 1
+
+    return env_files, places
+
+
+def gate_secrets(state, context):
+    env_files, places = secrets_in_diff(context)
+    failures = []
+
+    if env_files:
+        failures.append(f"Env files in the diff: {', '.join(env_files)}. Remove them from the branch.")
+
+    if places:
+        failures.append(f"A token-shaped string (a GitHub token or a private key) is on {', '.join(places[:10])}. "
+                        'Remove it. A test fixture builds it from parts at run time (`"ghp_" + "0" * 36`), so the '
+                        'source never holds one.')
+
+    return failures
+
+
+BRANCH_GATES = [gate_tree, gate_checks, gate_commits, gate_trailer, gate_protected, gate_migrations, gate_tamper,
+                gate_secrets]
 
 
 def run_gates(state, context, gates):
@@ -2556,16 +2595,15 @@ def step_update(state, options):
 
 def scan_for_secrets(state, context):
     """Nothing that looks like a credential leaves the machine: env files and token-shaped strings stop the push."""
-    base = merge_base(context)
-    env_files = [name for name in changed_files(context, base) if SECRET_PATH.search(name) and not name.endswith('.example')]
+    env_files, places = secrets_in_diff(context)
 
     if env_files:
         pause(state, f"env files in the diff: {', '.join(env_files)}. Remove them from the branch, then re-run.",
               'secret files in the diff')
 
-    if SECRET_TEXT.search(git(context['clone'], 'diff', base, context['ref'])):
-        pause(state, 'the diff contains a token-shaped string (a GitHub token or a private key). Remove it, then '
-                     're-run.', 'secret in the diff')
+    if places:
+        pause(state, f"the diff contains a token-shaped string (a GitHub token or a private key) on "
+                     f"{', '.join(places[:10])}. Remove it, then re-run.", 'secret in the diff')
 
 
 def branch_rules(repo, branch):

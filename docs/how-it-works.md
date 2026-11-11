@@ -244,7 +244,8 @@ Unknown keys are an error.
     email, `MEMORY.md`, `~/.claude`) in commit messages, protected/dependency/gate-config, migrations append-only +
     data loss ⚑, and the **tamper gate** (a new `.only` fails; a deleted test file or a new skip/todo/fixme fails
     unless the approved plan's `## Test changes` names its exact path; either way it is flagged; the plan gate
-    refuses a pattern there).
+    refuses a pattern there), and the **secret gate** (an env file, or an added line with a token-shaped string,
+    named by `path:line` and never quoted).
   - Red ⇒ the same session resumes with the failures, at most twice.
 - **Limits**: a usage limit sets `not_before` = reset + 2 min, marks the step `ready`, pings once and ends the run;
   tick resumes the same session after the reset.
@@ -259,7 +260,7 @@ Unknown keys are an error.
 
 Before any push:
 
-- a secret scan of the diff (env files, token-shaped strings);
+- the secret scan again, as a backstop (env files, token-shaped strings on added lines);
 - `pr.md` read safely (a symlink or a token-shaped string stops it; home paths become `~`, personal emails
   `[email]`, an AI attribution line is dropped);
 - the base branch must still require a code-owner-approved PR (read with the App token);
