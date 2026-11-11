@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_core import FEATURE, REPO, RunnerCase, write  # noqa: E402
+from test_core import FEATURE, IMPLEMENT, REPO, RunnerCase, write  # noqa: E402
+from test_deferred import DeferredCase  # noqa: E402
 
 import core  # noqa: E402
 
@@ -336,6 +337,121 @@ class CloseTest(DeferredCommandCase):
                 self.assertEqual(self.close(*argv), 2)
                 self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
                 self.assertIsNone(self.stored())
+
+
+class NudgeTest(DeferredCommandCase):
+    ROW = f'1 deferred to sweep → /deferred-sweep {FEATURE}'
+
+    def test_a_merged_feature_with_an_open_item_needs_you_everywhere(self):
+        self.seed(FEATURE, '01', ['an old note', GAP])
+
+        for argv in (('status',), ('status', '--all'), ('queue',)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv), 0, self.errors)
+                self.assertIn('NEEDS YOU', self.output)
+                self.assertIn(self.ROW, self.output)
+                self.assertNotIn(f'{FEATURE} (merged)', self.output)
+
+        self.assertEqual(self.main('status', '-v'), 0, self.errors)
+        self.assertIn(f'shop/{FEATURE} 01-x: ', self.output)
+        self.assertIn(f'  next: /deferred-sweep {FEATURE} (1 deferred to sweep)\n', self.output)
+        self.assertEqual(self.main('show', FEATURE), 0, self.errors)
+        self.assertIn(f'every step is merged\nnext: /deferred-sweep {FEATURE} (1 deferred to sweep)\n', self.output)
+
+    def test_a_merged_feature_without_open_items_stays_merged(self):
+        for items in ([], ['only a legacy note']):
+            with self.subTest(items=items):
+                self.seed(FEATURE, '01', items)
+                self.main('status')
+                self.assertNotIn(FEATURE, self.output)
+                self.main('status', '--all')
+                self.assertIn(f'{FEATURE} (PR #5)', self.output)
+                self.main('status', '-v')
+                self.assertNotIn(f'shop/{FEATURE}', self.output)
+                self.main('show', FEATURE)
+                self.assertTrue(self.output.endswith('every step is merged\n'), self.output)
+
+    def test_an_unreadable_store_needs_you(self):
+        self.seed(FEATURE, '01', [GAP])
+        write(core.deferred_file(REPO, FEATURE), '{"broken')
+        self.assertEqual(self.main('status'), 0, self.errors)
+        self.assertIn('NEEDS YOU', self.output)
+        self.assertIn('deferred items unreadable: ', self.output)
+        self.assertEqual(self.main('status', '-v'), 0, self.errors)
+        self.assertIn('  deferred items unreadable: ', self.output)
+
+    def test_an_unfinished_feature_shows_no_sweep(self):
+        self.seed(FEATURE, '01', [GAP])
+        self.seed(FEATURE, '02', [], closed=False)
+        self.main('status')
+        self.assertNotIn('deferred to sweep', self.output)
+        self.main('status', '-v')
+        self.assertNotIn('deferred-sweep', self.output)
+
+    def test_archive_skips_a_feature_with_open_items_until_they_are_swept(self):
+        self.seed(FEATURE, '01', [GAP, HANDOFF])
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE}: skipped, because it has 2 open deferred items. Run /deferred-sweep '
+                                      f'{FEATURE}, then pipeline archive again.\n'
+                                      'moved 0, left 0 unfinished, skipped 1, failed 0\n')
+        self.assertTrue(self.fixture.feature.is_dir())
+        self.main('deferred', 'close', FEATURE, '01.1', 'wontdo', 'not worth it')
+        self.main('deferred', 'close', FEATURE, '01.2', 'done', 'fixed in 02')
+        self.assertEqual(self.main('archive'), 0, self.errors)
+        self.assertIn('moved 1, left 0 unfinished, skipped 0, failed 0\n', self.output)
+        self.assertFalse(self.fixture.feature.exists())
+
+    def test_archive_counts_a_broken_store_as_failed(self):
+        self.seed(FEATURE, '01', [GAP])
+        path = core.deferred_file(REPO, FEATURE)
+        write(path, '{"broken')
+        self.assertEqual(self.main('archive'), 1)
+        self.assertIn(f'{FEATURE}: {path}: unreadable', self.errors)
+        self.assertIn('moved 0, left 0 unfinished, skipped 0, failed 1\n', self.output)
+        self.assertTrue(self.fixture.feature.is_dir())
+
+    def test_list_then_close_owned_then_the_row_is_gone(self):
+        self.seed(FEATURE, '01', [GAP])
+        self.seed('follow-ups', '01', [], closed=False, where='backlog')
+        self.assertIn(f'{FEATURE} 01.1  PR #5  no owner  the old cache leaks', self.listing())
+        self.main('status')
+        self.assertIn(self.ROW, self.output)
+        self.assertEqual(self.main('deferred', 'close', FEATURE, '01.1', 'owned', 'follow-ups'), 0, self.errors)
+        self.assertEqual(json.loads(core.deferred_file(REPO, FEATURE).read_text())['01.1']['owner'], 'follow-ups')
+        self.main('status')
+        self.assertNotIn(self.ROW, self.output)
+        self.assertNotIn('NEEDS YOU', self.output)
+
+
+class MergePingTest(DeferredCase):
+    def merge_first_step(self):
+        self.published(**{'thing-01-implement': [dict(IMPLEMENT, result={'deferred': [GAP]})]})
+        self.github.pull(5)['merged'] = True
+        self.assertEqual(self.main(FEATURE, '--until', 'plan'), 0, self.errors)
+        self.assertEqual(self.state()['status'], 'closed', self.state()['reason'])
+
+        return [message for message in self.notifications if message.startswith('closed: PR #5')]
+
+    def close_second_step(self):
+        state = core.load_state(REPO, FEATURE, '02')
+        state['history'] = [{'at': '2026-01-01T00:00:00', 'stage': 'done', 'status': 'closed', 'reason': 'x'}]
+        core.mark(state, 'closed', 'merged as PR #6')
+
+    def test_a_merge_that_leaves_a_step_open_pings_as_before(self):
+        self.script({'thing-02-plan': [{'run': ["printf '# Plan 2\\n' > $HOME/plans/thing/02-other/plan.md"]}]})
+        self.assertEqual(self.merge_first_step(), ['closed: PR #5 merged'])
+
+    def test_the_last_merge_with_open_items_names_the_sweep(self):
+        self.close_second_step()
+        self.assertEqual(self.merge_first_step(),
+                         [f'closed: PR #5 merged\n1 deferred to sweep → /deferred-sweep {FEATURE}'])
+
+    def test_an_unreadable_store_still_pings(self):
+        self.close_second_step()
+        write(core.deferred_file(REPO, FEATURE), '{"broken')
+        pings = self.merge_first_step()
+        self.assertEqual(len(pings), 1, self.notifications)
+        self.assertTrue(pings[0].startswith('closed: PR #5 merged\ndeferred items unreadable: '), pings[0])
 
 
 if __name__ == '__main__':

@@ -2997,7 +2997,9 @@ def close_merged(state, pull):
 
     state['merged'] = {'number': pull.get('number'), 'url': pull.get('html_url')}
     mark(state, 'closed', f"merged as PR #{pull.get('number')}")
-    notify(state, f"closed: PR #{pull.get('number')} merged", click=pull.get('html_url'))
+    sweep = sweep_line(state['repo'], state['feature'])
+    notify(state, f"closed: PR #{pull.get('number')} merged" + (f'\n{sweep}' if sweep else ''),
+           click=pull.get('html_url'))
 
 
 def required_runs(repo, sha, required, token):
@@ -3670,7 +3672,10 @@ def status_lines(repo, feature, show_all, sandboxes):
     states = {step.id: load_state(repo, feature, step.id) for step in feature_steps}
     prefix = f'{adapter.short(repo)}/{feature}'
 
-    if not show_all and all(state['status'] == 'closed' for state in states.values()):
+    merged = all(state['status'] == 'closed' for state in states.values())
+    sweep = sweep_next(repo, feature) if merged else None
+
+    if not show_all and merged and not sweep:
         return []
 
     current = next((step.id for step in feature_steps if states[step.id]['status'] != 'closed'), None)
@@ -3731,7 +3736,7 @@ def status_lines(repo, feature, show_all, sandboxes):
         if command:
             lines.append(f'  next: {command}')
 
-    return lines
+    return lines + ([f'  {sweep}'] if sweep else [])
 
 
 def next_command(state, status):
@@ -4037,6 +4042,11 @@ def feature_view(repo, feature, now, control):
     index = next((index for index, state in enumerate(states) if state['status'] != 'closed'), None)
 
     if index is None:
+        sweep = sweep_line(repo, feature)
+
+        if sweep:
+            return dict(view, group='needs', text=sweep)
+
         merged = (states[-1].get('merged') or {}).get('number')
         return dict(view, group='closed', text=f'PR #{merged}' if merged else 'merged')
 
@@ -4523,6 +4533,11 @@ def command_show(repo, feature):
 
     if index is None:
         print('every step is merged')
+        sweep = sweep_next(repo, feature)
+
+        if sweep:
+            print(sweep)
+
         return 0
 
     state, step = states[index], feature_steps[index]
@@ -5265,6 +5280,10 @@ def command_archive():
                     left += 1
                 elif locked(run_lock(repo, feature)):
                     print(f'{feature}: skipped, because a run holds it. Run pipeline archive again once it ends.')
+                    skipped += 1
+                elif unswept := len(open_deferred(repo, feature)):
+                    print(f"{feature}: skipped, because it has {plural(unswept, 'open deferred item')}. Run "
+                          f'/deferred-sweep {feature}, then pipeline archive again.')
                     skipped += 1
                 elif (archive / feature).exists():
                     print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
