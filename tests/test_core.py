@@ -540,6 +540,7 @@ RESOLVE = {'run': ["git reset -q --hard origin/main && echo resolved > thing.txt
                    "git commit -qm 'fix: Do the thing'"]}
 MOVE_MAIN = ("git -C {other} pull -q && echo CONTENT > {other}/FILE && git -C {other} add -A && "
              "git -C {other} commit -qm 'chore: main moved' && git -C {other} push -q origin main")
+FAKE_TOKEN = 'ghp_' + '0123456789abcdefghijklmnopqrstuv'
 BOT = 'test-pipeline[bot] 99+test-pipeline[bot]@users.noreply.github.com'
 REVIEW_RULES = [{'type': 'pull_request', 'parameters': {'required_approving_review_count': 1,
                                                        'require_code_owner_review': True}}]
@@ -3029,7 +3030,7 @@ class PublishTest(RunnerCase):
         self.assertEqual(self.origin_branch(), '')
 
     def test_a_token_in_the_pr_text_stops_the_publish(self):
-        respond = {'run': ["printf 'fix: Do the thing\\n\\nghp_0123456789abcdefghijklmnopqrstuv\\n\\nNo migrations.\\n' > {step}/pr.md"]}
+        respond = {'run': [f"printf 'fix: Do the thing\\n\\n{FAKE_TOKEN}\\n\\nNo migrations.\\n' > {{step}}/pr.md"]}
         self.happy_path(**{'thing-01-respond-1': [respond]})
         self.main(FEATURE)
         self.assertIn('token-shaped string', self.state()['reason'])
@@ -3116,23 +3117,62 @@ class PublishTest(RunnerCase):
         self.assertEqual((self.github.pull(9)['title'], self.github.pull(9)['body']), ('fix: Do the thing', 'Why it matters.\n\nNo migrations.'))
         self.assertNotIn(('POST', '/repos/acme/shop/pulls'), self.github.methods())
 
-    def test_an_env_file_in_the_diff_stops_the_publish(self):
+    def test_an_env_file_in_the_diff_fails_the_branch_gate(self):
         leak = {'run': ["mkdir -p deploy && echo SECRET=1 > deploy/prod.env && git add -f deploy/prod.env && "
                         "echo code > thing.txt && git add -A && git commit -qm 'fix: Do the thing'"]}
         self.happy_path(**{'thing-01-implement': [leak]})
         self.main(FEATURE)
         state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('implement', 'paused'), state['reason'])
+        self.assertIn('Env files in the diff: deploy/prod.env', self.claude_calls('thing-01-implement')[1]['prompt'])
+        self.assertEqual(self.origin_branch(), '')
+
+    def test_an_env_file_the_gates_missed_stops_the_publish(self):
+        leak = {'run': ["mkdir -p deploy && echo SECRET=1 > deploy/prod.env && git add -f deploy/prod.env && "
+                        "echo code > thing.txt && git add -A && git commit -qm 'fix: Do the thing'"]}
+        self.happy_path(**{'thing-01-implement': [leak]})
+
+        with mock.patch.object(core, 'BRANCH_GATES', [gate for gate in core.BRANCH_GATES if gate is not core.gate_secrets]):
+            self.main(FEATURE)
+
+        state = self.state()
         self.assertEqual((state['stage'], state['status']), ('publish', 'paused'), state['reason'])
         self.assertIn('env files in the diff: deploy/prod.env', state['reason'])
         self.assertEqual(self.origin_branch(), '')
 
-    def test_a_token_shaped_string_in_the_diff_stops_the_publish(self):
-        leak = {'run': ["echo 'token = \"ghp_0123456789abcdefghijklmnopqrstuv\"' > thing.txt && git add -A && "
+    def test_a_token_shaped_string_in_the_diff_resumes_the_stage_without_repeating_it(self):
+        leak = {'run': [f"printf 'one\\ntoken = {FAKE_TOKEN}\\n' > thing.txt && git add -A && "
+                        "git commit -qm 'fix: Do the thing'"]}
+        fix = {'run': ["echo code > thing.txt && git commit -qam 'fix: Drop the token'"]}
+        self.published(**{'thing-01-implement': [leak, fix]})
+        first, resumed = self.claude_calls('thing-01-implement')
+        self.assertTrue(resumed['resume'])
+        self.assertIn('token-shaped string (a GitHub token or a private key) is on thing.txt:2', resumed['prompt'])
+        self.assertNotIn(FAKE_TOKEN, resumed['prompt'])
+        self.assertNotIn(FAKE_TOKEN, (core.state_dir(REPO, FEATURE) / '01-gates.log').read_text())
+
+    def test_a_token_shaped_string_the_gates_missed_stops_the_publish(self):
+        leak = {'run': [f"echo 'token = \"{FAKE_TOKEN}\"' > thing.txt && git add -A && "
                         "git commit -qm 'fix: Do the thing'"]}
         self.happy_path(**{'thing-01-implement': [leak]})
-        self.main(FEATURE)
-        self.assertIn('token-shaped string', self.state()['reason'])
+
+        with mock.patch.object(core, 'BRANCH_GATES', [gate for gate in core.BRANCH_GATES if gate is not core.gate_secrets]):
+            self.main(FEATURE)
+
+        state = self.state()
+        self.assertEqual((state['stage'], state['status']), ('publish', 'paused'), state['reason'])
+        self.assertIn('token-shaped string (a GitHub token or a private key) on thing.txt:1', state['reason'])
+        self.assertNotIn(FAKE_TOKEN, state['reason'])
         self.assertEqual(self.origin_branch(), '')
+
+    def test_a_token_already_on_main_next_to_a_change_publishes(self):
+        git(self.fixture.other, 'pull', '-q')
+        write(self.fixture.other / 'keys.txt', f'token = {FAKE_TOKEN}\nold\n')
+        git(self.fixture.other, 'add', '-A')
+        git(self.fixture.other, 'commit', '-qm', 'chore: A fixture')
+        git(self.fixture.other, 'push', '-q', 'origin', 'main')
+        edit = {'run': ["sed -i 's/^old$/new/' keys.txt && git commit -qam 'fix: Do the thing'"]}
+        self.published(**{'thing-01-implement': [edit]})
 
     def test_missing_review_rules_stop_the_publish_before_any_push(self):
         self.github.rules['main'] = [{'type': 'deletion'}]

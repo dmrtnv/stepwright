@@ -6,6 +6,16 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Changed
+
+- The secret scan is now a branch gate. A token-shaped string or an env file in the diff resumes the stage with
+  its `path:line`, so the agent removes it. Before, the step paused at publish and only you could fix it.
+- The scan reads only the lines the branch adds. A token-shaped string already on the base, next to a change, no
+  longer stops the publish.
+- A secret pause at publish now names the `path:line`.
+
 ## v0.12 - 2026-11-10
 
 **Rerun the gate:** no (only the host-only pipeline-feature text changed, not the stage kit or STAGES).
