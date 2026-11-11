@@ -8,7 +8,19 @@ What changed for you in each release, newest first. Each release says whether to
 
 **Rerun the gate:** yes (the stage kit, the result schema and test 9 changed).
 
+### Added
+
+- `pipeline deferred [<name>] [--json]` lists the open deferred items of merged steps, each with its id `NN.K`, PR,
+  owner and evidence, and ends with a metrics line over every feature, archived ones included.
+- `pipeline deferred close <name> <NN.K> done|moot|wontdo "<why>"` or `… owned <feature> ["<note>"]` records one
+  verdict per item in `<name>/.pipeline/deferred.json`.
+
 ### Changed
+
+- A fully merged feature with open deferred items now shows under NEEDS YOU in `status` and `queue`, and in
+  `status -v` and `show`, as `n deferred to sweep → /deferred-sweep <name>`. The last merge's ping says so too.
+- `pipeline archive` skips a fully merged feature that still has open deferred items.
+- A feature folder named `deferred` is now skipped, like every command name. Rename it before you update.
 
 - A stage returns each deferred item as an object: `item`, `evidence` (a repo-relative `path[:line]`) and `owner` (a
   later step's two-digit id, or empty). The runner resumes the stage when an owner is not a later step of the feature,
