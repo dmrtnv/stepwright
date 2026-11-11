@@ -62,13 +62,14 @@ the caps. Then it prints one line per item, and the next commands.
 
 Stages run Claude Code skills (plan, implement, review, respond). They live in the kit dir of this clone, and
 stage VMs get them from there, so a stage runs the skills of the checked-out tag. The links make them available
-on the host too: for `/pipeline-feature`, `/deferred-sweep` and your own sessions. If you already have a skill or agent with a kit
-name, init skips it.
+on the host too: for `/pipeline-feature`, `/deferred-sweep` and your own sessions. If you already have a skill or
+agent with a kit name, init skips it.
 
 The kit has two kinds of entries:
 - Contract skills: `plan-harden`, `plan-implement`, `review-branch`, `review-respond`, `pipeline-feature` and
   `deferred-sweep`. The runner depends on them: stage VMs always use the kit's four stage skills, and
-  `pipeline-feature` and `deferred-sweep` stay on the host. Your own copy of one is a `pipeline doctor` FAIL until you replace it with the kit's link.
+  `pipeline-feature` and `deferred-sweep` stay on the host. Your own copy of one is a `pipeline doctor` FAIL until
+  you replace it with the kit's link.
 - Convention entries: the skills `commit-message`, `pr-text` and `wrap-up`, and the agent `web-researcher.md`. You
   can replace them with your own: a copy, or a link that resolves outside the kit dir. Stage VMs then use yours,
   and `pipeline doctor` shows it as PASS "your own, stage VMs use it".
