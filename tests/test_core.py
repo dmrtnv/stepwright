@@ -1299,7 +1299,9 @@ class RunnerTest(RunnerCase):
         skills = home / '.claude/skills'
         self.assertEqual((home / '.claude/CLAUDE.md').read_text(), '# rules\n')
         kit_skills = {path.name for path in (REAL_KIT / 'skills').iterdir() if path.name != '__pycache__'}
-        self.assertEqual({path.name for path in skills.iterdir()}, kit_skills - {'pipeline-feature'} | {'linear'})
+        vm_skills = {path.name for path in skills.iterdir()}
+        self.assertEqual(vm_skills, kit_skills - set(backend.HOST_ONLY) | {'linear'})
+        self.assertNotIn('deferred-sweep', vm_skills)
         self.assertEqual(relative_files(skills / 'pr-text'),
                          {'SKILL.md', 'fixtures/a.md', 'test_check.py', 'check.py'}, 'your own pr-text reaches the VM whole')
         self.assertEqual((skills / 'pr-text/SKILL.md').read_text(), '# my pr-text\n')
@@ -1347,7 +1349,9 @@ class RunnerTest(RunnerCase):
 
         claude = self.fixture.sbx / SANDBOX / 'home/.claude'
         kit_skills = {path.name for path in (REAL_KIT / 'skills').iterdir() if path.name != '__pycache__'}
-        self.assertEqual({path.name for path in (claude / 'skills').iterdir()}, kit_skills - {'pipeline-feature'})
+        vm_skills = {path.name for path in (claude / 'skills').iterdir()}
+        self.assertEqual(vm_skills, kit_skills - set(backend.HOST_ONLY))
+        self.assertNotIn('deferred-sweep', vm_skills)
         self.assertEqual({path.name for path in (claude / 'agents').iterdir()}, {'web-researcher.md'})
         self.assertFalse((claude / 'CLAUDE.md').exists())
 
@@ -2591,6 +2595,8 @@ class KitSourceTest(unittest.TestCase):
         self.assertEqual(backend.kit_source('skills', 'plan-harden'), self.kit / 'skills/plan-harden')
         write(self.skills / 'pipeline-feature/SKILL.md', '# mine\n')
         self.assertEqual(backend.kit_source('skills', 'pipeline-feature'), self.kit / 'skills/pipeline-feature')
+        write(self.skills / 'deferred-sweep/SKILL.md', '# mine\n')
+        self.assertEqual(backend.kit_source('skills', 'deferred-sweep'), self.kit / 'skills/deferred-sweep')
 
     def test_your_own_convention_copy_wins(self):
         write(self.skills / 'commit-message/SKILL.md', '# mine\n')

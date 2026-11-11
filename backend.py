@@ -33,7 +33,7 @@ STAGE_ENV = {
 }
 KIT = PIPELINE_DIR / 'kit'  # the stage skills and agents every VM gets, so a stage runs the checked-out tag's
 KIT_ITEMS = ('skills', 'agents')
-HOST_ONLY = ('pipeline-feature',)  # host skills never copied into a VM
+HOST_ONLY = ('pipeline-feature', 'deferred-sweep')  # host skills never copied into a VM
 STAGE_SKILLS = ('plan-harden', 'plan-implement', 'review-branch', 'review-respond')  # the runner calls these by name
 CONTRACT = STAGE_SKILLS + HOST_ONLY  # always the kit's; every other kit entry is a convention a user can replace
 KIT_SCRIPTS = ('heavy', 'kill-own.sh', 'drizzle-generate.py', 'transcripts.py')
