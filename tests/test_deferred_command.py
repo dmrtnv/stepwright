@@ -320,6 +320,14 @@ class CloseTest(DeferredCommandCase):
                 self.assertEqual(self.errors, message + '\n')
                 self.assertIsNone(self.stored())
 
+    def test_an_owned_verdict_without_an_owner_is_a_broken_store(self):
+        stored = {'01.2': {'verdict': 'owned'}}
+        self.verdicts(FEATURE, stored)
+        self.assertEqual(self.close(FEATURE, '01.2', 'done', 'why'), 1)
+        self.assertEqual(len(self.errors.splitlines()), 1, self.errors)
+        self.assertIn('unreadable (not an object of verdicts)', self.errors)
+        self.assertEqual(self.stored(), stored)
+
     def test_a_held_run_lock_refuses(self):
         (self.fixture.base / 'logs').mkdir(exist_ok=True)
         holder = subprocess.Popen(['flock', str(self.fixture.base / f'logs/run-shop-{FEATURE}.lock'), 'sleep', '60'],

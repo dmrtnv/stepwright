@@ -4982,6 +4982,8 @@ def read_verdicts(repo, feature, root=None):
         raise PipelineError(f'{path}: unreadable ({error}); fix or delete it') from None
 
     if not isinstance(verdicts, dict) or not all(isinstance(value, dict) and value.get('verdict') in DEFERRED_VERDICTS
+                                                 and (value['verdict'] != 'owned' or
+                                                      isinstance(value.get('owner'), str) and value['owner'])
                                                  for value in verdicts.values()):
         raise PipelineError(f'{path}: unreadable (not an object of verdicts); fix or delete it')
 
