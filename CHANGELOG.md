@@ -10,7 +10,7 @@ What changed for you in each release, newest first. Each release says whether to
 
 ### Changed
 
-- `pipeline gc` compresses the old logs of merged steps to `NN-<stage>.log.xz` instead of deleting them, with
+- `pipeline gc` compresses the old logs of merged steps to `NN-<name>.log.xz` instead of deleting them, with
   token-shaped strings replaced by `…`. A log holding a private key stays raw and is named in the summary. Plan
   copies and `.json` files are never deleted.
 - `pipeline gc` keeps every sandbox it cannot account for: all of a repo's when its plans folder is missing, and

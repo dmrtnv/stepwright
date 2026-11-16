@@ -184,12 +184,12 @@ Unknown keys are an error.
   bare update never moves the runner back).
 - Clean up: `pipeline gc` (orphan sandboxes and refs of merged steps, snapshot refs > 14 days, then
   `template prune`).
-  - It compresses the stage logs of merged steps, live and archived, older than 14 days to `NN-<stage>.log.xz`,
-    with token-shaped strings replaced by `…`. A log holding a private key stays raw, and the summary line names it.
+  - It compresses the stage, gate and setup logs of merged steps, live and archived, older than 14 days to
+    `NN-<name>.log.xz`, with token-shaped strings replaced by `…`. A log holding a private key stays raw, and the summary line names it.
   - It never deletes plan copies (`NN-*.md`) or state and result files (`.json`).
+  - It keeps the sandboxes of parked and reserved-name features.
   - It keeps every sandbox it cannot account for, and exits 1 for each case: all of a repo's sandboxes when its
-    plans folder is missing, and every sandbox of a parked or reserved-name feature it cannot read. The sandboxes
-    of parked and reserved-name features are kept.
+    plans folder is missing, and every sandbox of a parked or reserved-name feature it cannot read.
 - Put merged features away: `pipeline archive` (moves every feature whose steps are all merged into `_archive/`;
   [Archive](#archive)).
 - Sandbox templates:
@@ -353,9 +353,10 @@ Tick then polls each done step's PR:
   `<repo>/.claude/plans/_backlog/follow-ups/`).
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
   `tail -n 1 <log> | jq .structured_output`.
-  - After `pipeline gc` an old log of a merged step is `NN-<stage>.log.xz`, with tokens shown as `…`. Read it with
-    `xzcat <log>.xz | tail -n 1 | jq .structured_output`. `pipeline log` and `show` read raw logs only.
 - gate and setup output: `<name>/.pipeline/NN-gates.log`, `NN-setup.log`.
+- old logs: after `pipeline gc` an old stage, gate or setup log of a merged step is `NN-<name>.log.xz`, with tokens
+  shown as `…`. Read it with `xzcat`, e.g. `xzcat <log>.xz | tail -n 1 | jq .structured_output` for a stage log.
+  `pipeline log` and `show` read raw logs only.
 - approved plan (tamper gate baseline): `<name>/.pipeline/NN-plan.approved.md`. `pipeline gc` keeps it.
 - the step's branch on the host: `git -C ~/.local/share/pipeline/repos/<o>/<r> log refs/pipeline/<name>/<NN>`.
 - inside the VM: `sbx exec -it pl-<repo>-<name>-<NN> bash` (workspace = the clean clone's path, plans under
