@@ -55,6 +55,8 @@ No stage starts while your weekly usage is at 80 % or more, or your five-hour us
 (`admission` in the config). When Claude reports no five-hour window, only the weekly limit applies. To read your
 usage, the host makes one small Haiku call when the last reading is over 30 minutes old.
 
+`pipeline deferred sweep` makes one call per finished feature with items to judge, with $5 and 10 minutes each.
+
 Docker Sandboxes local use "is free … including for commercial work"
 ([Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), checked 2026-11-04).
 
@@ -84,6 +86,7 @@ To Anthropic, from each stage VM:
 
 To Anthropic, from the host:
 - the usage probe;
+- `pipeline deferred sweep`'s call: a finished feature's open deferred items, their evidence and the rubric;
 - `sandbox/gate.py`'s few test calls, when you run it.
 
 To GitHub: the pushed commits, the PR title and body, the evidence comment and the review request.
@@ -155,7 +158,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline update`: move to the newest release.
 - `pipeline gc`: clean up after merged steps and compress their old logs.
 - `pipeline archive`: move fully merged features into `_archive/`.
-- `pipeline deferred`: open deferred items of merged steps. `close` records a verdict; `file` files one as a brief.
+- `pipeline deferred`: open deferred items. `close` records a verdict, `file` files a brief, `sweep` settles them.
 - `/deferred-sweep [<name>]` in Claude Code: re-check a merged feature's deferred items and file the ones left.
 
 Re-running is always safe. Every command, in detail: [Everyday use](docs/how-it-works.md#everyday-use).
