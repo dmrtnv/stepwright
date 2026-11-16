@@ -153,7 +153,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline stop --all`: stop everything now. `pipeline stop --clear` lets it run again.
 - `pipeline doctor`: check the install.
 - `pipeline update`: move to the newest release.
-- `pipeline gc`: clean up after merged steps.
+- `pipeline gc`: clean up after merged steps and compress their old logs.
 - `pipeline archive`: move fully merged features into `_archive/`.
 - `pipeline deferred`: the open deferred items of merged steps. `pipeline deferred close` records a verdict.
 - `/deferred-sweep [<name>]` in Claude Code: re-check a merged feature's deferred items and file the ones left.
