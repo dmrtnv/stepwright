@@ -2544,6 +2544,88 @@ class RunnerTest(RunnerCase):
         self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
         self.assertIn('template prune:', self.output)
 
+    def create_sandbox(self, name):
+        subprocess.run(['sbx', 'create', '--name', name, '--clone', 'claude', str(self.fixture.main)],
+                       check=True, capture_output=True)
+
+    def test_gc_keeps_every_sandbox_of_a_repo_without_a_plans_folder(self):
+        os.rename(self.fixture.plans, self.fixture.base / 'plans-aside')
+        self.create_sandbox('pl-shop-gone-01')
+        self.assertEqual(self.main('gc'), 1)
+        self.assertIsNotNone(self.sandbox_status('pl-shop-gone-01'))
+        self.assertIn(REPO, self.errors)
+        self.assertIn('plans folder', self.errors)
+
+    def test_gc_keeps_the_sandboxes_of_parked_and_reserved_name_features(self):
+        write(self.fixture.plans / '_backlog/later/01-x/brief.md', '# x\n')
+        write(self.fixture.plans / 'deferred/01-x/brief.md', '# x\n')
+
+        for name in ('pl-shop-later-01', 'pl-shop-deferred-01', 'pl-shop-gone-01'):
+            self.create_sandbox(name)
+
+        self.assertEqual(self.main('gc'), 0, self.errors)
+        self.assertIsNotNone(self.sandbox_status('pl-shop-later-01'))
+        self.assertIsNotNone(self.sandbox_status('pl-shop-deferred-01'))
+        self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
+
+    def test_gc_holds_the_sandboxes_of_a_broken_parked_feature(self):
+        write(self.fixture.plans / '_backlog/later/01-a/brief.md', '# a\n')
+        write(self.fixture.plans / '_backlog/later/01-b/brief.md', '# b\n')
+
+        for name in ('pl-shop-later-01', 'pl-shop-gone-01'):
+            self.create_sandbox(name)
+
+        self.assertEqual(self.main('gc'), 1)
+        self.assertIn('step numbers used twice', self.errors)
+        self.assertIsNotNone(self.sandbox_status('pl-shop-later-01'))
+        self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
+
+    def test_gc_holds_the_repo_when_the_backlog_is_unreadable(self):
+        write(self.fixture.plans / '_backlog/later/01-x/brief.md', '# x\n')
+        self.create_sandbox('pl-shop-later-01')
+        folders = adapter.feature_folders
+
+        def unreadable_backlog(repo, root=None):
+            if root is not None and root.name == '_backlog':
+                raise PermissionError(13, 'Permission denied', str(root))
+
+            return folders(repo, root)
+
+        with mock.patch.object(adapter, 'feature_folders', side_effect=unreadable_backlog):
+            self.assertEqual(self.main('gc'), 1)
+
+        self.assertIn('Permission denied', self.errors)
+        self.assertIsNotNone(self.sandbox_status('pl-shop-later-01'))
+
+    def test_gc_keeps_a_sandbox_created_during_its_scan(self):
+        listed = core.steps
+        created = []
+
+        def creating_steps(*arguments, **keywords):
+            if not created:
+                created.append(True)
+                self.create_sandbox('pl-shop-late-01')
+
+            return listed(*arguments, **keywords)
+
+        with mock.patch.object(core, 'steps', side_effect=creating_steps):
+            self.assertEqual(self.main('gc'), 0, self.errors)
+
+        self.assertTrue(created)
+        self.assertIsNotNone(self.sandbox_status('pl-shop-late-01'))
+
+    def test_gc_stops_before_any_change_when_sbx_ls_fails(self):
+        old = int((time.time() - 20 * 86400) * 1000)
+        commit = git(self.fixture.main, 'rev-parse', 'HEAD')
+        git(self.fixture.main, 'update-ref', f'refs/snapshots/shop/{old}-reset', commit)
+
+        with mock.patch.object(backend, 'statuses', side_effect=backend.BackendError('sbx ls failed')):
+            self.assertEqual(self.main('gc'), 1)
+
+        self.assertIn('sbx ls failed', self.errors)
+        self.assertEqual(git(self.fixture.main, 'for-each-ref', '--format=%(refname)', 'refs/snapshots/'),
+                         f'refs/snapshots/shop/{old}-reset')
+
     def test_gc_and_template_refuse_while_the_capped_sbx_daemon_is_down(self):
         with mock.patch.object(core, 'sbx_service_active', return_value=False):
             self.assertEqual(self.main('gc'), 1)

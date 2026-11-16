@@ -5377,9 +5377,10 @@ def command_gc():
     if refuse_while_sbx_down('gc'):
         return 1
 
+    sandboxes = backend.statuses()
     snapshot_cutoff = time.time() - SNAPSHOT_DAYS * 86400
     log_cutoff = time.time() - LOG_DAYS * 86400
-    keep, dropped, compressed, failed, left_raw = set(), 0, 0, 0, []
+    keep, held, dropped, compressed, failed, left_raw = set(), set(), 0, 0, 0, []
 
     def compress(directory, step_id):
         nonlocal compressed, failed
@@ -5398,6 +5399,16 @@ def command_gc():
                 if match and int(match.group(1)) < snapshot_cutoff * 1000:
                     git(tree, 'update-ref', '-d', ref)
                     dropped += 1
+
+        plans = adapter.plans_root(repo)
+        prefix = f'pl-{adapter.short(repo)}-'.lower()
+
+        if not plans.is_dir():
+            print(f'pipeline gc: {repo} has no plans folder at {plans}; kept all its sandboxes ({prefix}*)',
+                  file=sys.stderr)
+            held.add(prefix)
+            failed += 1
+            continue
 
         clone = adapter.clone_path(repo)
 
@@ -5429,7 +5440,28 @@ def command_gc():
                 print(error, file=sys.stderr)
                 failed += 1
 
-    orphans = [name for name in backend.statuses() if name.startswith('pl-') and name not in keep]
+        # Parked and reserved-name features never run, so gc keeps the sandbox of each of their steps.
+        backlog = adapter.backlog_root(repo)
+
+        try:
+            unlisted = [(feature, backlog) for feature in adapter.feature_folders(repo, backlog)]
+        except (*ERRORS, OSError, ValueError) as error:
+            print(f'pipeline gc: {error}; kept all sandboxes of {repo} ({prefix}*)', file=sys.stderr)
+            held.add(prefix)
+            failed += 1
+            unlisted = []
+
+        for feature, root in unlisted + [(feature, None) for feature in adapter.reserved_features(repo)]:
+            try:
+                keep.update(backend.sandbox_name(adapter.short(repo), feature, step.id)
+                            for step in steps(repo, feature, root=root))
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'pipeline gc: {error}; kept its sandboxes ({prefix}{feature.lower()}-*)', file=sys.stderr)
+                held.add(f'{prefix}{feature}-'.lower())
+                failed += 1
+
+    orphans = [name for name in sandboxes
+               if name.startswith('pl-') and name not in keep and not name.startswith(tuple(held))]
 
     for name in orphans:
         backend.remove(name)
