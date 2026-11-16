@@ -4947,18 +4947,15 @@ def xz_holds(path, data):
         return False
 
 
-def compress_log(path, data):
-    """Writes `data` durably to `<path>.xz` (tmp, fsync, replace, folder fsync), then checks it reads back."""
-    target = path.with_name(f'{path.name}.xz')
-    temporary = path.with_name(f'{path.name}.xz.tmp')
-
+def compress_log(data, temporary, target):
+    """Writes `data` durably to `target` (`temporary`, fsync, replace, folder fsync), then checks it reads back."""
     with open(temporary, 'wb') as file:
         file.write(lzma.compress(data))
         file.flush()
         os.fsync(file.fileno())
 
     os.replace(temporary, target)
-    folder = os.open(path.parent, os.O_RDONLY)
+    folder = os.open(target.parent, os.O_RDONLY)
 
     try:
         os.fsync(folder)
@@ -4966,7 +4963,7 @@ def compress_log(path, data):
         os.close(folder)
 
     if not xz_holds(target, data):
-        raise PipelineError(f'{target} does not read back as {path.name}; kept both')
+        raise PipelineError(f'{target} does not read back as the raw log; kept both')
 
 
 def compress_old_logs(directory, step_id, cutoff):
@@ -4976,6 +4973,7 @@ def compress_old_logs(directory, step_id, cutoff):
 
     for path in sorted(directory.glob(f'{step_id}-*.log')):
         target = path.with_name(f'{path.name}.xz')
+        temporary = path.with_name(f'{target.name}.tmp')
 
         try:
             if path.stat().st_mtime >= cutoff:
@@ -4990,7 +4988,7 @@ def compress_old_logs(directory, step_id, cutoff):
             data = LOG_TOKEN.sub('…'.encode(), data)
 
             if not target.exists():
-                compress_log(path, data)
+                compress_log(data, temporary, target)
             elif not xz_holds(target, data):
                 raise PipelineError(f'{target} already exists with other content; kept it and {path.name}; compare '
                                     f'them with xzcat {target} | diff - {path}, then delete the one you do not want')
@@ -4999,7 +4997,7 @@ def compress_old_logs(directory, step_id, cutoff):
             compressed += 1
         except (*ERRORS, OSError) as error:
             with contextlib.suppress(OSError):
-                path.with_name(f'{path.name}.xz.tmp').unlink()
+                temporary.unlink()
 
             print(f'pipeline gc: kept {path} raw: {error}', file=sys.stderr)
             failed += 1
