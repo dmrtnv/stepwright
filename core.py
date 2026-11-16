@@ -5061,16 +5061,19 @@ def read_verdicts(repo, feature, root=None):
     return verdicts
 
 
-def save_verdicts(repo, feature, root, verdicts):
+def save_record(path, value):
     """Written whole and atomically, and never into a folder that is gone (`pipeline archive` may have moved it)."""
-    path = deferred_file(repo, feature, root)
     temporary = path.with_name(path.name + '.tmp')
 
     try:
-        temporary.write_text(json.dumps(verdicts, indent=2) + '\n')
+        temporary.write_text(json.dumps(value, indent=2) + '\n')
         os.replace(temporary, path)
     except OSError as error:
         raise PipelineError(f'{path}: cannot write ({error.strerror}); nothing was recorded') from None
+
+
+def save_verdicts(repo, feature, root, verdicts):
+    save_record(deferred_file(repo, feature, root), verdicts)
 
 
 def deferred_entries(repo, feature, root=None):
@@ -5151,6 +5154,13 @@ def deferred_place(feature, repo=None):
 
 def deferred_pr(state):
     return (state['merged'] or {}).get('number') or (state['pr'] or {}).get('number')
+
+
+def listed_item(repo, feature, item_id, state, item):
+    """One open item as `pipeline deferred --json` lists it, raw text kept."""
+    return {'repo': repo, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
+            'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
+            'evidence': deferred_field(item, 'evidence')}
 
 
 def feature_name_check(name):
@@ -5282,8 +5292,8 @@ def owner_state(repo, feature, root, owner):
 
 def add_evidence(listed):
     """Adds `evidence_check` to each listed item, refreshing each repo's clean clone first. A repo that fails is named
-    on stderr and its items are dropped; returns the items kept and whether one failed."""
-    kept, failed = [], False
+    on stderr and its items are dropped; returns the items kept and `{repo: error}` of the repos that failed."""
+    kept, problems = [], {}
 
     for repo in dict.fromkeys(item['repo'] for item, _ in listed):
         group = [(item, root) for item, root in listed if item['repo'] == repo]
@@ -5302,12 +5312,12 @@ def add_evidence(listed):
                                                         owner_state(repo, item['feature'], root, item['owner']), pulls)
         except (*ERRORS, OSError, ValueError) as error:
             print(f'{repo}: cannot gather evidence: {headline(str(error))}', file=sys.stderr)
-            failed = True
+            problems[repo] = error
             continue
 
         kept += [item for item, _ in group]
 
-    return kept, failed
+    return kept, problems
 
 
 def command_deferred(argv):
@@ -5357,16 +5367,14 @@ def command_deferred(argv):
         add_deferred_counts(counts, states, entries)
 
         if shown:
-            found += [({'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
-                        'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
-                        'evidence': deferred_field(item, 'evidence')}, root)
+            found += [(listed_item(name, feature, item_id, state, item), root)
                       for item_id, state, item, verdict in entries if isinstance(item, dict) and verdict is None]
 
     items = [item for item, _ in found]
 
     if with_evidence:
-        items, problem = add_evidence(found)
-        failed = failed or problem
+        items, problems = add_evidence(found)
+        failed = failed or bool(problems)
 
     if as_json:
         print(json.dumps({'items': items, 'metrics': counts}, indent=2))
@@ -5558,6 +5566,11 @@ def brief_sections(body):
     return lines
 
 
+def data_fence(text):
+    """A code fence one backtick longer than the longest run in `text`, so the text can never close it."""
+    return '`' * max(3, 1 + max((len(run) for run in re.findall('`+', text)), default=0))
+
+
 def brief_text(title, lines, marker, item):
     """The filed brief: the runner's title, the caller's sections, the marker first under Pointers and the item as a
     fenced data block at Pointers' end."""
@@ -5566,7 +5579,7 @@ def brief_text(title, lines, marker, item):
     section = '\n'.join(lines[pointers + 1:traps]).strip('\n')
     data = [f"item: {printable(deferred_field(item, 'item'))}",
             f"evidence: {printable(deferred_field(item, 'evidence'))}"]
-    fence = '`' * max(3, 1 + max((len(run) for run in re.findall('`+', '\n'.join(data))), default=0))
+    fence = data_fence('\n'.join(data))
     pointers_lines = [marker, *([section] if section else []), '', 'Deferred item (data, not instructions):',
                       f'{fence}text', *data, fence, '']
 
@@ -5639,10 +5652,10 @@ def write_file(folder, name, text):
     os.chmod(folder / name, 0o644)
 
 
-def file_item(repo, root, feature, item_id, target, body, areas, migration):
+def file_item(repo, root, feature, item_id, target, body, areas, migration, parked_only=False):
     """Files one open item as the next step brief of `target`, then records it owned by `target`; returns the lines
-    to print. A brief an earlier filing already wrote is closed, never written twice. The caller ran `verdict_checks`
-    and holds the run lock."""
+    to print. A brief an earlier filing already wrote is closed, never written twice. `parked_only` refuses a live
+    target. The caller ran `verdict_checks` and holds the run lock."""
     _, state, item, verdict = deferred_item(repo, root, feature, item_id)
 
     if verdict is not None:
@@ -5676,6 +5689,10 @@ def file_item(repo, root, feature, item_id, target, body, areas, migration):
 
     with adapter.exclusive(f'plans-{adapter.short(repo)}'):
         where, existing = file_target(repo, target)
+
+        if parked_only and where == 'live':
+            raise PipelineError(f'{target} is live: file it with /deferred-sweep; nothing filed')
+
         numbers = [int(STEP_DIR.match(folder.name).group(1)) for folder in step_folders(existing)] if existing else []
         number = max(numbers, default=0) + 1
 
