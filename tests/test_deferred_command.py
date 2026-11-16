@@ -933,6 +933,26 @@ class FileTest(DeferredCommandCase):
         self.assertIn('file 01.1', self.listing())
 
 
+class SkillTest(unittest.TestCase):
+    """`/deferred-sweep` calls the runner for its evidence and its filings, and judges by its rubric."""
+
+    def test_the_skill_calls_the_runner_and_runs_no_git(self):
+        skill = (KIT / 'deferred-sweep/SKILL.md').read_text()
+        self.assertIn('pipeline deferred file', skill)
+        self.assertIn('--json --evidence', skill)
+        self.assertIn('rubric.md', skill)
+        self.assertNotIn('git -C', skill)
+        self.assertNotIn('mv ', skill)
+
+    def test_the_rubric_beside_it_names_the_four_verdicts(self):
+        rubric = (KIT / 'deferred-sweep/rubric.md').read_text()
+
+        for verdict in ('**done:**', '**moot:**', "**won't do:**", '**still true:**'):
+            self.assertIn(verdict, rubric)
+
+        self.assertIn('Run no git', rubric)
+
+
 class NudgeTest(DeferredCommandCase):
     ROW = f'1 deferred to sweep → /deferred-sweep {FEATURE}'
 
