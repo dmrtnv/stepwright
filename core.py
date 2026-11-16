@@ -5504,7 +5504,7 @@ def step_folders(directory):
 def pointers_marker(text):
     """The first non-blank line under `## Pointers`, where a filed brief names its item; '' when there is none."""
     lines = text.splitlines()
-    start = next((index for index, line in enumerate(lines) if line.strip() == '## Pointers'), None)
+    start = next((index for index, line in enumerate(lines) if brief_heading(line) == 'Pointers'), None)
 
     return next((line for line in lines[start + 1:] if line.strip()), '') if start is not None else ''
 
@@ -5538,11 +5538,18 @@ def item_slug(text):
     return slug or 'follow-up'
 
 
+def brief_heading(line):
+    """The name of a `## ` heading line, None for any other line."""
+    return line[3:].strip() if line.startswith('## ') else None
+
+
 def brief_sections(body):
-    """The caller's brief as lines without its title, refused unless its ## headings are the brief template's."""
+    """The caller's brief as lines without its title, its ## headings written as `## <name>`; refused unless they are
+    the brief template's."""
     lines = body.strip('\n').splitlines()
     lines = '\n'.join(lines[1:]).lstrip('\n').splitlines() if lines and lines[0].startswith('# ') else lines
-    headings = [line[3:].strip() for line in lines if line.startswith('## ')]
+    lines = [line if brief_heading(line) is None else f'## {brief_heading(line)}' for line in lines]
+    headings = [brief_heading(line) for line in lines if brief_heading(line) is not None]
 
     if headings != list(BRIEF_HEADINGS):
         raise PipelineError(f'the brief needs the sections {", ".join(BRIEF_HEADINGS)} as ## headings, in that order; '
@@ -5554,8 +5561,8 @@ def brief_sections(body):
 def brief_text(title, lines, marker, item):
     """The filed brief: the runner's title, the caller's sections, the marker first under Pointers and the item as a
     fenced data block at Pointers' end."""
-    pointers = next(index for index, line in enumerate(lines) if line.startswith('## Pointers'))
-    traps = next(index for index, line in enumerate(lines) if line.startswith('## Traps'))
+    pointers = lines.index('## Pointers')
+    traps = lines.index('## Traps')
     section = '\n'.join(lines[pointers + 1:traps]).strip('\n')
     data = [f"item: {printable(deferred_field(item, 'item'))}",
             f"evidence: {printable(deferred_field(item, 'evidence'))}"]

@@ -792,6 +792,13 @@ class FileTest(DeferredCommandCase):
                                               'nothing filed\n')
                 self.assertFalse((self.root('backlog') / 'follow-ups').exists())
 
+    def test_extra_spaces_in_a_heading_are_read_as_the_heading(self):
+        write(self.brief, BRIEF.replace('## Pointers', '##  Pointers').replace('## Traps', '## Traps '))
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertIn('\n## Pointers\n- deferred from thing 01.2 (PR #5)\n- src/cache.py\n', brief)
+        self.assertIn('```\n\n## Traps\n- none known\n', brief)
+
     def test_a_title_line_in_the_brief_is_replaced(self):
         write(self.brief, '# 07 mine\n\n' + BRIEF)
         self.assertEqual(self.file(), 0, self.errors)
