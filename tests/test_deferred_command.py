@@ -353,6 +353,42 @@ class CloseTest(DeferredCommandCase):
                 self.assertIsNone(self.stored())
 
 
+class CloseItemTest(DeferredCommandCase):
+    """`close_item`, the one writer `close` and `file` share, called directly under no lock."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed(FEATURE, '01', ['an old note', GAP])
+        self.seed(FEATURE, '02', [deferred('later')], closed=False, number=6)
+
+    def stored_note(self):
+        return json.loads(core.deferred_file(REPO, FEATURE).read_text())['01.2']['note']
+
+    def test_a_note_with_controls_is_stored_as_one_printable_line(self):
+        line = core.close_item(REPO, self.root(), FEATURE, '01.2', 'done', note='a\x1bb\rc‮d\ne')
+        self.assertEqual(line, f'{FEATURE} 01.2: done')
+        self.assertEqual(self.stored_note(), 'a b c d e')
+
+    def test_a_long_note_is_cut_at_300(self):
+        core.close_item(REPO, self.root(), FEATURE, '01.2', 'moot', note='x' * 400)
+        self.assertEqual(self.stored_note(), 'x' * 300)
+
+    def test_a_legacy_item_and_an_unmerged_step_are_refused_as_close_refuses_them(self):
+        cases = {'01.1': f'{FEATURE} 01.1 is a legacy item: it takes no verdict',
+                 '02.1': f"{FEATURE} step 02 is not merged yet: only a merged step's items take a verdict"}
+
+        for item_id, message in cases.items():
+            with self.subTest(item_id=item_id):
+                with self.assertRaises(core.PipelineError) as raised:
+                    core.close_item(REPO, self.root(), FEATURE, item_id, 'done', note='why')
+
+                self.assertEqual(str(raised.exception), message)
+                self.assertEqual(self.main('deferred', 'close', FEATURE, item_id, 'done', 'why'), 1)
+                self.assertEqual(self.errors, message + '\n')
+
+        self.assertFalse(core.deferred_file(REPO, FEATURE).exists())
+
+
 class NudgeTest(DeferredCommandCase):
     ROW = f'1 deferred to sweep → /deferred-sweep {FEATURE}'
 
