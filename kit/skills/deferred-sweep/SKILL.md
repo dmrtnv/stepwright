@@ -71,8 +71,8 @@ takes the work on), a step brief for each item still worth a PR, and a report.
      the target's highest, derives the slug from the item, finds or creates the `follow-ups` bucket (moved out of
      `_archive/`, or created parked in `_backlog/`), updates the queue row in `.claude/plans/README.md`, and records
      the item owned by the target with the note `filed as <path>`. It prints `filed <path>/brief.md (live: …)` or
-     `(parked: …)`, or `already filed in <path>`. Exit 1 means it refused: quote its message in the report and leave
-     the item open.
+     `(parked: …)`, or `already filed in <path>`. Exit 2 means you built a wrong call: fix it and retry once. Exit 1
+     means it refused: quote its message in the report and leave the item open.
    - **Row.** Only when the output starts with `filed` and the target is a matching feature, append one row for the
      new step to that feature's overview step table. Never reorder or rewrite other rows.
 6. **One batched question**, only when there is something to ask. A live feature's ready step starts on the next
