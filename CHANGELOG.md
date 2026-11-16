@@ -6,6 +6,17 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no kit or `STAGES` change).
+
+### Changed
+
+- `pipeline gc` compresses the old logs of merged steps to `NN-<stage>.log.xz`, `NN-gates.log.xz` or
+  `NN-setup.log.xz` instead of deleting them, with token-shaped strings replaced by `…`. A log holding a private key
+  stays raw and is named in the summary. Plan copies and `.json` files are never deleted.
+- `pipeline gc` keeps every sandbox it cannot account for: all of a repo's when its plans folder is missing, and
+  those of parked and reserved-name features. It exits 1 when it cannot read one, and stops before any change when
+  `sbx ls` fails.
+
 ## v0.14 - 2026-11-12
 
 **Rerun the gate:** yes (the stage kit, the result schema and test 9 changed).

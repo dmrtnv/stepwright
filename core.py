@@ -17,6 +17,7 @@ import grp
 import http.client
 import io
 import json
+import lzma
 import os
 import pwd
 import re
@@ -67,6 +68,9 @@ GITHUB_API_VERSION = '2022-11-28'
 TOKEN_MARGIN_SECONDS = 120
 SECRET_PATH = re.compile(r'(^|/)(\.env(\.[^/]*)?|[^/]+\.env)$')
 SECRET_TEXT = re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----')
+LOG_TOKEN = re.compile(rb'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{20,}'
+                       rb'|(?:AKIA|ASIA)[A-Z0-9]{16}')
+PRIVATE_KEY_MARKER = re.compile(rb'-----BEGIN [A-Z ]*PRIVATE KEY')
 DIFF_HUNK = re.compile(r'@@ -\d+(?:,\d+)? \+(\d+)')
 EVIDENCE_MARKER = '<!-- pipeline-evidence -->'
 # PR text is team-visible: home paths (yours or the VM's) are shortened and personal emails hidden; noreply ones stay.
@@ -4935,16 +4939,70 @@ def refuse_while_sbx_down(command):
     return True
 
 
-def drop_old_logs(directory, step_id, cutoff):
-    """Unlinks a step's logs, results and texts in `directory` older than `cutoff`; returns how many."""
-    removed = 0
+def xz_holds(path, data):
+    """True when the .xz at `path` decompresses to exactly `data`."""
+    try:
+        return lzma.decompress(path.read_bytes()) == data
+    except lzma.LZMAError:
+        return False
 
-    for path in directory.glob(f'{step_id}-*'):
-        if path.suffix in ('.log', '.json', '.md') and path.stat().st_mtime < cutoff:
+
+def compress_log(data, temporary, target):
+    """Writes `data` durably to `target` (`temporary`, fsync, replace, folder fsync), then checks it reads back."""
+    with open(temporary, 'wb') as file:
+        file.write(lzma.compress(data))
+        file.flush()
+        os.fsync(file.fileno())
+
+    os.replace(temporary, target)
+    folder = os.open(target.parent, os.O_RDONLY)
+
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
+
+    if not xz_holds(target, data):
+        raise PipelineError(f'{target} does not read back as the raw log; kept both')
+
+
+def compress_old_logs(directory, step_id, cutoff):
+    """Compresses a step's `.log` files in `directory` older than `cutoff` to `.log.xz`, tokens redacted, then
+    unlinks each raw log. A log with a private key stays raw. Returns (compressed, failed, left_raw paths)."""
+    compressed, failed, left_raw = 0, 0, []
+
+    for path in sorted(directory.glob(f'{step_id}-*.log')):
+        target = path.with_name(f'{path.name}.xz')
+        temporary = path.with_name(f'{target.name}.tmp')
+
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+
+            data = path.read_bytes()
+
+            if PRIVATE_KEY_MARKER.search(data):
+                left_raw.append(path)
+                continue
+
+            data = LOG_TOKEN.sub('…'.encode(), data)
+
+            if not target.exists():
+                compress_log(data, temporary, target)
+            elif not xz_holds(target, data):
+                raise PipelineError(f'{target} already exists with other content; kept it and {path.name}; compare '
+                                    f'them with xzcat {target} | diff - {path}, then delete the one you do not want')
+
             path.unlink()
-            removed += 1
+            compressed += 1
+        except (*ERRORS, OSError) as error:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
 
-    return removed
+            print(f'pipeline gc: kept {path} raw: {error}', file=sys.stderr)
+            failed += 1
+
+    return compressed, failed, left_raw
 
 
 # ---------------------------------------------------------------------------------------------- deferred items
@@ -5318,8 +5376,16 @@ def command_gc():
     if refuse_while_sbx_down('gc'):
         return 1
 
-    cutoff = time.time() - SNAPSHOT_DAYS * 86400
-    keep, dropped, removed, failed = set(), 0, 0, 0
+    sandboxes = backend.statuses()
+    snapshot_cutoff = time.time() - SNAPSHOT_DAYS * 86400
+    log_cutoff = time.time() - LOG_DAYS * 86400
+    keep, held, dropped, compressed, failed, left_raw = set(), set(), 0, 0, 0, []
+
+    def compress(directory, step_id):
+        nonlocal compressed, failed
+        done, broken, raw = compress_old_logs(directory, step_id, log_cutoff)
+        compressed, failed = compressed + done, failed + broken
+        left_raw.extend(raw)
 
     for repo in adapter.load_config()['repos']:
         for tree in (adapter.checkout(repo),):
@@ -5329,9 +5395,19 @@ def command_gc():
             for ref in git(tree, 'for-each-ref', '--format=%(refname)', 'refs/snapshots/').splitlines():
                 match = re.search(r'/(\d{13})-[^/]*$', ref)
 
-                if match and int(match.group(1)) < cutoff * 1000:
+                if match and int(match.group(1)) < snapshot_cutoff * 1000:
                     git(tree, 'update-ref', '-d', ref)
                     dropped += 1
+
+        plans = adapter.plans_root(repo)
+        prefix = f'pl-{adapter.short(repo)}-'.lower()
+
+        if not plans.is_dir():
+            print(f'pipeline gc: {repo} has no plans folder at {plans}; kept all its sandboxes ({prefix}*)',
+                  file=sys.stderr)
+            held.add(prefix)
+            failed += 1
+            continue
 
         clone = adapter.clone_path(repo)
 
@@ -5349,7 +5425,7 @@ def command_gc():
                                    f'refs/pipeline/{feature}/{step.id}-pre-rebase-*').splitlines():
                         git(clone, 'update-ref', '-d', ref)
 
-                removed += drop_old_logs(state_dir(repo, feature), step.id, cutoff)
+                compress(state_dir(repo, feature), step.id)
 
         # Archived features only age their logs: refs and sandboxes are named by feature, and a live namesake owns them.
         archive = adapter.archive_root(repo)
@@ -5358,18 +5434,40 @@ def command_gc():
             try:
                 for step in steps(repo, feature, root=archive):
                     if load_state(repo, feature, step.id, root=archive)['status'] == 'closed':
-                        removed += drop_old_logs(state_dir(repo, feature, archive), step.id, cutoff)
+                        compress(state_dir(repo, feature, archive), step.id)
             except (*ERRORS, OSError, ValueError) as error:
                 print(error, file=sys.stderr)
                 failed += 1
 
-    orphans = [name for name in backend.statuses() if name.startswith('pl-') and name not in keep]
+        # Parked and reserved-name features never run, so gc keeps the sandbox of each of their steps.
+        backlog = adapter.backlog_root(repo)
+
+        try:
+            unlisted = [(feature, backlog) for feature in adapter.feature_folders(repo, backlog)]
+        except (*ERRORS, OSError, ValueError) as error:
+            print(f'pipeline gc: {error}; kept all sandboxes of {repo} ({prefix}*)', file=sys.stderr)
+            held.add(prefix)
+            failed += 1
+            unlisted = []
+
+        for feature, root in unlisted + [(feature, None) for feature in adapter.reserved_features(repo)]:
+            try:
+                keep.update(backend.sandbox_name(adapter.short(repo), feature, step.id)
+                            for step in steps(repo, feature, root=root))
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'pipeline gc: {error}; kept its sandboxes ({prefix}{feature.lower()}-*)', file=sys.stderr)
+                held.add(f'{prefix}{feature}-'.lower())
+                failed += 1
+
+    orphans = [name for name in sandboxes
+               if name.startswith('pl-') and name not in keep and not name.startswith(tuple(held))]
 
     for name in orphans:
         backend.remove(name)
 
-    print(f'dropped {dropped} snapshot refs older than {SNAPSHOT_DAYS} days; removed {removed} logs of merged steps '
-          f"older than {LOG_DAYS} days; removed orphan sandboxes: {', '.join(orphans) or 'none'}")
+    raw = f"; left raw (a private key inside): {', '.join(map(str, left_raw))}" if left_raw else ''
+    print(f'dropped {dropped} snapshot refs older than {SNAPSHOT_DAYS} days; compressed {compressed} logs of merged '
+          f"steps older than {LOG_DAYS} days; removed orphan sandboxes: {', '.join(orphans) or 'none'}{raw}")
     pruned = command_template_prune()
 
     return 1 if failed else pruned
@@ -6840,7 +6938,7 @@ COMMANDS = {
                  "who answers plan questions: ask = you (default); auto = the plan's recommendations, flagged ⚑",
                  'queue'),
     'tick': ('tick', 'start what has work (the timer does it every 5 min)', 'admin'),
-    'gc': ('gc', "clean merged steps' VMs, refs and logs, old snapshot refs, unused templates", 'admin'),
+    'gc': ('gc', "clean merged steps' VMs and refs (logs compressed), old snapshot refs, unused templates", 'admin'),
     'archive': ('archive', 'move fully merged features into _archive/', 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),

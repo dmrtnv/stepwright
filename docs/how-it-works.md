@@ -182,8 +182,15 @@ Unknown keys are an error.
   tag against the installed checkout's `.github/allowed_signers`, checks out the newest release tag or `<tag>` and
   says it verified it, runs init and doctor, and prints the Rerun the gate line of each release it adds or undoes; a
   bare update never moves the runner back).
-- Clean up: `pipeline gc` (orphan sandboxes, refs and logs of merged steps, snapshot refs > 14 days, then
-  `template prune`); the logs of archived merged steps age out too.
+- Clean up: `pipeline gc` (orphan sandboxes and refs of merged steps, snapshot refs > 14 days, then
+  `template prune`).
+  - It compresses the stage, gate and setup logs of merged steps, live and archived, older than 14 days to
+    the log's name plus `.xz` (`NN-<stage>.log.xz`, `NN-gates.log.xz`, `NN-setup.log.xz`), with token-shaped
+    strings replaced by `…`. A log holding a private key stays raw, and the summary line names it.
+  - It never deletes plan copies (`NN-*.md`) or state and result files (`.json`).
+  - It keeps the sandboxes of parked and reserved-name features.
+  - It keeps every sandbox it cannot account for, and exits 1 for each case: all of a repo's sandboxes when its
+    plans folder is missing, and every sandbox of a parked or reserved-name feature it cannot read.
 - Put merged features away: `pipeline archive` (moves every feature whose steps are all merged into `_archive/`;
   [Archive](#archive)).
 - Sandbox templates:
@@ -348,7 +355,10 @@ Tick then polls each done step's PR:
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
   `tail -n 1 <log> | jq .structured_output`.
 - gate and setup output: `<name>/.pipeline/NN-gates.log`, `NN-setup.log`.
-- approved plan (tamper gate baseline): `<name>/.pipeline/NN-plan.approved.md`.
+- old logs: after `pipeline gc` an old stage, gate or setup log of a merged step is the log's name plus `.xz`, with
+  tokens shown as `…`. Read it with `xzcat`, e.g. `xzcat <log>.xz | tail -n 1 | jq .structured_output` for a stage log.
+  `pipeline log` and `show` read raw logs only.
+- approved plan (tamper gate baseline): `<name>/.pipeline/NN-plan.approved.md`. `pipeline gc` keeps it.
 - the step's branch on the host: `git -C ~/.local/share/pipeline/repos/<o>/<r> log refs/pipeline/<name>/<NN>`.
 - inside the VM: `sbx exec -it pl-<repo>-<name>-<NN> bash` (workspace = the clean clone's path, plans under
   `/home/agent/plans`; a run that finds the VM running stops it first, ending this shell).
@@ -387,7 +397,7 @@ Tick then polls each done step's PR:
   `autonomy` and `order` with `--repo` do not check yet: they write the feature's control file first.
 - `--after <name>[:NN]` reads the archive when no live folder has the name, so a wait on an archived merged
   feature stays met. A live folder of the same name wins.
-- `pipeline gc` ages out the logs of archived merged steps. It never touches refs or sandboxes by an archived
+- `pipeline gc` compresses the old logs of archived merged steps. It never touches refs or sandboxes by an archived
   feature's name, since a live feature of that name may own them.
 - To extend an archived feature, move its folder back to `<repo>/.claude/plans/<name>/` and add steps.
 
@@ -395,8 +405,8 @@ Tick then polls each done step's PR:
 
 - Carry over the config, the App key, each checkout and its `.claude/plans/` (state files included): a step whose
   PR exists resumes, since tick re-polls GitHub.
-- Not carried: stage logs and unpublished WIP (`refs/pipeline/…` in the clean clone; GitHub only sees a step at
-  publish).
+- Not carried: raw stage logs and unpublished WIP (`refs/pipeline/…` in the clean clone; GitHub only sees a step
+  at publish). The compressed `.log.xz` logs sit in `.claude/plans/` and travel with it.
 - So one box runs the pipeline at a time; move boxes between steps, not mid-step.
 
 ## Host DNS
