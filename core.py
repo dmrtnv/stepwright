@@ -5027,6 +5027,35 @@ QUEUE_HEADER = '| feature | steps | migration | areas | after |'
 SLUG_CHARACTERS = 40
 DEFERRED_COUNTS = ('merged_prs', 'handoff', 'gap', 'legacy', 'finished_items', 'finished_with_verdict', 'verdicts',
                    'done', 'moot', 'wontdo', 'owned', 'unreadable')
+SWEEP_VERDICTS = ('done', 'moot', 'still_true', 'needs_owner')
+SWEEP_BRIEF_LISTS = ('scope_in', 'scope_out', 'locked_decisions', 'pointers', 'traps', 'done_when', 'open_questions')
+SWEEP_SCHEMA = {
+    'type': 'object', 'required': ['verdicts'], 'additionalProperties': False,
+    'properties': {'verdicts': {'type': 'array', 'items': {
+        'type': 'object', 'required': ['id', 'verdict', 'note'], 'additionalProperties': False,
+        'properties': {
+            'id': {'type': 'string'}, 'verdict': {'enum': list(SWEEP_VERDICTS)}, 'note': {'type': 'string'},
+            'commit': {'type': 'string'}, 'areas': {'type': 'array', 'items': {'type': 'string'}},
+            'migration': {'type': 'boolean'},
+            'brief': {'type': 'object', 'required': ['goal', 'why', *SWEEP_BRIEF_LISTS], 'additionalProperties': False,
+                      'properties': {'goal': {'type': 'string'}, 'why': {'type': 'string'},
+                                     **{name: {'type': 'array', 'items': {'type': 'string'}}
+                                        for name in SWEEP_BRIEF_LISTS}}}}}}}}
+SWEEP_TOOLS = ['StructuredOutput']
+SWEEP_RUBRIC = PIPELINE_DIR / 'kit/skills/deferred-sweep/rubric.md'
+SWEEP_BUDGET_USD = 5
+SWEEP_TIMEOUT_SECONDS = 600
+SWEEP_TEXT_CHARACTERS = 500
+SWEEP_LIST_ITEMS = 12
+
+
+class JudgeFailure(PipelineError):
+    """A judging call that gave no usable answer. `noted`: it would fail the same way again (the budget, the timeout,
+    an answer without a verdicts list), so its items are left open with a note instead of costing a call each night."""
+
+    def __init__(self, reason, noted=False, cost=0.0):
+        super().__init__(reason)
+        self.noted, self.cost = noted, cost
 
 
 def printable(text):
@@ -5318,6 +5347,116 @@ def add_evidence(listed):
         kept += [item for item, _ in group]
 
     return kept, problems
+
+
+def judge_argv():
+    """The judging call: no tools but the answer's, no MCP server, no hook, no session kept."""
+    return [CLAUDE, '-p', '--model', STAGES['review']['model'], '--fallback-model', FALLBACK_MODEL, '--safe-mode',
+            '--tools', '', '--strict-mcp-config', '--disallowedTools', 'mcp__*', '--json-schema', json.dumps(SWEEP_SCHEMA),
+            '--no-session-persistence', '--max-budget-usd', str(SWEEP_BUDGET_USD), '--output-format', 'stream-json',
+            '--verbose']
+
+
+def kill_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def init_problem(event):
+    """Why an `init` event shows a session that could do more than answer, None when it shows only the answer tool."""
+    if event.get('tools') != SWEEP_TOOLS:
+        return f"the judging call had the tools {json.dumps(event.get('tools'))[:200]}, not only StructuredOutput"
+
+    if event.get('mcp_servers') != []:
+        return f"the judging call had the MCP servers {json.dumps(event.get('mcp_servers'))[:200]}"
+
+    return None
+
+
+def judge(prompt, log_path):
+    """One tool-free Claude call on the host with the prompt on stdin; its stream goes to `log_path`. Returns (the
+    answer's verdicts list, the cost in USD) or raises JudgeFailure. A bad or missing `init` event kills the call at
+    once."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    seen = {'init': False, 'problem': None, 'result': None}
+    timed_out = threading.Event()
+
+    with tempfile.TemporaryFile() as stdin:
+        stdin.write(prompt.encode())
+        stdin.seek(0)
+
+        try:
+            process = subprocess.Popen(judge_argv(), cwd=str(LOGS), stdin=stdin, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True)
+        except OSError as error:
+            raise JudgeFailure(f'cannot run {CLAUDE}: {error.strerror or error}') from None
+
+    def time_out():
+        timed_out.set()
+        kill_group(process)
+
+    timer = threading.Timer(SWEEP_TIMEOUT_SECONDS, time_out)
+    timer.daemon = True
+
+    try:
+        with log_path.open('w') as log:
+            def consume(line):
+                log.write(line)
+                log.flush()
+                event = parse_json(line)
+                kind = event.get('type')
+
+                if seen['problem']:
+                    return
+
+                if kind == 'system' and event.get('subtype') == 'init':
+                    seen['problem'] = init_problem(event)
+                    seen['init'] = seen['problem'] is None
+                elif kind in ('assistant', 'user', 'result') and not seen['init']:
+                    seen['problem'] = f'the judging call sent a {kind} event before a good init event'
+                elif kind == 'rate_limit_event':
+                    write_usage((event.get('rate_limit_info') or {}).get('unifiedWindows'))
+                elif kind == 'result':
+                    seen['result'] = event
+
+                if seen['problem']:
+                    kill_group(process)
+
+            timer.start()
+            read_lines(process.stdout, consume)
+    finally:
+        with signals_ignored():
+            timer.cancel()
+            kill_group(process)
+            process.wait()
+
+    result = seen['result'] or {}
+    cost = result.get('total_cost_usd')
+    cost = cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+
+    if seen['problem']:
+        raise JudgeFailure(seen['problem'], cost=cost)
+
+    if timed_out.is_set():
+        raise JudgeFailure(f'the judging call timed out after {SWEEP_TIMEOUT_SECONDS}s', True, cost)
+
+    if not seen['result']:
+        raise JudgeFailure(f'claude exited {process.returncode} without a result')
+
+    if result.get('subtype') == 'error_max_budget_usd':
+        raise JudgeFailure(f'the judging call spent its ${SWEEP_BUDGET_USD} budget', True, cost)
+
+    if result.get('is_error'):
+        raise JudgeFailure(f"{result.get('subtype')}: {str(result.get('result') or '')[:200]}", cost=cost)
+
+    answer = result.get('structured_output')
+
+    if not isinstance(answer, dict) or not isinstance(answer.get('verdicts'), list):
+        raise JudgeFailure('the answer has no verdicts list', True, cost)
+
+    return answer['verdicts'], cost
 
 
 def command_deferred(argv):
