@@ -9,6 +9,7 @@ import contextlib
 import http.client
 import io
 import json
+import lzma
 import os
 import re
 import shutil
@@ -2467,16 +2468,40 @@ class RunnerTest(RunnerCase):
         self.save(state)
         old_log = core.state_dir(REPO, FEATURE) / '01-plan.log'
         os.utime(old_log, (time.time() - 20 * 86400,) * 2)
+        old_bytes = old_log.read_bytes()
         write(core.state_dir(REPO, FEATURE) / '01-review-1.log', 'new\n')
         self.assertEqual(self.main('gc'), 0)
         refs = git(self.fixture.main, 'for-each-ref', '--format=%(refname)', 'refs/snapshots/')
         self.assertEqual(refs, f'refs/snapshots/shop/{new}-reset')
         self.assertFalse(old_log.exists())
+        self.assertEqual(lzma.decompress((core.state_dir(REPO, FEATURE) / '01-plan.log.xz').read_bytes()), old_bytes)
+        self.assertIn('compressed 1 logs', self.output)
         self.assertTrue((core.state_dir(REPO, FEATURE) / '01-review-1.log').exists())
+        self.assertFalse((core.state_dir(REPO, FEATURE) / '01-review-1.log.xz').exists())
         self.assertTrue(core.state_file(REPO, FEATURE, '01').exists())
         self.assertEqual(git(self.fixture.clone, 'for-each-ref', 'refs/pipeline/'), '')
         self.assertIsNone(self.sandbox_status('pl-shop-gone-01'))
         self.assertIsNone(self.sandbox_status(), 'a closed step keeps no sandbox')
+
+    def test_gc_leaves_a_private_key_log_raw_and_fails_on_a_different_xz(self):
+        logs = self.archive_closed() / '.pipeline'
+        key_log = logs / '01-plan.log'
+        write(key_log, '-----BEGIN ' + 'RSA PRIVATE KEY-----\n')
+        other = logs / '01-implement.log'
+        write(other, 'mine\n')
+        (logs / '01-implement.log.xz').write_bytes(lzma.compress(b'other\n'))
+
+        for path in (key_log, other):
+            os.utime(path, (time.time() - 20 * 86400,) * 2)
+
+        self.assertEqual(self.main('gc'), 1)
+        self.assertEqual(key_log.read_text(), '-----BEGIN ' + 'RSA PRIVATE KEY-----\n')
+        self.assertEqual(other.read_text(), 'mine\n')
+        self.assertEqual(lzma.decompress((logs / '01-implement.log.xz').read_bytes()), b'other\n')
+        self.assertFalse((logs / '01-plan.log.xz').exists())
+        self.assertIn(str(logs / '01-implement.log.xz'), self.errors)
+        summary = next(line for line in self.output.splitlines() if line.startswith('dropped '))
+        self.assertTrue(summary.endswith(f'; left raw (a private key inside): {key_log}'), summary)
 
     def archive_closed(self):
         """Closes step 01 and moves the feature into _archive/; returns that feature folder."""
@@ -2494,6 +2519,7 @@ class RunnerTest(RunnerCase):
         write(logs / '01-review-1.log', 'new\n')
         self.assertEqual(self.main('gc'), 0, self.errors)
         self.assertFalse((logs / '01-plan.log').exists())
+        self.assertEqual(lzma.decompress((logs / '01-plan.log.xz').read_bytes()), b'old\n')
         self.assertTrue((logs / '01-review-1.log').exists())
         self.assertTrue((logs / '01.json').exists())
         self.assertFalse(self.fixture.feature.exists(), 'gc wrote a ghost live folder')
@@ -2527,6 +2553,121 @@ class RunnerTest(RunnerCase):
         self.assertIn('sbx.service not active', self.errors)
         self.assertEqual(self.sbx_calls(), [], 'no sbx call autostarts an uncapped daemon')
 
+
+
+class LogCompressionTest(unittest.TestCase):
+    """core.compress_old_logs on a temp .pipeline/ folder."""
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp(prefix='compress-test-')) / '.pipeline'
+        self.directory.mkdir()
+        self.addCleanup(shutil.rmtree, self.directory.parent)
+        self.cutoff = time.time() - 14 * 86400
+
+    def old(self, name, content):
+        path = self.directory / name
+        path.write_bytes(content)
+        os.utime(path, (time.time() - 20 * 86400,) * 2)
+
+        return path
+
+    def compress(self):
+        with mock.patch('sys.stderr', io.StringIO()) as errors:
+            result = core.compress_old_logs(self.directory, '01', self.cutoff)
+
+        self.errors = errors.getvalue()
+
+        return result
+
+    def test_an_old_log_becomes_an_xz_with_the_same_bytes(self):
+        log = self.old('01-plan.log', b'line one\nline two\n')
+        self.assertEqual(self.compress(), (1, 0, []))
+        self.assertFalse(log.exists())
+        self.assertEqual(lzma.decompress((self.directory / '01-plan.log.xz').read_bytes()), b'line one\nline two\n')
+
+    def test_a_fresh_log_stays_raw(self):
+        log = self.directory / '01-plan.log'
+        log.write_bytes(b'fresh\n')
+        self.assertEqual(self.compress(), (0, 0, []))
+        self.assertEqual(log.read_bytes(), b'fresh\n')
+        self.assertFalse((self.directory / '01-plan.log.xz').exists())
+
+    def test_plan_copies_and_json_files_survive(self):
+        kept = [self.old(name, b'keep\n') for name in ('01-plan.approved.md', '01-plan.asked.md', '01-x.json',
+                                                         '01.json')]
+        self.compress()
+
+        for path in kept:
+            self.assertEqual(path.read_bytes(), b'keep\n', path.name)
+
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()), sorted(path.name for path in kept))
+
+    def test_token_shaped_strings_are_redacted(self):
+        tokens = [prefix + 'A1b2C3d4E5f6G7h8I9j0K1l2' for prefix in ('ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_',
+                                                                    'github_pat_', 'sk-' + 'ant-')]
+        tokens += ['AK' + 'IA0123456789ABCDEF', 'AS' + 'IA0123456789ABCDEF']
+        self.old('01-implement.log', ''.join(f'env {token} end\n' for token in tokens).encode())
+        self.assertEqual(self.compress(), (1, 0, []))
+        text = lzma.decompress((self.directory / '01-implement.log.xz').read_bytes()).decode()
+        self.assertEqual(text, 'env … end\n' * len(tokens))
+
+    def test_a_log_with_a_private_key_stays_raw(self):
+        log = self.old('01-plan.log', ('x\n' + '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----\n').encode())
+        self.assertEqual(self.compress(), (0, 0, [log]))
+        self.assertTrue(log.exists())
+        self.assertFalse((self.directory / '01-plan.log.xz').exists())
+
+    def test_an_existing_xz_with_other_content_keeps_both_and_fails(self):
+        for existing in (lzma.compress(b'other\n'), b'not xz at all'):
+            with self.subTest(existing=existing):
+                log = self.old('01-plan.log', b'mine\n')
+                target = self.directory / '01-plan.log.xz'
+                target.write_bytes(existing)
+                self.assertEqual(self.compress(), (0, 1, []))
+                self.assertEqual(log.read_bytes(), b'mine\n')
+                self.assertEqual(target.read_bytes(), existing)
+                self.assertIn(str(target), self.errors)
+
+    def test_an_existing_xz_with_the_same_content_finishes_the_job(self):
+        log = self.old('01-plan.log', b'mine\n')
+        (self.directory / '01-plan.log.xz').write_bytes(lzma.compress(b'mine\n'))
+        self.assertEqual(self.compress(), (1, 0, []))
+        self.assertFalse(log.exists())
+
+    def test_an_xz_that_does_not_read_back_keeps_the_raw_log(self):
+        log = self.old('01-plan.log', b'mine\n')
+
+        with mock.patch.object(core.lzma, 'compress', return_value=b'not xz'):
+            self.assertEqual(self.compress(), (0, 1, []))
+
+        self.assertEqual(log.read_bytes(), b'mine\n')
+        self.assertIn('does not read back', self.errors)
+
+    def test_another_steps_log_is_untouched(self):
+        other = self.old('02-plan.log', b'two\n')
+        self.assertEqual(self.compress(), (0, 0, []))
+        self.assertEqual(other.read_bytes(), b'two\n')
+        self.assertFalse((self.directory / '02-plan.log.xz').exists())
+
+    def test_a_failed_write_keeps_the_log_and_goes_on(self):
+        first = self.old('01-plan.log', b'first\n')
+        second = self.old('01-review-1.log', b'second\n')
+        replace = os.replace
+
+        def failing_once(source, destination):
+            if str(destination).endswith('01-plan.log.xz'):
+                raise OSError(28, 'No space left on device', str(destination))
+
+            return replace(source, destination)
+
+        with mock.patch.object(core.os, 'replace', side_effect=failing_once):
+            self.assertEqual(self.compress(), (1, 1, []))
+
+        self.assertEqual(first.read_bytes(), b'first\n')
+        self.assertFalse(second.exists())
+        self.assertTrue((self.directory / '01-review-1.log.xz').exists())
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()), ['01-plan.log', '01-review-1.log.xz'])
+        self.assertIn('No space left on device', self.errors)
 
 
 class RulesStagingTest(unittest.TestCase):
