@@ -5012,6 +5012,19 @@ DEFERRED_VERDICTS = ('done', 'moot', 'wontdo', 'owned')
 DEFERRED_ID = re.compile(r'^(\d{2})\.(\d+)$')
 DEFERRED_NOTE_CHARACTERS = 300
 DEFERRED_FLAG = re.compile(r'^--?[A-Za-z][\w-]*$')
+EVIDENCE_CHARACTERS = 2000
+EVIDENCE_PATH = re.compile(r'^[A-Za-z0-9_./-]+$')
+EVIDENCE_LINE = re.compile(r':\d+(-\d+)?$')
+BRANCH_NAME = re.compile(r'^[A-Za-z0-9._/][A-Za-z0-9._/-]*$')
+MERGE_SHA = re.compile(r'^[0-9a-f]{40}$')
+COMMIT_LINE = ('--format=%h %ad %s', '--date=short')
+BRIEF_HEADINGS = ('Scope', 'Locked decisions', 'Pointers', 'Traps', 'Done when', 'Open questions')
+FOLLOW_UPS = 'follow-ups'
+FOLLOW_UPS_OVERVIEW = ('# follow-ups\n\n**Goal:** independent follow-ups filed from deferred items; each step '
+                       'stands alone and merges on its own.\n\n## Locked decisions\n- No step depends on another; the '
+                       'step folders are the step list, so this overview keeps no step table.\n')
+QUEUE_HEADER = '| feature | steps | migration | areas | after |'
+SLUG_CHARACTERS = 40
 DEFERRED_COUNTS = ('merged_prs', 'handoff', 'gap', 'legacy', 'finished_items', 'finished_with_verdict', 'verdicts',
                    'done', 'moot', 'wontdo', 'owned', 'unreadable')
 
@@ -5181,18 +5194,139 @@ def metrics_line(counts):
     return line + (f" · partial: {plural(counts['unreadable'], 'feature')} unreadable" if counts['unreadable'] else '')
 
 
+def evidence_split(evidence):
+    """(path, literal, usable): the first word without its `:N` or `:N-M`, the text between the first and the last
+    `"` after it, and whether that path is safe to hand git (relative, no `..`, only `[A-Za-z0-9_./-]`)."""
+    words = evidence.split(maxsplit=1)
+    path = EVIDENCE_LINE.sub('', words[0]) if words else ''
+    rest = words[1] if len(words) > 1 else ''
+    first, last = rest.find('"'), rest.rfind('"')
+    literal = rest[first + 1:last] if first != last else ''
+    usable = bool(EVIDENCE_PATH.match(path)) and not path.startswith('/') and '..' not in path.split('/')
+
+    return path, literal, usable
+
+
+def evidence_run(clone, *arguments):
+    """One read's `{exit, output}`; a read git cannot be handed (a NUL, an argument too long) or that times out is
+    exit -1 with the reason, so it fails only its own item."""
+    try:
+        result = git_result(clone, *arguments)
+    except (PipelineError, OSError, ValueError) as error:
+        return {'exit': -1, 'output': cap(headline(str(error)), EVIDENCE_CHARACTERS)}
+
+    return {'exit': result.returncode,
+            'output': cap(result.stdout if result.returncode == 0 else result.stderr, EVIDENCE_CHARACTERS)}
+
+
+def merge_commit(repo, number, pulls):
+    """The merge commit GitHub records for PR `number`, '' when it names none or refuses (a 404); asked once per PR."""
+    if number not in pulls:
+        try:
+            sha = github_api('GET', f'/repos/{repo}/pulls/{number}', installation_token(repo)).get('merge_commit_sha')
+        except GitHubUnavailable:
+            raise
+        except PipelineError:
+            sha = ''
+
+        pulls[number] = sha if isinstance(sha, str) and MERGE_SHA.match(sha) else ''
+
+    return pulls[number]
+
+
+def handoff_check(repo, clone, revision, owner, owner_state, pulls):
+    """The owner step's merged PR, its merge commit's line when that commit is on the base, and the files it changed
+    against its first parent."""
+    handoff = {'step': owner, 'pr': None, 'commit': '', 'files': ''}
+
+    if owner_state is None or owner_state['status'] != 'closed' or not (owner_state['merged'] or {}).get('number'):
+        return handoff
+
+    handoff['pr'] = owner_state['merged']['number']
+    sha = merge_commit(repo, handoff['pr'], pulls)
+
+    if sha and git_result(clone, 'merge-base', '--is-ancestor', sha, revision).returncode == 0:
+        handoff['commit'] = git_result(clone, 'log', '-1', *COMMIT_LINE, sha).stdout.strip()
+        files = git_result(clone, '-c', 'core.quotepath=off', 'diff-tree', '-r', '--name-only', '--no-renames',
+                           f'{sha}^1', sha)
+        handoff['files'] = cap(files.stdout, EVIDENCE_CHARACTERS) if files.returncode == 0 else ''
+
+    return handoff
+
+
+def evidence_check(repo, clone, base, item, owner_state, pulls):
+    """What the base branch says about one listed item's evidence: the four reads the sweep judges on, each
+    `{exit, output}` or None when it was not run, and for a handoff its owner step's merge."""
+    path, literal, usable = evidence_split(item['evidence'])
+    revision = f'refs/remotes/origin/{base}'
+    pathspec = ('--', path) if usable else ()
+    owner = item['owner']
+
+    return {
+        'base': f'origin/{base}', 'path': path, 'literal': literal, 'usable': usable,
+        'show': evidence_run(clone, 'show', f'{revision}:{path}') if usable else None,
+        'grep': evidence_run(clone, 'grep', '-n', '-F', '-e', literal, revision, *pathspec) if literal else None,
+        'pickaxe': evidence_run(clone, 'log', *COMMIT_LINE, '-S', literal, revision, *pathspec) if literal else None,
+        'log': evidence_run(clone, 'log', *COMMIT_LINE, '--max-count=50', revision, *pathspec),
+        'handoff': handoff_check(repo, clone, revision, owner, owner_state, pulls) if owner else None,
+    }
+
+
+def owner_state(repo, feature, root, owner):
+    """The state of the step a handoff names, None when the owner is not a step of the feature."""
+    if not re.match(r'^\d{2}$', owner) or owner not in [step.id for step in steps(repo, feature, root)]:
+        return None
+
+    return load_state(repo, feature, owner, root)
+
+
+def add_evidence(listed):
+    """Adds `evidence_check` to each listed item, refreshing each repo's clean clone first. A repo that fails is named
+    on stderr and its items are dropped; returns the items kept and whether one failed."""
+    kept, failed = [], False
+
+    for repo in dict.fromkeys(item['repo'] for item, _ in listed):
+        group = [(item, root) for item, root in listed if item['repo'] == repo]
+
+        try:
+            refresh_clone(repo)
+            base = adapter.repo_config(repo)['base']
+
+            if not BRANCH_NAME.match(base):
+                raise PipelineError(f'base {base!r} is not a branch name')
+
+            clone, pulls = adapter.clone_path(repo), {}
+
+            for item, root in group:
+                item['evidence_check'] = evidence_check(repo, clone, base, item,
+                                                        owner_state(repo, item['feature'], root, item['owner']), pulls)
+        except (*ERRORS, OSError, ValueError) as error:
+            print(f'{repo}: cannot gather evidence: {headline(str(error))}', file=sys.stderr)
+            failed = True
+            continue
+
+        kept += [item for item, _ in group]
+
+    return kept, failed
+
+
 def command_deferred(argv):
     """The open deferred items of merged steps (live and parked features), then the metrics of every feature of the
     repos in scope, archived ones included."""
     if argv and argv[0] == 'close':
         return command_deferred_close(argv[1:])
 
+    if argv and argv[0] == 'file':
+        return command_deferred_file(argv[1:])
+
     rest = list(argv)
     as_json = rest.count('--json') == 1
     rest = [word for word in rest if word != '--json'] if as_json else rest
+    with_evidence = rest.count('--evidence') == 1
+    rest = [word for word in rest if word != '--evidence'] if with_evidence else rest
     repo = pick_repo(rest) if '--repo' in rest else None
 
-    if len(rest) > 1 or any(word.startswith('-') for word in rest):
+    if len(rest) > 1 or any(word.startswith('-') for word in rest) or with_evidence and not as_json:
         return usage_error('deferred')
 
     if rest:
@@ -5208,7 +5342,7 @@ def command_deferred(argv):
     features += [(name, feature, adapter.archive_root(name), False) for name in repos
                  for feature in adapter.feature_folders(name, adapter.archive_root(name))]
     counts = dict.fromkeys(DEFERRED_COUNTS, 0)
-    items, failed = [], False
+    found, failed = [], False
 
     for name, feature, root, shown in features:
         try:
@@ -5223,10 +5357,16 @@ def command_deferred(argv):
         add_deferred_counts(counts, states, entries)
 
         if shown:
-            items += [{'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
-                       'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
-                       'evidence': deferred_field(item, 'evidence')}
+            found += [({'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
+                        'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
+                        'evidence': deferred_field(item, 'evidence')}, root)
                       for item_id, state, item, verdict in entries if isinstance(item, dict) and verdict is None]
+
+    items = [item for item, _ in found]
+
+    if with_evidence:
+        items, problem = add_evidence(found)
+        failed = failed or problem
 
     if as_json:
         print(json.dumps({'items': items, 'metrics': counts}, indent=2))
@@ -5256,20 +5396,8 @@ def verdict_text(verdict):
     return f"owned by {verdict['owner']}" if verdict['verdict'] == 'owned' else verdict['verdict']
 
 
-def command_deferred_close(argv):
-    """Records one verdict on one deferred item of a merged step: done, moot or wontdo with a note saying why, or
-    owned by a live or parked feature that takes the work on. A second close replaces the first."""
-    rest = list(argv)
-    repo = pick_repo(rest) if '--repo' in rest else None
-    verdict = rest[2] if len(rest) > 2 else None
-    sizes = (4, 5) if verdict == 'owned' else (4,)
-
-    if verdict not in DEFERRED_VERDICTS or len(rest) not in sizes or any(DEFERRED_FLAG.match(word) for word in rest):
-        return usage_error('deferred')
-
-    feature, item_id = rest[0], rest[1]
-    target = rest[3] if verdict == 'owned' else ''
-    note = printable(rest[-1] if len(rest) == 5 or verdict != 'owned' else '')[:DEFERRED_NOTE_CHARACTERS]
+def verdict_checks(feature, item_id, target):
+    """The feature name, target name, self-own and id checks, in the order close runs them; the id in normal form."""
     feature_name_check(feature)
 
     if target:
@@ -5283,41 +5411,347 @@ def command_deferred_close(argv):
     if not match:
         raise PipelineError(f'{item_id} is not an item id: use NN.K as pipeline deferred lists it')
 
-    step_id, index = match.group(1), int(match.group(2))
-    item_id = f'{step_id}.{index}'
+    return f'{match.group(1)}.{int(match.group(2))}'
+
+
+def deferred_item(repo, root, feature, item_id):
+    """(id, state, item, verdict) of one dict item of a merged step, or the refusal that names why it takes none."""
+    step_id, index = item_id.split('.')
+    state = next((load_state(repo, feature, step.id, root) for step in steps(repo, feature, root)
+                  if step.id == step_id), None)
+
+    if state is None:
+        raise PipelineError(f'{feature} has no step {step_id}')
+
+    if state['status'] != 'closed':
+        raise PipelineError(f"{feature} step {step_id} is not merged yet: only a merged step's items take a verdict")
+
+    entry = next((entry for entry in deferred_entries(repo, feature, root) if entry[0] == item_id), None)
+
+    if entry is None:
+        raise PipelineError(f'{feature} step {step_id} has no deferred item {index}')
+
+    if not isinstance(entry[2], dict):
+        raise PipelineError(f'{feature} {item_id} is a legacy item: it takes no verdict')
+
+    return entry
+
+
+def close_item(repo, root, feature, item_id, verdict, target='', note=''):
+    """Records one verdict and returns the line that says so. The caller ran `verdict_checks` and holds the run lock."""
+    note = printable(note)[:DEFERRED_NOTE_CHARACTERS]
+    deferred_item(repo, root, feature, item_id)
+
+    if verdict != 'owned' and not note:
+        raise PipelineError(f'a {verdict} verdict needs a note that says why')
+
+    if target and target not in [name for name, _ in sweepable_features(repo)]:
+        raise PipelineError(f'no feature {target} with a step folder in {adapter.plans_root(repo)} or '
+                            f'{adapter.backlog_root(repo)}')
+
+    verdicts = read_verdicts(repo, feature, root)
+    previous = verdicts.get(item_id)
+    verdicts[item_id] = {'verdict': verdict, 'owner': target, 'note': note, 'at': now_iso()}
+    save_verdicts(repo, feature, root, verdicts)
+
+    return f'{feature} {item_id}: {verdict_text(verdicts[item_id])}' + (f' (was {verdict_text(previous)})'
+                                                                       if previous else '')
+
+
+def command_deferred_close(argv):
+    """Records one verdict on one deferred item of a merged step: done, moot or wontdo with a note saying why, or
+    owned by a live or parked feature that takes the work on. A second close replaces the first."""
+    rest = list(argv)
+    repo = pick_repo(rest) if '--repo' in rest else None
+    verdict = rest[2] if len(rest) > 2 else None
+    sizes = (4, 5) if verdict == 'owned' else (4,)
+
+    if verdict not in DEFERRED_VERDICTS or len(rest) not in sizes or any(DEFERRED_FLAG.match(word) for word in rest):
+        return usage_error('deferred')
+
+    feature = rest[0]
+    target = rest[3] if verdict == 'owned' else ''
+    note = rest[-1] if len(rest) == 5 or verdict != 'owned' else ''
+    item_id = verdict_checks(feature, rest[1], target)
     repo, root = deferred_place(feature, repo)
 
     def record():
-        state = next((load_state(repo, feature, step.id, root) for step in steps(repo, feature, root)
-                      if step.id == step_id), None)
+        print(close_item(repo, root, feature, item_id, verdict, target, note))
 
-        if state is None:
-            raise PipelineError(f'{feature} has no step {step_id}')
+        return 0
 
-        if state['status'] != 'closed':
-            raise PipelineError(f"{feature} step {step_id} is not merged yet: only a merged step's items take a verdict")
+    return with_lock(run_lock(repo, feature), record)
 
-        entry = next((entry for entry in deferred_entries(repo, feature, root) if entry[0] == item_id), None)
 
-        if entry is None:
-            raise PipelineError(f'{feature} step {step_id} has no deferred item {index}')
+def bucket_place(repo):
+    """(where, path) of the follow-ups bucket: live, parked or archived, (None, None) when there is none. A folder
+    with no step yet counts, so the check is a plain directory test."""
+    places = [(where, root / FOLLOW_UPS) for where, root in (('live', adapter.plans_root(repo)),
+                                                              ('parked', adapter.backlog_root(repo)),
+                                                              ('archived', adapter.archive_root(repo)))
+              if (root / FOLLOW_UPS).is_dir()]
 
-        if not isinstance(entry[2], dict):
-            raise PipelineError(f'{feature} {item_id} is a legacy item: it takes no verdict')
+    if [where for where, _ in places[:2]] == ['live', 'parked']:
+        raise PipelineError(f'{FOLLOW_UPS} is in {places[0][1]} and {places[1][1]}: keep one of them')
 
-        if verdict != 'owned' and not note:
-            raise PipelineError(f'a {verdict} verdict needs a note that says why')
+    return places[0] if places else (None, None)
 
-        if target and target not in [name for name, _ in sweepable_features(repo)]:
-            raise PipelineError(f'no feature {target} with a step folder in {adapter.plans_root(repo)} or '
-                                f'{adapter.backlog_root(repo)}')
 
-        verdicts = read_verdicts(repo, feature, root)
-        previous = verdicts.get(item_id)
-        verdicts[item_id] = {'verdict': verdict, 'owner': target, 'note': note, 'at': now_iso()}
-        save_verdicts(repo, feature, root, verdicts)
-        print(f'{feature} {item_id}: {verdict_text(verdicts[item_id])}' +
-              (f' (was {verdict_text(previous)})' if previous else ''))
+def step_folders(directory):
+    return sorted(path for path in directory.iterdir() if path.is_dir() and STEP_DIR.match(path.name))
+
+
+def pointers_marker(text):
+    """The first non-blank line under `## Pointers`, where a filed brief names its item; '' when there is none."""
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if brief_heading(line) == 'Pointers'), None)
+
+    return next((line for line in lines[start + 1:] if line.strip()), '') if start is not None else ''
+
+
+def filed_brief(repo, feature, item_id):
+    """(where, feature, step folder) of the brief an earlier filing wrote for this item, looked up live, then parked,
+    then archived; None when no brief names it."""
+    marker = f'- deferred from {feature} {item_id} (PR #'
+
+    for where, root in (('live', adapter.plans_root(repo)), ('parked', adapter.backlog_root(repo)),
+                        ('archived', adapter.archive_root(repo))):
+        features = sorted(path for path in root.iterdir() if path.is_dir() and FEATURE_NAME.match(path.name)) \
+            if root.is_dir() else []
+
+        for directory in features:
+            for folder in step_folders(directory):
+                try:
+                    text = (folder / 'brief.md').read_text(errors='replace')
+                except OSError:
+                    continue
+
+                if pointers_marker(text).startswith(marker):
+                    return where, directory.name, folder
+
+    return None
+
+
+def item_slug(text):
+    slug = re.sub(r'[^a-z0-9]+', '-', printable(text).lower())[:SLUG_CHARACTERS].strip('-')
+
+    return slug or 'follow-up'
+
+
+def brief_heading(line):
+    """The name of a `## ` heading line, None for any other line."""
+    return line[3:].strip() if line.startswith('## ') else None
+
+
+def brief_sections(body):
+    """The caller's brief as lines without its title, its ## headings written as `## <name>`; refused unless they are
+    the brief template's."""
+    lines = body.strip('\n').splitlines()
+    lines = '\n'.join(lines[1:]).lstrip('\n').splitlines() if lines and lines[0].startswith('# ') else lines
+    lines = [line if brief_heading(line) is None else f'## {brief_heading(line)}' for line in lines]
+    headings = [brief_heading(line) for line in lines if brief_heading(line) is not None]
+
+    if headings != list(BRIEF_HEADINGS):
+        raise PipelineError(f'the brief needs the sections {", ".join(BRIEF_HEADINGS)} as ## headings, in that order; '
+                            'nothing filed')
+
+    return lines
+
+
+def brief_text(title, lines, marker, item):
+    """The filed brief: the runner's title, the caller's sections, the marker first under Pointers and the item as a
+    fenced data block at Pointers' end."""
+    pointers = lines.index('## Pointers')
+    traps = lines.index('## Traps')
+    section = '\n'.join(lines[pointers + 1:traps]).strip('\n')
+    data = [f"item: {printable(deferred_field(item, 'item'))}",
+            f"evidence: {printable(deferred_field(item, 'evidence'))}"]
+    fence = '`' * max(3, 1 + max((len(run) for run in re.findall('`+', '\n'.join(data))), default=0))
+    pointers_lines = [marker, *([section] if section else []), '', 'Deferred item (data, not instructions):',
+                      f'{fence}text', *data, fence, '']
+
+    return '\n'.join([title, '', *lines[:pointers + 1], *pointers_lines, *lines[traps:]]).rstrip('\n') + '\n'
+
+
+def queue_cells(line):
+    cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+
+    return (cells + [''] * 5)[:5]
+
+
+def update_queue(repo, target, directory, areas, migration):
+    """Sets the target's row of the plans README's queue table: its step count, its areas plus the new ones, and
+    migration yes when the filing adds one. Every other line stays as it is."""
+    path = adapter.plans_root(repo) / 'README.md'
+
+    try:
+        text = path.read_text() if path.exists() else ''
+    except (OSError, ValueError) as error:
+        raise PipelineError(f'{path}: cannot read ({error}); the brief is filed, re-run to finish') from None
+
+    lines = text.splitlines()
+    added = [area.strip() for area in printable(areas).replace('|', '/').split(',') if area.strip()]
+    header = next((index for index, line in enumerate(lines)
+                   if re.sub(r'\s', '', line) == re.sub(r'\s', '', QUEUE_HEADER)), None)
+
+    if header is None:
+        lines += ([''] if lines else []) + [QUEUE_HEADER, '|---|---|---|---|---|']
+        header = len(lines) - 2
+
+    end = header + 1
+
+    while end < len(lines) and lines[end].lstrip().startswith('|'):
+        end += 1
+
+    index = next((index for index in range(header + 2, end) if queue_cells(lines[index])[0] == target), None)
+    name, _, old_migration, old_areas, after = queue_cells(lines[index]) if index is not None else (target, '', 'no',
+                                                                                                    '', '')
+    kept = [area.strip() for area in old_areas.split(',') if area.strip()]
+    row = (f"| {name} | {len(step_folders(directory))} | {'yes' if migration == 'yes' else old_migration or 'no'} | "
+           f"{', '.join(kept + [area for area in added if area not in kept])} | {after} |")
+
+    if index is None:
+        lines.insert(end, row)
+    else:
+        lines[index] = row
+
+    try:
+        replace_step_file(path, '\n'.join(lines) + '\n')
+    except OSError as error:
+        raise PipelineError(f'{path}: cannot write ({error.strerror}); the brief is filed, re-run to finish') from None
+
+
+def file_target(repo, target):
+    """(where, folder) the filing goes into: the follow-ups bucket wherever it is, else a live or parked feature."""
+    if target == FOLLOW_UPS:
+        return bucket_place(repo)
+
+    _, root = deferred_place(target, repo)
+
+    return 'live' if root == adapter.plans_root(repo) else 'parked', root / target
+
+
+def write_file(folder, name, text):
+    """A file a tick or a person reads later, in a folder made readable to them (mkdtemp's 0700 is not)."""
+    folder.mkdir(exist_ok=True)
+    os.chmod(folder, 0o755)
+    (folder / name).write_text(text)
+    os.chmod(folder / name, 0o644)
+
+
+def file_item(repo, root, feature, item_id, target, body, areas, migration):
+    """Files one open item as the next step brief of `target`, then records it owned by `target`; returns the lines
+    to print. A brief an earlier filing already wrote is closed, never written twice. The caller ran `verdict_checks`
+    and holds the run lock."""
+    _, state, item, verdict = deferred_item(repo, root, feature, item_id)
+
+    if verdict is not None:
+        raise PipelineError(f'{feature} {item_id} already has a verdict ({verdict_text(verdict)}); nothing filed')
+
+    pr = deferred_pr(state)
+
+    if not pr:
+        raise PipelineError(f'{feature} step {state["id"]} has no PR number; nothing filed')
+
+    marker = f'- deferred from {feature} {item_id} (PR #{pr})'
+    sections = brief_sections(body)
+    filed = filed_brief(repo, feature, item_id)
+    plans = adapter.plans_root(repo)
+
+    if filed:
+        where, owner, folder = filed
+        relative = folder.relative_to(plans)
+
+        if where == 'archived':
+            closed = close_item(repo, root, feature, item_id, 'done', note=f'filed as {relative}, which merged')
+        else:
+            with adapter.exclusive(f'plans-{adapter.short(repo)}'):
+                update_queue(repo, owner, folder.parent, areas, migration)
+
+            closed = close_item(repo, root, feature, item_id, 'owned', owner, f'filed as {relative}')
+
+        return [f'{feature} {item_id}: already filed in {folder}', closed]
+
+    slug = item_slug(deferred_field(item, 'item'))
+
+    with adapter.exclusive(f'plans-{adapter.short(repo)}'):
+        where, existing = file_target(repo, target)
+        numbers = [int(STEP_DIR.match(folder.name).group(1)) for folder in step_folders(existing)] if existing else []
+        number = max(numbers, default=0) + 1
+
+        if number > 99:
+            raise PipelineError(f'{target} is full (99 steps); nothing filed')
+
+        name = f'{number:02d}-{slug}'
+        text = brief_text(f'# {number:02d} {slug}', sections, marker, item)
+        destination = existing if where in ('live', 'parked') else adapter.backlog_root(repo) / FOLLOW_UPS
+        staging = None
+
+        try:
+            staging = Path(tempfile.mkdtemp(dir=plans, prefix='.file-', suffix='.tmp'))
+            os.chmod(staging, 0o755)
+
+            if where is None:
+                bucket = staging / FOLLOW_UPS
+                write_file(bucket, '00-overview.md', FOLLOW_UPS_OVERVIEW)
+                write_file(bucket / name, 'brief.md', text)
+                destination.parent.mkdir(exist_ok=True)
+                os.rename(bucket, destination)
+            else:
+                write_file(staging / name, 'brief.md', text)
+
+                if where == 'archived':
+                    destination.parent.mkdir(exist_ok=True)
+                    os.rename(existing, destination)
+
+                os.rename(staging / name, destination / name)
+        except OSError as error:
+            raise PipelineError(f'cannot file into {destination}: {error.strerror or error}; nothing filed') from None
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        update_queue(repo, target, destination, areas, migration)
+
+    folder = destination / name
+    started = 'live: the next tick starts it' if where == 'live' else f'parked: pipeline start {target} runs it'
+
+    return [f'filed {folder / "brief.md"} ({started})',
+            close_item(repo, root, feature, item_id, 'owned', target, f'filed as {folder.relative_to(plans)}')]
+
+
+def command_deferred_file(argv):
+    """Files one open deferred item of a merged step as a step brief in a live or parked feature, or in follow-ups,
+    and records it owned there. The caller's brief file holds every section but the title."""
+    rest = list(argv)
+    repo = pick_repo(rest) if '--repo' in rest else None
+    options = {}
+
+    for flag in ('--brief', '--areas', '--migration'):
+        index = rest.index(flag) if rest.count(flag) == 1 else len(rest)
+
+        if index + 1 >= len(rest) or DEFERRED_FLAG.match(rest[index + 1]):
+            return usage_error('deferred')
+
+        options[flag] = rest[index + 1]
+        del rest[index:index + 2]
+
+    if len(rest) != 3 or any(DEFERRED_FLAG.match(word) for word in rest) or options['--migration'] not in ('yes', 'no'):
+        return usage_error('deferred')
+
+    feature, target = rest[0], rest[2]
+    item_id = verdict_checks(feature, rest[1], target)
+
+    try:
+        body = Path(options['--brief']).read_text()
+    except (OSError, ValueError) as error:
+        raise PipelineError(f"{options['--brief']}: cannot read the brief ({error}); nothing filed") from None
+
+    repo, root = deferred_place(feature, repo)
+
+    def record():
+        for line in file_item(repo, root, feature, item_id, target, body, options['--areas'], options['--migration']):
+            print(line)
 
         return 0
 
@@ -6923,9 +7357,12 @@ COMMANDS = {
     'revise': ('revise <feature> [--repo <o>/<r>]', 'send the plan back (`## Feedback` in plan.md)', 'daily'),
     'respond': ('respond <feature> [--repo <o>/<r>]', 'turn your PR comments into a respond round, now', 'daily'),
     'queue': ('queue', 'running, queued in start order, held, waiting, needs you, backlog', 'queue'),
-    'deferred': ('deferred [<feature>] [--json] [--repo <o>/<r>] | deferred close <feature> <NN.K> done|moot|wontdo '
-                 '<note> | deferred close <feature> <NN.K> owned <target> [<note>]',
-                 'open deferred items of merged steps, with metrics; close records one verdict per item', 'queue'),
+    'deferred': ('deferred [<feature>] [--json [--evidence]] [--repo <o>/<r>] | deferred close <feature> <NN.K> '
+                 'done|moot|wontdo <note> | deferred close <feature> <NN.K> owned <target> [<note>] | deferred file '
+                 '<feature> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no',
+                 'open deferred items of merged steps, with metrics (--evidence: what the base branch shows for each); '
+                 'close records one verdict per item; file writes one as the next step brief of <target> and records '
+                 'it owned', 'queue'),
     'start': ('start [<feature>] [--repo <o>/<r>] [--after <feature>[:NN]]',
               'unpark from _backlog, lift the hold, start it (paused: now) or once that merged; none: end the drain',
               'queue'),

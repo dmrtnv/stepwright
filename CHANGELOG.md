@@ -6,9 +6,23 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
-**Rerun the gate:** no (no kit or `STAGES` change).
+**Rerun the gate:** no (no stage kit or `STAGES` change).
+
+### Added
+
+- `pipeline deferred --json --evidence` adds an `evidence_check` to each item: what the default branch shows for its
+  evidence, read in the runner's freshly fetched clean clone, and for a handoff its owner step's merge commit and
+  files. A repo that cannot be read is named and left out, and the exit is 1.
+- `pipeline deferred file <name> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no` files one item
+  as the next step brief of a feature or of `follow-ups`, updates the queue row and records the item owned. A
+  re-run never files the same item twice.
 
 ### Changed
+
+- `/deferred-sweep` runs no git and no file moves itself: it reads the evidence from `pipeline deferred --evidence`,
+  judges by the verdicts now in its `rubric.md`, and files through `pipeline deferred file`. The owned note now
+  reads `filed as <path>`. A new step takes the number after the target's highest, never a gap. Its question
+  about a live filing names the target and the brief's Goal.
 
 - `pipeline gc` compresses the old logs of merged steps to `NN-<stage>.log.xz`, `NN-gates.log.xz` or
   `NN-setup.log.xz` instead of deleting them, with token-shaped strings replaced by `…`. A log holding a private key

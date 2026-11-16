@@ -155,7 +155,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline update`: move to the newest release.
 - `pipeline gc`: clean up after merged steps and compress their old logs.
 - `pipeline archive`: move fully merged features into `_archive/`.
-- `pipeline deferred`: the open deferred items of merged steps. `pipeline deferred close` records a verdict.
+- `pipeline deferred`: open deferred items of merged steps. `close` records a verdict; `file` files one as a brief.
 - `/deferred-sweep [<name>]` in Claude Code: re-check a merged feature's deferred items and file the ones left.
 
 Re-running is always safe. Every command, in detail: [Everyday use](docs/how-it-works.md#everyday-use).

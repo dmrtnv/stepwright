@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_core import FEATURE, IMPLEMENT, REPO, RunnerCase, write  # noqa: E402
+from test_core import FEATURE, IMPLEMENT, REPO, RunnerCase, git, write  # noqa: E402
 from test_deferred import DeferredCase  # noqa: E402
 
 import core  # noqa: E402
@@ -110,6 +110,18 @@ class ListTest(DeferredCommandCase):
         self.assertEqual(value['metrics'], {'merged_prs': 1, 'handoff': 0, 'gap': 1, 'legacy': 1, 'finished_items': 1,
                                             'finished_with_verdict': 0, 'verdicts': 0, 'done': 0, 'moot': 0,
                                             'wontdo': 0, 'owned': 0, 'unreadable': 0})
+        self.assertNotIn('evidence_check', value['items'][0])
+        self.assertEqual(self.main('deferred', '--json', '--evidence'), 0, self.errors)
+        listed = json.loads(self.output)['items']
+        missing = {'exit': 128, 'output': "fatal: path 'core.py' does not exist in 'refs/remotes/origin/main'\n"}
+        self.assertEqual(listed, [{'repo': REPO, 'feature': FEATURE, 'id': '01.2', 'pr': 5, 'owner': '',
+                                   'item': 'keep  \x1b[2J this', 'evidence': evidence,
+                                   'evidence_check': {'base': 'origin/main', 'path': 'core.py', 'literal': 'a  b',
+                                                      'usable': True, 'show': missing,
+                                                      'grep': {'exit': 1, 'output': ''},
+                                                      'pickaxe': {'exit': 0, 'output': ''},
+                                                      'log': {'exit': 0, 'output': ''},
+                                                      'handoff': None}}])
 
     def test_text_output_never_carries_terminal_controls(self):
         self.seed(FEATURE, '01', [deferred('a\x1b[2Jb\rc\x9bd‮e f', 'x.py\x07:1', '0\x1b2')])
@@ -205,6 +217,247 @@ class ListTest(DeferredCommandCase):
     def test_a_folder_named_deferred_is_reserved(self):
         self.seed('deferred', '01', [GAP])
         self.assertNotIn(('acme/shop', 'deferred'), core.adapter.all_features())
+
+
+class EvidenceTest(DeferredCommandCase):
+    """`--evidence`: the base branch's answers about each listed item, read in the runner's clean clone."""
+
+    def push(self, files, message='feat: Add the evidence'):
+        other = self.fixture.other
+
+        for name, text in files.items():
+            write(other / name, text)
+
+        git(other, 'add', '-A')
+        git(other, 'commit', '-qm', message)
+        git(other, 'push', '-q', 'origin', 'main')
+
+        return git(other, 'rev-parse', 'HEAD')
+
+    def line(self, sha):
+        return git(self.fixture.other, 'log', '-1', '--format=%h %ad %s', '--date=short', sha)
+
+    def evidence(self, *argv, code=0):
+        self.assertEqual(self.main('deferred', '--json', '--evidence', *argv), code, self.errors)
+
+        return {item['id']: item['evidence_check'] for item in json.loads(self.output)['items']}
+
+    def test_a_path_with_a_literal_runs_all_four_reads(self):
+        sha = self.push({'src/cache.py': 'one\nkeep = leak()\n'})
+        self.seed(FEATURE, '01', [deferred('the cache leaks', 'src/cache.py:2 "leak()"')])
+        check = self.evidence()['01.1']
+        self.assertEqual((check['base'], check['path'], check['literal'], check['usable']),
+                         ('origin/main', 'src/cache.py', 'leak()', True))
+        self.assertEqual(check['show'], {'exit': 0, 'output': 'one\nkeep = leak()\n'})
+        self.assertEqual(check['grep'], {'exit': 0,
+                                         'output': 'refs/remotes/origin/main:src/cache.py:2:keep = leak()\n'})
+        self.assertEqual(check['pickaxe'], {'exit': 0, 'output': self.line(sha) + '\n'})
+        self.assertEqual(check['log'], {'exit': 0, 'output': self.line(sha) + '\n'})
+        self.assertIsNone(check['handoff'])
+
+    def test_a_path_without_a_literal_runs_no_search(self):
+        self.push({'src/cache.py': 'x\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py:1-4')])
+        check = self.evidence()['01.1']
+        self.assertEqual((check['path'], check['literal'], check['show']['exit']), ('src/cache.py', '', 0))
+        self.assertIsNone(check['grep'])
+        self.assertIsNone(check['pickaxe'])
+
+    def test_a_path_the_base_lacks_shows_in_the_exit_codes(self):
+        self.seed(FEATURE, '01', [deferred('a', 'gone.py "text"')])
+        check = self.evidence()['01.1']
+        self.assertEqual(check['show']['exit'], 128)
+        self.assertIn('gone.py', check['show']['output'])
+        self.assertEqual(check['grep'], {'exit': 1, 'output': ''})
+        self.assertEqual(check['pickaxe'], {'exit': 0, 'output': ''})
+
+    def test_an_unusable_path_is_never_handed_to_git(self):
+        self.push({'notes.md': 'needle\n'})
+        cases = ['../x "needle"', '/etc/passwd "needle"', '`core.py` "needle"', 'a/../b "needle"']
+        self.seed(FEATURE, '01', [deferred('a', evidence) for evidence in cases])
+
+        for item_id, check in self.evidence().items():
+            with self.subTest(item_id=item_id):
+                self.assertFalse(check['usable'])
+                self.assertIsNone(check['show'])
+                self.assertEqual(check['grep'], {'exit': 0, 'output': 'refs/remotes/origin/main:notes.md:1:needle\n'})
+                self.assertEqual(check['log']['exit'], 0)
+
+        self.assertEqual(self.evidence()['01.1']['path'], '../x')
+
+    def test_hostile_text_stays_a_pattern_or_a_path(self):
+        target = self.fixture.base / 'written'
+        self.seed(FEATURE, '01', [deferred('a', f'x.py "--output={target}"'), deferred('b', '-x "--output=y"')])
+        checks = self.evidence()
+        self.assertFalse(target.exists())
+        self.assertEqual(checks['01.1']['literal'], f'--output={target}')
+        self.assertEqual(checks['01.2']['path'], '-x')
+
+        for check in checks.values():
+            for read in ('show', 'grep', 'pickaxe', 'log'):
+                self.assertIn(check[read]['exit'], (0, 1, 128), check[read])
+                self.assertNotIn('unknown option', check[read]['output'])
+
+        self.assertEqual(checks['01.2']['show']['exit'], 128)
+        self.assertEqual(checks['01.2']['pickaxe'], {'exit': 0, 'output': ''})
+
+    def test_a_read_that_cannot_run_fails_only_its_own_item(self):
+        self.push({'src/cache.py': 'fine\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py:1 "a\x00b"'), deferred('b', 'src/cache.py "fine"')])
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['grep'], {'exit': -1, 'output': 'embedded null byte'})
+        self.assertEqual(checks['01.1']['pickaxe'], {'exit': -1, 'output': 'embedded null byte'})
+        self.assertEqual((checks['01.1']['show']['exit'], checks['01.1']['log']['exit']), (0, 0))
+        self.assertEqual(checks['01.2']['grep']['exit'], 0)
+        self.assertEqual(self.errors, '')
+
+    def test_a_read_that_times_out_fails_only_its_own_item(self):
+        self.push({'src/cache.py': 'fine\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py "slow"'), deferred('b', 'src/cache.py "fine"')])
+        real = core.git_result
+
+        def slow(directory, *arguments, env=None):
+            if '-S' in arguments and 'slow' in arguments:
+                raise core.PipelineError('git log -S slow timed out after 300s')
+
+            return real(directory, *arguments, env=env)
+
+        with unittest.mock.patch.object(core, 'git_result', slow):
+            checks = self.evidence()
+
+        self.assertEqual(checks['01.1']['pickaxe'], {'exit': -1, 'output': 'git log -S slow timed out after 300s'})
+        self.assertEqual(checks['01.1']['grep']['exit'], 1)
+        self.assertEqual(checks['01.2']['pickaxe']['exit'], 0)
+
+    def merge(self, files):
+        other = self.fixture.other
+        git(other, 'checkout', '-qb', 'agent/thing-02')
+
+        for name, text in files.items():
+            write(other / name, text)
+
+        git(other, 'add', '-A')
+        git(other, 'commit', '-qm', 'feat: The change')
+        git(other, 'checkout', '-q', 'main')
+        self.push({'unrelated.md': 'x\n'}, 'chore: Move main')
+        git(other, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #6', 'agent/thing-02')
+        git(other, 'push', '-q', 'origin', 'main')
+
+        return git(other, 'rev-parse', 'HEAD')
+
+    def pull(self, number, sha):
+        self.github.pulls[number] = {'number': number, 'head': 'agent/thing-02', 'state': 'closed', 'merged': True,
+                                     'merge_commit_sha': sha}
+
+    def test_a_handoff_names_its_merge_commit_and_only_the_prs_files(self):
+        sha = self.merge({'src/wide.py': 'renamed\n', 'docs/a b.md': 'x\n'})
+        self.pull(6, sha)
+        self.seed(FEATURE, '01', [deferred('a wider rename', 'src/wide.py', '02'), deferred('again', '', '02')])
+        self.seed(FEATURE, '02', [], number=6)
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['handoff'], {'step': '02', 'pr': 6, 'commit': self.line(sha),
+                                                     'files': 'docs/a b.md\nsrc/wide.py\n'})
+        self.assertEqual(checks['01.2']['handoff'], checks['01.1']['handoff'])
+        pulls = [path for method, path, _, _ in self.github.calls if path == '/repos/acme/shop/pulls/6']
+        self.assertEqual(len(pulls), 1, 'GitHub is asked once per PR')
+
+        for bad in (sha[:12], sha.upper(), 'HEAD', 'refs/remotes/origin/main'):
+            with self.subTest(sha=bad):
+                self.pull(6, bad)
+                self.assertEqual(self.evidence()['01.1']['handoff'], {'step': '02', 'pr': 6, 'commit': '',
+                                                                      'files': ''})
+
+    def test_a_handoff_without_a_merge_on_the_base_has_no_commit(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', '02')])
+        self.seed(FEATURE, '02', [], closed=False, number=6)
+        self.assertEqual(self.evidence()['01.1']['handoff'], {'step': '02', 'pr': None, 'commit': '', 'files': ''})
+        self.seed(FEATURE, '02', [], number=6)
+        other = self.fixture.other
+        git(other, 'checkout', '-qb', 'off-base')
+        self.push({'off.md': 'x\n'})
+        off = git(other, 'rev-parse', 'HEAD')
+        git(other, 'checkout', '-q', 'main')
+        git(other, 'push', '-q', 'origin', 'off-base')
+        expected = {'step': '02', 'pr': 6, 'commit': '', 'files': ''}
+
+        for sha in (off, off[:12], 'z' * 40, None):
+            with self.subTest(sha=sha):
+                self.pull(6, sha)
+                self.assertEqual(self.evidence()['01.1']['handoff'], expected)
+
+        original = core.github_api
+
+        def refuse(method, path, token, body=None):
+            if path.endswith('/pulls/6'):
+                raise core.PipelineError(f'GitHub {method} {path}: 404')
+
+            return original(method, path, token, body)
+
+        with unittest.mock.patch.object(core, 'github_api', refuse):
+            self.assertEqual(self.evidence()['01.1']['handoff'], expected)
+
+    def test_an_owner_that_is_not_a_step_gives_the_empty_handoff(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', 'ab'), deferred('b', 'x.py', '09')])
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['handoff'], {'step': 'ab', 'pr': None, 'commit': '', 'files': ''})
+        self.assertEqual(checks['01.2']['handoff'], {'step': '09', 'pr': None, 'commit': '', 'files': ''})
+
+    def test_a_github_outage_fails_the_repo(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', '02')])
+        self.seed(FEATURE, '02', [], number=6)
+        original = core.github_api
+
+        def outage(method, path, token, body=None):
+            if path.endswith('/pulls/6'):
+                raise core.GitHubUnavailable(f'GitHub {method} {path}: 502')
+
+            return original(method, path, token, body)
+
+        with unittest.mock.patch.object(core, 'github_api', outage):
+            self.assertEqual(self.evidence(code=1), {})
+
+        self.assertIn(f'{REPO}: cannot gather evidence: GitHub GET /repos/{REPO}/pulls/6: 502', self.errors)
+
+    def test_output_over_the_cap_is_cut(self):
+        self.push({'big.txt': 'y' * 3000})
+        self.seed(FEATURE, '01', [deferred('a', 'big.txt')])
+        output = self.evidence()['01.1']['show']['output']
+        self.assertEqual(output, 'y' * 2000 + '\n… (1000 characters cut)')
+
+    def test_a_repo_without_listed_items_is_not_refreshed(self):
+        self.seed(FEATURE, '01', [GAP])
+        self.verdicts(FEATURE, {'01.1': self.verdict('done')})
+        self.assertEqual(self.evidence(), {})
+        self.assertFalse(core.adapter.clone_path(REPO).exists())
+        self.assertEqual(self.github.calls, [])
+
+    def test_a_base_that_is_not_a_branch_name_fails_the_repo(self):
+        self.seed(FEATURE, '01', [GAP])
+        other = self.fixture.other
+        git(other, 'push', '-q', 'origin', 'main:refs/heads/a+b')
+        config = json.loads((other / '.claude/pipeline.json').read_text())
+        self.push({'.claude/pipeline.json': json.dumps(dict(config, base='a+b'))}, 'chore: Move the base')
+        self.assertEqual(self.evidence(code=1), {})
+        self.assertEqual(self.errors, f"{REPO}: cannot gather evidence: base 'a+b' is not a branch name\n")
+
+    def test_a_failed_repo_drops_only_its_own_items(self):
+        self.add_other_repo()
+        self.seed(FEATURE, '01', [GAP])
+        self.seed('else', '01', [HANDOFF], repo=OTHER_REPO)
+        value = self.evidence(code=1)
+        self.assertEqual(list(value), ['01.1'])
+        self.assertEqual(json.loads(self.output)['items'][0]['repo'], REPO)
+        self.assertEqual(self.errors, f'{OTHER_REPO}: cannot gather evidence: the GitHub App is not installed on '
+                                      f'{OTHER_REPO}\n')
+        self.fixture.origin.rename(self.fixture.base / 'gone.git')
+        self.assertEqual(self.evidence(code=1), {})
+        self.assertIn(f'{REPO}: cannot gather evidence: ', self.errors)
+        self.assertIn(f'{OTHER_REPO}: cannot gather evidence: ', self.errors)
+
+    def test_evidence_needs_json(self):
+        self.assertEqual(self.main('deferred', '--evidence'), 2)
+        self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
+        self.assertEqual(self.main('deferred', '--json', '--evidence', '--evidence'), 2)
 
 
 class CloseTest(DeferredCommandCase):
@@ -351,6 +604,396 @@ class CloseTest(DeferredCommandCase):
                 self.assertEqual(self.close(*argv), 2)
                 self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
                 self.assertIsNone(self.stored())
+
+
+class CloseItemTest(DeferredCommandCase):
+    """`close_item`, the one writer `close` and `file` share, called directly under no lock."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed(FEATURE, '01', ['an old note', GAP])
+        self.seed(FEATURE, '02', [deferred('later')], closed=False, number=6)
+
+    def stored_note(self):
+        return json.loads(core.deferred_file(REPO, FEATURE).read_text())['01.2']['note']
+
+    def test_a_note_with_controls_is_stored_as_one_printable_line(self):
+        line = core.close_item(REPO, self.root(), FEATURE, '01.2', 'done', note='a\x1bb\rc‮d\ne')
+        self.assertEqual(line, f'{FEATURE} 01.2: done')
+        self.assertEqual(self.stored_note(), 'a b c d e')
+
+    def test_a_long_note_is_cut_at_300(self):
+        core.close_item(REPO, self.root(), FEATURE, '01.2', 'moot', note='x' * 400)
+        self.assertEqual(self.stored_note(), 'x' * 300)
+
+    def test_a_legacy_item_and_an_unmerged_step_are_refused_as_close_refuses_them(self):
+        cases = {'01.1': f'{FEATURE} 01.1 is a legacy item: it takes no verdict',
+                 '02.1': f"{FEATURE} step 02 is not merged yet: only a merged step's items take a verdict"}
+
+        for item_id, message in cases.items():
+            with self.subTest(item_id=item_id):
+                with self.assertRaises(core.PipelineError) as raised:
+                    core.close_item(REPO, self.root(), FEATURE, item_id, 'done', note='why')
+
+                self.assertEqual(str(raised.exception), message)
+                self.assertEqual(self.main('deferred', 'close', FEATURE, item_id, 'done', 'why'), 1)
+                self.assertEqual(self.errors, message + '\n')
+
+        self.assertFalse(core.deferred_file(REPO, FEATURE).exists())
+
+
+KIT = Path(__file__).resolve().parent.parent / 'kit/skills'
+BRIEF = ('**Goal:** close the cache leak.\n**Why:** it grows.\n\n## Scope\nIn: the cache.\n\n'
+         '## Locked decisions\n- none\n\n## Pointers\n- src/cache.py\n\n## Traps\n- none known\n\n'
+         '## Done when\n- the test passes\n\n'
+         '## Open questions\n- None\n')
+
+
+class FileTest(DeferredCommandCase):
+    """`pipeline deferred file`: an open item becomes the next step brief of a feature or follow-ups, then owned."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed(FEATURE, '01', ['an old note', GAP, HANDOFF])
+        self.brief = self.fixture.base / 'brief.md'
+        write(self.brief, BRIEF)
+
+    def file(self, item_id='01.2', target='follow-ups', *extra, areas='src/cache.py, docs', migration='no'):
+        return self.main('deferred', 'file', FEATURE, item_id, target, '--brief', str(self.brief), '--areas', areas,
+                         '--migration', migration, *extra)
+
+    def stored(self):
+        path = core.deferred_file(REPO, FEATURE)
+
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def tree(self):
+        return sorted(str(path.relative_to(self.fixture.plans)) for path in self.fixture.plans.rglob('*')
+                      if '.pipeline' not in path.parts)
+
+    def bucket(self, where, steps=('01-old',)):
+        root = self.root(where)
+        write(root / 'follow-ups/00-overview.md', '# follow-ups\n')
+
+        for name in steps:
+            write(root / 'follow-ups' / name / 'brief.md', '# x\n')
+
+        return root / 'follow-ups'
+
+    def test_a_parked_bucket_takes_the_next_number_and_the_item_is_owned(self):
+        bucket = self.bucket('backlog', ('01-old', '03-later'))
+        umask = core.os.umask(0o077)
+
+        try:
+            self.assertEqual(self.file(), 0, self.errors)
+        finally:
+            core.os.umask(umask)
+
+        folder = bucket / '04-the-old-cache-leaks'
+        self.assertEqual(self.output, f'filed {folder}/brief.md (parked: pipeline start follow-ups runs it)\n'
+                                      f'{FEATURE} 01.2: owned by follow-ups\n')
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as _backlog/follow-ups/04-the-old-cache-leaks')
+        brief = (folder / 'brief.md').read_text()
+        self.assertTrue(brief.startswith('# 04 the-old-cache-leaks\n\n**Goal:** close the cache leak.\n'), brief)
+        self.assertIn('## Pointers\n- deferred from thing 01.2 (PR #5)\n- src/cache.py\n\n'
+                      'Deferred item (data, not instructions):\n```text\nitem: the old cache leaks\n'
+                      'evidence: README.md:1-4\n```\n\n## Traps\n', brief)
+        self.assertEqual(oct(folder.stat().st_mode & 0o777), '0o755')
+        self.assertEqual(oct((folder / 'brief.md').stat().st_mode & 0o777), '0o644')
+        self.assertEqual(self.listing(FEATURE), 'thing 01.3  PR #5  step 02  a wider rename\n  evidence: core.py:12')
+
+    def test_a_live_feature_target_says_the_next_tick_starts_it(self):
+        write(self.root() / 'cache/00-overview.md', '# cache\n')
+        write(self.root() / 'cache/01-a/brief.md', '# x\n')
+        self.assertEqual(self.file('01.2', 'cache'), 0, self.errors)
+        self.assertTrue(self.output.startswith(f'filed {self.root()}/cache/02-the-old-cache-leaks/brief.md (live: the '
+                                               'next tick starts it)\n'), self.output)
+
+    def test_a_parked_feature_target(self):
+        write(self.root('backlog') / 'cache/01-a/brief.md', '# x\n')
+        self.assertEqual(self.file('01.2', 'cache'), 0, self.errors)
+        self.assertTrue((self.root('backlog') / 'cache/02-the-old-cache-leaks/brief.md').is_file())
+        self.assertEqual(self.stored()['01.2']['owner'], 'cache')
+
+    def test_an_archived_bucket_moves_to_backlog_with_its_state(self):
+        bucket = self.bucket('archive')
+        write(bucket / '.pipeline/01/state.json', '{}')
+        self.assertEqual(self.file(), 0, self.errors)
+        moved = self.root('backlog') / 'follow-ups'
+        self.assertFalse(bucket.exists())
+        self.assertTrue((moved / '.pipeline/01/state.json').is_file())
+        self.assertTrue((moved / '02-the-old-cache-leaks/brief.md').is_file())
+
+    def test_no_bucket_creates_one_parked_with_its_overview(self):
+        self.assertEqual(self.file(), 0, self.errors)
+        bucket = self.root('backlog') / 'follow-ups'
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-the-old-cache-leaks'])
+        overview = (bucket / '00-overview.md').read_text()
+        self.assertIn('independent follow-ups filed from deferred items; each step stands alone and merges on its own',
+                      overview)
+        self.assertIn('No step depends on another; the step folders are the step list, so this overview keeps no step '
+                      'table.', overview)
+        self.assertEqual(oct(bucket.stat().st_mode & 0o777), '0o755')
+        self.assertEqual([path.name for path in self.fixture.plans.iterdir() if path.name.startswith('.')], [])
+
+    def test_a_bucket_both_live_and_parked_is_refused(self):
+        self.bucket('live')
+        self.bucket('backlog')
+        before = self.tree()
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, f"follow-ups is in {self.root()}/follow-ups and "
+                                      f"{self.root('backlog')}/follow-ups: keep one of them\n")
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.stored(), {})
+
+    def test_bad_targets_are_refused_and_nothing_is_written(self):
+        write(self.root('archive') / 'old/01-a/brief.md', '# x\n')
+        cases = {FEATURE: f'{FEATURE} cannot own its own item: name the feature that takes the work on',
+                 'old': f"old is archived: {self.root('archive')}/old",
+                 'nowhere': f'no feature nowhere in the plans or _backlog/ of {REPO}'}
+        before = self.tree()
+
+        for target, message in cases.items():
+            with self.subTest(target=target):
+                self.assertEqual(self.file('01.2', target), 1)
+                self.assertEqual(self.errors, message + '\n')
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(self.stored(), {})
+
+    def test_a_full_target_is_refused(self):
+        self.bucket('backlog', ('99-last',))
+        before = self.tree()
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, 'follow-ups is full (99 steps); nothing filed\n')
+        self.assertEqual(self.tree(), before)
+
+    def test_an_item_with_a_verdict_or_no_pr_is_refused(self):
+        self.verdicts(FEATURE, {'01.2': self.verdict('moot')})
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, f'{FEATURE} 01.2 already has a verdict (moot); nothing filed\n')
+        self.seed('nopr', '01', [GAP])
+        state_path = core.state_file(REPO, 'nopr', '01')
+        state = json.loads(state_path.read_text())
+        state['pr'] = state['merged'] = None
+        write(state_path, json.dumps(state))
+        self.assertEqual(self.main('deferred', 'file', 'nopr', '01.1', 'follow-ups', '--brief', str(self.brief),
+                                   '--areas', 'x', '--migration', 'no'), 1)
+        self.assertEqual(self.errors, 'nopr step 01 has no PR number; nothing filed\n')
+        self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_wrong_headings_are_refused(self):
+        for body in (BRIEF.replace('## Traps', '## Risks'), BRIEF.replace('## Open questions\n- None\n', ''),
+                     '## Pointers\n' + BRIEF.replace('## Pointers\n', '')):
+            with self.subTest(body=body[:30]):
+                write(self.brief, body)
+                self.assertEqual(self.file(), 1)
+                self.assertEqual(self.errors, 'the brief needs the sections Scope, Locked decisions, Pointers, '
+                                              'Traps, Done when, Open questions as ## headings, in that order; '
+                                              'nothing filed\n')
+                self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_extra_spaces_in_a_heading_are_read_as_the_heading(self):
+        write(self.brief, BRIEF.replace('## Pointers', '##  Pointers').replace('## Traps', '## Traps '))
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertIn('\n## Pointers\n- deferred from thing 01.2 (PR #5)\n- src/cache.py\n', brief)
+        self.assertIn('```\n\n## Traps\n- none known\n', brief)
+
+    def test_a_plans_folder_that_cannot_hold_the_staging_folder_is_a_refusal(self):
+        with unittest.mock.patch.object(core.tempfile, 'mkdtemp', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(self.file(), 1)
+
+        self.assertTrue(self.errors.startswith('cannot file into '), self.errors)
+        self.assertTrue(self.errors.endswith(': Permission denied; nothing filed\n'), self.errors)
+        self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_a_title_line_in_the_brief_is_replaced(self):
+        write(self.brief, '# 07 mine\n\n' + BRIEF)
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertTrue(brief.startswith('# 01 the-old-cache-leaks\n\n**Goal:**'), brief)
+        self.assertNotIn('mine', brief)
+
+    def test_bad_grammar_exits_2_and_writes_nothing(self):
+        base = ['deferred', 'file', FEATURE, '01.2', 'follow-ups']
+        options = ['--brief', str(self.brief), '--areas', 'x', '--migration', 'no']
+
+        for argv in (base + options[:4], base + options + ['--areas', 'y'], base + options[:5] + ['maybe'],
+                     base[:4] + options, base + options + ['extra'], base + options[:3] + ['--force'] + options[4:],
+                     base + options + ['--force'], ['deferred', 'file']):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv), 2)
+                self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
+                self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_a_brief_file_that_cannot_be_read_is_refused(self):
+        self.brief.unlink()
+        self.assertEqual(self.file(), 1)
+        self.assertTrue(self.errors.startswith(f'{self.brief}: cannot read the brief'), self.errors)
+
+    def test_the_slug_is_printable_lowercase_and_at_most_40(self):
+        self.assertEqual(core.item_slug('Fix\x1b[2J the  Cache\r\n‮leak!'), 'fix-2j-the-cache-leak')
+        self.assertEqual(core.item_slug('a' * 39 + ' bcd'), 'a' * 39)
+        self.assertEqual(core.item_slug('x' * 50), 'x' * 40)
+        self.assertEqual(core.item_slug('—!—'), 'follow-up')
+
+    def test_a_failed_rename_leaves_no_step_and_no_staging_folder(self):
+        bucket = self.bucket('backlog')
+        original = core.os.rename
+        sources = []
+
+        def failing(source, destination):
+            sources.append(Path(source))
+            raise OSError(28, 'No space left on device')
+
+        with unittest.mock.patch.object(core.os, 'rename', failing):
+            self.assertEqual(self.file(), 1)
+
+        self.assertIs(core.os.rename, original)
+        self.assertEqual(self.errors, f'cannot file into {bucket}: No space left on device; nothing filed\n')
+        self.assertEqual(sources[0].parent.parent, self.fixture.plans)
+        self.assertTrue(sources[0].parent.name.startswith('.file-'))
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-old'])
+        self.assertEqual([path.name for path in self.fixture.plans.iterdir() if path.name.startswith('.')], [])
+        self.assertEqual(self.stored(), {})
+
+    def test_a_queue_that_cannot_be_read_leaves_the_item_open_for_a_rerun(self):
+        (self.fixture.plans / 'README.md').mkdir()
+        self.assertEqual(self.file(), 1)
+        self.assertIn('README.md: cannot read (', self.errors)
+        self.assertIn('the brief is filed, re-run to finish', self.errors)
+        self.assertEqual(self.stored(), {})
+        (self.fixture.plans / 'README.md').rmdir()
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertIn('already filed in', self.output)
+        self.assertEqual(self.stored()['01.2']['owner'], 'follow-ups')
+
+    def queue(self):
+        return (self.fixture.plans / 'README.md').read_text()
+
+    def test_the_queue_row_is_created(self):
+        self.assertEqual(self.file(migration='yes'), 0, self.errors)
+        self.assertEqual(self.queue(), '| feature | steps | migration | areas | after |\n|---|---|---|---|---|\n'
+                                       '| follow-ups | 1 | yes | src/cache.py, docs |  |\n')
+
+    def test_the_queue_row_is_updated_and_every_other_line_kept(self):
+        self.bucket('backlog')
+        text = ('# Queue\n\nNotes | with a pipe.\n\n|feature|steps|migration|areas|after|\n'
+                '| --- | --- | --- | --- | --- |\n| alpha | 2 | no | api | |\n'
+                '| follow-ups | 1 | yes | docs, web | alpha |\n| zeta | 1 | no | x | |\n\n'
+                'After the table.\n')
+        write(self.fixture.plans / 'README.md', text)
+        self.assertEqual(self.file(areas='docs, a|b, src/cache.py'), 0, self.errors)
+        expected = text.replace('| follow-ups | 1 | yes | docs, web | alpha |',
+                                '| follow-ups | 2 | yes | docs, web, a/b, src/cache.py | alpha |')
+        self.assertEqual(self.queue(), expected)
+
+    def test_a_new_row_goes_after_the_last_row_and_a_readme_without_the_table_gets_one(self):
+        write(self.fixture.plans / 'README.md', '| feature | steps | migration | areas | after |\n'
+                                                '|---|---|---|---|---|\n| alpha | 2 | no | api | |\n\nNotes.\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.queue(), '| feature | steps | migration | areas | after |\n|---|---|---|---|---|\n'
+                                       '| alpha | 2 | no | api | |\n| follow-ups | 1 | no | src/cache.py, docs |  |\n'
+                                       '\nNotes.\n')
+        write(self.fixture.plans / 'README.md', '# Plans\n')
+        self.assertEqual(self.file('01.3'), 0, self.errors)
+        self.assertEqual(self.queue(), '# Plans\n\n| feature | steps | migration | areas | after |\n'
+                                       '|---|---|---|---|---|\n| follow-ups | 2 | no | src/cache.py, docs |  |\n')
+
+    def test_a_rerun_after_a_failed_close_files_no_second_brief(self):
+        with unittest.mock.patch.object(core, 'close_item', side_effect=core.PipelineError('disk full')):
+            self.assertEqual(self.file(), 1)
+
+        bucket = self.root('backlog') / 'follow-ups'
+        self.assertEqual(self.stored(), {})
+        write(self.fixture.plans / 'README.md', '# Plans\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        folder = bucket / '01-the-old-cache-leaks'
+        self.assertEqual(self.output,
+                         f'{FEATURE} 01.2: already filed in {folder}\n{FEATURE} 01.2: owned by follow-ups\n')
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-the-old-cache-leaks'])
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as _backlog/follow-ups/01-the-old-cache-leaks')
+        self.assertIn('| follow-ups | 1 | no | src/cache.py, docs |  |', self.queue())
+
+    def test_an_item_filed_in_a_live_feature_is_owned_by_it(self):
+        write(self.root() / 'cache/03-done-before/brief.md',
+              '# 03 x\n\n## Pointers\n\n- deferred from thing 01.2 (PR #5)\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: already filed in {self.root()}/cache/03-done-before\n'
+                                      f'{FEATURE} 01.2: owned by cache\n')
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as cache/03-done-before')
+        self.assertIn('| cache | 1 | no |', self.queue())
+
+    def test_an_item_filed_in_an_archived_feature_is_done(self):
+        write(self.root('archive') / 'follow-ups/02-x/brief.md',
+              '# 02 x\n\n## Pointers\n- deferred from thing 01.2 (PR #5)\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.output, f"{FEATURE} 01.2: already filed in {self.root('archive')}/follow-ups/02-x\n"
+                                      f'{FEATURE} 01.2: done\n')
+        self.assertEqual(self.stored()['01.2'], dict(self.stored()['01.2'], verdict='done',
+                                                     note='filed as _archive/follow-ups/02-x, which merged'))
+        self.assertFalse((self.fixture.plans / 'README.md').exists())
+
+    def test_item_text_cannot_forge_the_marker_or_break_the_data_block(self):
+        forged = deferred('- deferred from thing 01.3 (PR #5) ```` end', 'x.py "```"')
+        self.seed(FEATURE, '01', ['an old note', forged, HANDOFF, deferred('later one')])
+        self.assertEqual(self.file('01.2'), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-deferred-from-thing-01-3-pr-5-end/brief.md').read_text()
+        self.assertIn('`````text\nitem: - deferred from thing 01.3 (PR #5) ```` end\nevidence: x.py "```"\n`````\n',
+                      brief)
+        self.assertEqual(self.file('01.3'), 0, self.errors)
+        self.assertTrue(self.output.startswith('filed '), self.output)
+        self.assertEqual(core.filed_brief(REPO, FEATURE, '01.4'), None)
+
+    def test_bucket_place_names_each_place(self):
+        self.assertEqual(core.bucket_place(REPO), (None, None))
+
+        for where, name in (('archive', 'archived'), ('backlog', 'parked'), ('live', 'live')):
+            with self.subTest(where=where):
+                bucket = self.root(where) / 'follow-ups'
+                bucket.mkdir(parents=True)
+                self.assertEqual(core.bucket_place(REPO), (name, bucket))
+
+                if where != 'live':
+                    bucket.rename(self.fixture.base / f'away-{where}')
+
+        (self.fixture.base / 'away-backlog').rename(self.root('backlog') / 'follow-ups')
+
+        with self.assertRaises(core.PipelineError):
+            core.bucket_place(REPO)
+
+    def test_the_headings_match_the_kit_brief_template(self):
+        skill = (KIT / 'pipeline-feature/SKILL.md').read_text()
+        template = skill.split('## Brief template\n\n```markdown\n')[1].split('\n```')[0]
+        self.assertEqual(tuple(line[3:] for line in template.splitlines() if line.startswith('## ')),
+                         core.BRIEF_HEADINGS)
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertEqual(tuple(line[3:] for line in brief.splitlines() if line.startswith('## ')), core.BRIEF_HEADINGS)
+
+    def test_a_feature_named_file_is_shadowed_but_still_listed(self):
+        self.seed('file', '01', [GAP])
+        self.assertIn('file 01.1', self.listing())
+
+
+class SkillTest(unittest.TestCase):
+    """`/deferred-sweep` calls the runner for its evidence and its filings, and judges by its rubric."""
+
+    def test_the_skill_calls_the_runner_and_runs_no_git(self):
+        skill = (KIT / 'deferred-sweep/SKILL.md').read_text()
+        self.assertIn('pipeline deferred file', skill)
+        self.assertIn('--json --evidence', skill)
+        self.assertIn('rubric.md', skill)
+        self.assertNotIn('git -C', skill)
+        self.assertNotIn('mv ', skill)
+
+    def test_the_rubric_beside_it_names_the_four_verdicts(self):
+        rubric = (KIT / 'deferred-sweep/rubric.md').read_text()
+
+        for verdict in ('**done:**', '**moot:**', "**won't do:**", '**still true:**'):
+            self.assertIn(verdict, rubric)
+
+        self.assertIn('Run no git', rubric)
 
 
 class NudgeTest(DeferredCommandCase):

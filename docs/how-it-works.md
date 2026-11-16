@@ -130,7 +130,7 @@ Unknown keys are an error.
   - `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command).
 - One feature in full: `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command,
   files, PR/CI, logs, last 5 history entries).
-- Sweep deferred items: `pipeline deferred [<name>] [--json] [--repo <o>/<r>]`:
+- Sweep deferred items: `pipeline deferred [<name>] [--json [--evidence]] [--repo <o>/<r>]`:
   - lists each open item of a merged step as `<name> NN.K  PR #n  <owner>  <item>`, then its evidence; the owner
     reads `step NN` for a handoff and `no owner` for a gap;
   - covers live and `_backlog/` features (a name narrows the list), and ends with one metrics line over every
@@ -139,15 +139,31 @@ Unknown keys are an error.
     counts and the old free-text items (`legacy`);
   - `--json` prints `{"items": [...], "metrics": {...}}` with the raw text; the text view turns control characters
     into spaces;
+  - `--json --evidence` first refreshes the runner's clean clone of each repo with listed items, then gives each
+    item an `evidence_check`: its evidence split into a path and a quoted literal, and the `show`, `grep`, `pickaxe`
+    (`log -S`) and `log` reads of them on `origin/<base>`, each `{exit, output}` cut at 2,000 characters, or `null`
+    when not run. A path that is not a plain relative path is never handed to git. A handoff also gets its owner
+    step's merged PR, that PR's merge commit (from GitHub, kept only when it is on the base) and the files the PR
+    changed. A repo that cannot be read is named on stderr, its items are left out, and the exit is 1. Without
+    `--evidence` nothing is fetched;
   - `pipeline deferred close <name> <NN.K> done|moot|wontdo "<why>"` or `… <NN.K> owned <feature> ["<note>"]`
     records one verdict per item (another live or parked feature takes an owned item), under the feature's run lock. A
     second close replaces the verdict and prints the old one. Usage mistakes exit 2, a refused item exits 1;
+  - `pipeline deferred file <name> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no` files one open
+    item as the next step of `<target>` (a live or parked feature, or `follow-ups`), numbered after its highest
+    step, with a slug from the item. `<file>` holds the brief's sections without a title. The runner adds the
+    title, the first Pointers line `- deferred from <name> <NN.K> (PR #n)` and the item as a fenced data block,
+    updates the target's row of the queue table in `.claude/plans/README.md`, and records the item owned with the
+    note `filed as <path>`. `follow-ups` is used where it is, moved from `_archive/` to `_backlog/`, or created
+    parked. Every check runs before anything is written. A brief an earlier filing wrote is found by its Pointers
+    line, and the item is closed instead of filed twice (done, when that brief is archived);
   - a fully merged feature with open items shows under NEEDS YOU as `n deferred to sweep → /deferred-sweep <name>`
     (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so;
-  - `/deferred-sweep [<name>] [--repo <o>/<r>]` in a Claude session on the host re-checks each open item of a fully
-    merged feature on the default branch with read-only git and records a verdict for each. An item still worth a PR
-    becomes a step brief in a matching feature, else in `follow-ups` (created parked in `_backlog/`), with a queue
-    row. A won't do, or a brief for a live feature (the next tick starts it), waits for your answer to one question.
+  - `/deferred-sweep [<name>] [--repo <o>/<r>]` in a Claude session on the host judges each open item of a fully
+    merged feature on `pipeline deferred --json --evidence`, by the verdicts in its `rubric.md`, and records a
+    verdict for each. It runs no git. An item still worth a PR becomes a step brief through `pipeline deferred file`,
+    in a matching feature, else in `follow-ups`. A won't do, or a brief for a live feature (the next tick starts
+    it), waits for your answer to one question.
 - What a stage is doing: `pipeline log <name>` (`HH:MM tool target` lines of the newest stage log; `-f` follows).
 - Answer a plan's questions: `pipeline answer <name>`:
   - `plan.md` opens in `$VISUAL`/`$EDITOR`; answer under `## Unresolved questions`, save: a changed file approves;
@@ -349,8 +365,9 @@ Tick then polls each done step's PR:
 - your controls: `<name>/.pipeline/feature.json` (hold, after, autonomy), `~/.local/state/pipeline/control.json`
   (parallel, drain, order).
 - step state (read, don't edit): `<name>/.pipeline/NN.json`.
-- deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close`).
-- deferred items filed by `/deferred-sweep`: a step of a matching feature, else of `follow-ups` (live, or
+- deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close` and
+  `pipeline deferred file`).
+- deferred items filed by `pipeline deferred file`: a step of a matching feature, else of `follow-ups` (live, or
   `<repo>/.claude/plans/_backlog/follow-ups/`).
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
   `tail -n 1 <log> | jq .structured_output`.
