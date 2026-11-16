@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_core import FEATURE, IMPLEMENT, REPO, RunnerCase, write  # noqa: E402
+from test_core import FEATURE, IMPLEMENT, REPO, RunnerCase, git, write  # noqa: E402
 from test_deferred import DeferredCase  # noqa: E402
 
 import core  # noqa: E402
@@ -110,6 +110,18 @@ class ListTest(DeferredCommandCase):
         self.assertEqual(value['metrics'], {'merged_prs': 1, 'handoff': 0, 'gap': 1, 'legacy': 1, 'finished_items': 1,
                                             'finished_with_verdict': 0, 'verdicts': 0, 'done': 0, 'moot': 0,
                                             'wontdo': 0, 'owned': 0, 'unreadable': 0})
+        self.assertNotIn('evidence_check', value['items'][0])
+        self.assertEqual(self.main('deferred', '--json', '--evidence'), 0, self.errors)
+        listed = json.loads(self.output)['items']
+        missing = {'exit': 128, 'output': "fatal: path 'core.py' does not exist in 'refs/remotes/origin/main'\n"}
+        self.assertEqual(listed, [{'repo': REPO, 'feature': FEATURE, 'id': '01.2', 'pr': 5, 'owner': '',
+                                   'item': 'keep  \x1b[2J this', 'evidence': evidence,
+                                   'evidence_check': {'base': 'origin/main', 'path': 'core.py', 'literal': 'a  b',
+                                                      'usable': True, 'show': missing,
+                                                      'grep': {'exit': 1, 'output': ''},
+                                                      'pickaxe': {'exit': 0, 'output': ''},
+                                                      'log': {'exit': 0, 'output': ''},
+                                                      'handoff': None}}])
 
     def test_text_output_never_carries_terminal_controls(self):
         self.seed(FEATURE, '01', [deferred('a\x1b[2Jb\rc\x9bd‮e f', 'x.py\x07:1', '0\x1b2')])
@@ -205,6 +217,219 @@ class ListTest(DeferredCommandCase):
     def test_a_folder_named_deferred_is_reserved(self):
         self.seed('deferred', '01', [GAP])
         self.assertNotIn(('acme/shop', 'deferred'), core.adapter.all_features())
+
+
+class EvidenceTest(DeferredCommandCase):
+    """`--evidence`: the base branch's answers about each listed item, read in the runner's clean clone."""
+
+    def push(self, files, message='feat: Add the evidence'):
+        other = self.fixture.other
+
+        for name, text in files.items():
+            write(other / name, text)
+
+        git(other, 'add', '-A')
+        git(other, 'commit', '-qm', message)
+        git(other, 'push', '-q', 'origin', 'main')
+
+        return git(other, 'rev-parse', 'HEAD')
+
+    def line(self, sha):
+        return git(self.fixture.other, 'log', '-1', '--format=%h %ad %s', '--date=short', sha)
+
+    def evidence(self, *argv, code=0):
+        self.assertEqual(self.main('deferred', '--json', '--evidence', *argv), code, self.errors)
+
+        return {item['id']: item['evidence_check'] for item in json.loads(self.output)['items']}
+
+    def test_a_path_with_a_literal_runs_all_four_reads(self):
+        sha = self.push({'src/cache.py': 'one\nkeep = leak()\n'})
+        self.seed(FEATURE, '01', [deferred('the cache leaks', 'src/cache.py:2 "leak()"')])
+        check = self.evidence()['01.1']
+        self.assertEqual((check['base'], check['path'], check['literal'], check['usable']),
+                         ('origin/main', 'src/cache.py', 'leak()', True))
+        self.assertEqual(check['show'], {'exit': 0, 'output': 'one\nkeep = leak()\n'})
+        self.assertEqual(check['grep'], {'exit': 0,
+                                         'output': 'refs/remotes/origin/main:src/cache.py:2:keep = leak()\n'})
+        self.assertEqual(check['pickaxe'], {'exit': 0, 'output': self.line(sha) + '\n'})
+        self.assertEqual(check['log'], {'exit': 0, 'output': self.line(sha) + '\n'})
+        self.assertIsNone(check['handoff'])
+
+    def test_a_path_without_a_literal_runs_no_search(self):
+        self.push({'src/cache.py': 'x\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py:1-4')])
+        check = self.evidence()['01.1']
+        self.assertEqual((check['path'], check['literal'], check['show']['exit']), ('src/cache.py', '', 0))
+        self.assertIsNone(check['grep'])
+        self.assertIsNone(check['pickaxe'])
+
+    def test_a_path_the_base_lacks_shows_in_the_exit_codes(self):
+        self.seed(FEATURE, '01', [deferred('a', 'gone.py "text"')])
+        check = self.evidence()['01.1']
+        self.assertEqual(check['show']['exit'], 128)
+        self.assertIn('gone.py', check['show']['output'])
+        self.assertEqual(check['grep'], {'exit': 1, 'output': ''})
+        self.assertEqual(check['pickaxe'], {'exit': 0, 'output': ''})
+
+    def test_an_unusable_path_is_never_handed_to_git(self):
+        self.push({'notes.md': 'needle\n'})
+        cases = ['../x "needle"', '/etc/passwd "needle"', '`core.py` "needle"', 'a/../b "needle"']
+        self.seed(FEATURE, '01', [deferred('a', evidence) for evidence in cases])
+
+        for item_id, check in self.evidence().items():
+            with self.subTest(item_id=item_id):
+                self.assertFalse(check['usable'])
+                self.assertIsNone(check['show'])
+                self.assertEqual(check['grep'], {'exit': 0, 'output': 'refs/remotes/origin/main:notes.md:1:needle\n'})
+                self.assertEqual(check['log']['exit'], 0)
+
+        self.assertEqual(self.evidence()['01.1']['path'], '../x')
+
+    def test_hostile_text_stays_a_pattern_or_a_path(self):
+        target = self.fixture.base / 'written'
+        self.seed(FEATURE, '01', [deferred('a', f'x.py "--output={target}"'), deferred('b', '-x "--output=y"')])
+        checks = self.evidence()
+        self.assertFalse(target.exists())
+        self.assertEqual(checks['01.1']['literal'], f'--output={target}')
+        self.assertEqual(checks['01.2']['path'], '-x')
+
+        for check in checks.values():
+            for read in ('show', 'grep', 'pickaxe', 'log'):
+                self.assertIn(check[read]['exit'], (0, 1, 128), check[read])
+                self.assertNotIn('unknown option', check[read]['output'])
+
+        self.assertEqual(checks['01.2']['show']['exit'], 128)
+        self.assertEqual(checks['01.2']['pickaxe'], {'exit': 0, 'output': ''})
+
+    def merge(self, files):
+        other = self.fixture.other
+        git(other, 'checkout', '-qb', 'agent/thing-02')
+
+        for name, text in files.items():
+            write(other / name, text)
+
+        git(other, 'add', '-A')
+        git(other, 'commit', '-qm', 'feat: The change')
+        git(other, 'checkout', '-q', 'main')
+        self.push({'unrelated.md': 'x\n'}, 'chore: Move main')
+        git(other, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #6', 'agent/thing-02')
+        git(other, 'push', '-q', 'origin', 'main')
+
+        return git(other, 'rev-parse', 'HEAD')
+
+    def pull(self, number, sha):
+        self.github.pulls[number] = {'number': number, 'head': 'agent/thing-02', 'state': 'closed', 'merged': True,
+                                     'merge_commit_sha': sha}
+
+    def test_a_handoff_names_its_merge_commit_and_only_the_prs_files(self):
+        sha = self.merge({'src/wide.py': 'renamed\n', 'docs/a b.md': 'x\n'})
+        self.pull(6, sha)
+        self.seed(FEATURE, '01', [deferred('a wider rename', 'src/wide.py', '02'), deferred('again', '', '02')])
+        self.seed(FEATURE, '02', [], number=6)
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['handoff'], {'step': '02', 'pr': 6, 'commit': self.line(sha),
+                                                     'files': 'docs/a b.md\nsrc/wide.py\n'})
+        self.assertEqual(checks['01.2']['handoff'], checks['01.1']['handoff'])
+        pulls = [path for method, path, _, _ in self.github.calls if path == '/repos/acme/shop/pulls/6']
+        self.assertEqual(len(pulls), 1, 'GitHub is asked once per PR')
+
+        for bad in (sha[:12], sha.upper(), 'HEAD', 'refs/remotes/origin/main'):
+            with self.subTest(sha=bad):
+                self.pull(6, bad)
+                self.assertEqual(self.evidence()['01.1']['handoff'], {'step': '02', 'pr': 6, 'commit': '',
+                                                                      'files': ''})
+
+    def test_a_handoff_without_a_merge_on_the_base_has_no_commit(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', '02')])
+        self.seed(FEATURE, '02', [], closed=False, number=6)
+        self.assertEqual(self.evidence()['01.1']['handoff'], {'step': '02', 'pr': None, 'commit': '', 'files': ''})
+        self.seed(FEATURE, '02', [], number=6)
+        other = self.fixture.other
+        git(other, 'checkout', '-qb', 'off-base')
+        self.push({'off.md': 'x\n'})
+        off = git(other, 'rev-parse', 'HEAD')
+        git(other, 'checkout', '-q', 'main')
+        git(other, 'push', '-q', 'origin', 'off-base')
+        expected = {'step': '02', 'pr': 6, 'commit': '', 'files': ''}
+
+        for sha in (off, off[:12], 'z' * 40, None):
+            with self.subTest(sha=sha):
+                self.pull(6, sha)
+                self.assertEqual(self.evidence()['01.1']['handoff'], expected)
+
+        original = core.github_api
+
+        def refuse(method, path, token, body=None):
+            if path.endswith('/pulls/6'):
+                raise core.PipelineError(f'GitHub {method} {path}: 404')
+
+            return original(method, path, token, body)
+
+        with unittest.mock.patch.object(core, 'github_api', refuse):
+            self.assertEqual(self.evidence()['01.1']['handoff'], expected)
+
+    def test_an_owner_that_is_not_a_step_gives_the_empty_handoff(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', 'ab'), deferred('b', 'x.py', '09')])
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['handoff'], {'step': 'ab', 'pr': None, 'commit': '', 'files': ''})
+        self.assertEqual(checks['01.2']['handoff'], {'step': '09', 'pr': None, 'commit': '', 'files': ''})
+
+    def test_a_github_outage_fails_the_repo(self):
+        self.seed(FEATURE, '01', [deferred('a', 'x.py', '02')])
+        self.seed(FEATURE, '02', [], number=6)
+        original = core.github_api
+
+        def outage(method, path, token, body=None):
+            if path.endswith('/pulls/6'):
+                raise core.GitHubUnavailable(f'GitHub {method} {path}: 502')
+
+            return original(method, path, token, body)
+
+        with unittest.mock.patch.object(core, 'github_api', outage):
+            self.assertEqual(self.evidence(code=1), {})
+
+        self.assertIn(f'{REPO}: cannot gather evidence: GitHub GET /repos/{REPO}/pulls/6: 502', self.errors)
+
+    def test_output_over_the_cap_is_cut(self):
+        self.push({'big.txt': 'y' * 3000})
+        self.seed(FEATURE, '01', [deferred('a', 'big.txt')])
+        output = self.evidence()['01.1']['show']['output']
+        self.assertEqual(output, 'y' * 2000 + '\n… (1000 characters cut)')
+
+    def test_a_repo_without_listed_items_is_not_refreshed(self):
+        self.seed(FEATURE, '01', [GAP])
+        self.verdicts(FEATURE, {'01.1': self.verdict('done')})
+        self.assertEqual(self.evidence(), {})
+        self.assertFalse(core.adapter.clone_path(REPO).exists())
+        self.assertEqual(self.github.calls, [])
+
+    def test_a_base_that_is_not_a_branch_name_fails_the_repo(self):
+        self.seed(FEATURE, '01', [GAP])
+        other = self.fixture.other
+        git(other, 'push', '-q', 'origin', 'main:refs/heads/a+b')
+        config = json.loads((other / '.claude/pipeline.json').read_text())
+        self.push({'.claude/pipeline.json': json.dumps(dict(config, base='a+b'))}, 'chore: Move the base')
+        self.assertEqual(self.evidence(code=1), {})
+        self.assertEqual(self.errors, f"{REPO}: cannot gather evidence: base 'a+b' is not a branch name\n")
+
+    def test_a_failed_repo_drops_only_its_own_items(self):
+        self.add_other_repo()
+        self.seed(FEATURE, '01', [GAP])
+        self.seed('else', '01', [HANDOFF], repo=OTHER_REPO)
+        value = self.evidence(code=1)
+        self.assertEqual(list(value), ['01.1'])
+        self.assertEqual(json.loads(self.output)['items'][0]['repo'], REPO)
+        self.assertEqual(self.errors, f'{OTHER_REPO}: cannot gather evidence: the GitHub App is not installed on '
+                                      f'{OTHER_REPO}\n')
+        self.fixture.origin.rename(self.fixture.base / 'gone.git')
+        self.assertEqual(self.evidence(code=1), {})
+        self.assertIn(f'{REPO}: cannot gather evidence: ', self.errors)
+        self.assertIn(f'{OTHER_REPO}: cannot gather evidence: ', self.errors)
+
+    def test_evidence_needs_json(self):
+        self.assertEqual(self.main('deferred', '--evidence'), 2)
+        self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
+        self.assertEqual(self.main('deferred', '--json', '--evidence', '--evidence'), 2)
 
 
 class CloseTest(DeferredCommandCase):

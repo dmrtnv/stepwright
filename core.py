@@ -5012,6 +5012,12 @@ DEFERRED_VERDICTS = ('done', 'moot', 'wontdo', 'owned')
 DEFERRED_ID = re.compile(r'^(\d{2})\.(\d+)$')
 DEFERRED_NOTE_CHARACTERS = 300
 DEFERRED_FLAG = re.compile(r'^--?[A-Za-z][\w-]*$')
+EVIDENCE_CHARACTERS = 2000
+EVIDENCE_PATH = re.compile(r'^[A-Za-z0-9_./-]+$')
+EVIDENCE_LINE = re.compile(r':\d+(-\d+)?$')
+BRANCH_NAME = re.compile(r'^[A-Za-z0-9._/][A-Za-z0-9._/-]*$')
+MERGE_SHA = re.compile(r'^[0-9a-f]{40}$')
+COMMIT_LINE = ('--format=%h %ad %s', '--date=short')
 DEFERRED_COUNTS = ('merged_prs', 'handoff', 'gap', 'legacy', 'finished_items', 'finished_with_verdict', 'verdicts',
                    'done', 'moot', 'wontdo', 'owned', 'unreadable')
 
@@ -5181,6 +5187,117 @@ def metrics_line(counts):
     return line + (f" · partial: {plural(counts['unreadable'], 'feature')} unreadable" if counts['unreadable'] else '')
 
 
+def evidence_split(evidence):
+    """(path, literal, usable): the first word without its `:N` or `:N-M`, the text between the first and the last
+    `"` after it, and whether that path is safe to hand git (relative, no `..`, only `[A-Za-z0-9_./-]`)."""
+    words = evidence.split(maxsplit=1)
+    path = EVIDENCE_LINE.sub('', words[0]) if words else ''
+    rest = words[1] if len(words) > 1 else ''
+    first, last = rest.find('"'), rest.rfind('"')
+    literal = rest[first + 1:last] if first != last else ''
+    usable = bool(EVIDENCE_PATH.match(path)) and not path.startswith('/') and '..' not in path.split('/')
+
+    return path, literal, usable
+
+
+def evidence_run(clone, *arguments):
+    result = git_result(clone, *arguments)
+
+    return {'exit': result.returncode,
+            'output': cap(result.stdout if result.returncode == 0 else result.stderr, EVIDENCE_CHARACTERS)}
+
+
+def merge_commit(repo, number, pulls):
+    """The merge commit GitHub records for PR `number`, '' when it names none or refuses (a 404); asked once per PR."""
+    if number not in pulls:
+        try:
+            sha = github_api('GET', f'/repos/{repo}/pulls/{number}', installation_token(repo)).get('merge_commit_sha')
+        except GitHubUnavailable:
+            raise
+        except PipelineError:
+            sha = ''
+
+        pulls[number] = sha if isinstance(sha, str) and MERGE_SHA.match(sha) else ''
+
+    return pulls[number]
+
+
+def handoff_check(repo, clone, revision, owner, owner_state, pulls):
+    """The owner step's merged PR, its merge commit's line when that commit is on the base, and the files it changed
+    against its first parent."""
+    handoff = {'step': owner, 'pr': None, 'commit': '', 'files': ''}
+
+    if owner_state is None or owner_state['status'] != 'closed' or not (owner_state['merged'] or {}).get('number'):
+        return handoff
+
+    handoff['pr'] = owner_state['merged']['number']
+    sha = merge_commit(repo, handoff['pr'], pulls)
+
+    if sha and git_result(clone, 'merge-base', '--is-ancestor', sha, revision).returncode == 0:
+        handoff['commit'] = git_result(clone, 'log', '-1', *COMMIT_LINE, sha).stdout.strip()
+        files = git_result(clone, '-c', 'core.quotepath=off', 'diff-tree', '-r', '--name-only', '--no-renames',
+                           f'{sha}^1', sha)
+        handoff['files'] = cap(files.stdout, EVIDENCE_CHARACTERS) if files.returncode == 0 else ''
+
+    return handoff
+
+
+def evidence_check(repo, clone, base, item, owner_state, pulls):
+    """What the base branch says about one listed item's evidence: the four reads the sweep judges on, each
+    `{exit, output}` or None when it was not run, and for a handoff its owner step's merge."""
+    path, literal, usable = evidence_split(item['evidence'])
+    revision = f'refs/remotes/origin/{base}'
+    pathspec = ('--', path) if usable else ()
+    owner = item['owner']
+
+    return {
+        'base': f'origin/{base}', 'path': path, 'literal': literal, 'usable': usable,
+        'show': evidence_run(clone, 'show', f'{revision}:{path}') if usable else None,
+        'grep': evidence_run(clone, 'grep', '-n', '-F', '-e', literal, revision, *pathspec) if literal else None,
+        'pickaxe': evidence_run(clone, 'log', *COMMIT_LINE, '-S', literal, revision, *pathspec) if literal else None,
+        'log': evidence_run(clone, 'log', *COMMIT_LINE, '--max-count=50', revision, *pathspec),
+        'handoff': handoff_check(repo, clone, revision, owner, owner_state, pulls) if owner else None,
+    }
+
+
+def owner_state(repo, feature, root, owner):
+    """The state of the step a handoff names, None when the owner is not a step of the feature."""
+    if not re.match(r'^\d{2}$', owner) or owner not in [step.id for step in steps(repo, feature, root)]:
+        return None
+
+    return load_state(repo, feature, owner, root)
+
+
+def add_evidence(listed):
+    """Adds `evidence_check` to each listed item, refreshing each repo's clean clone first. A repo that fails is named
+    on stderr and its items are dropped; returns the items kept and whether one failed."""
+    kept, failed = [], False
+
+    for repo in dict.fromkeys(item['repo'] for item, _ in listed):
+        group = [(item, root) for item, root in listed if item['repo'] == repo]
+
+        try:
+            refresh_clone(repo)
+            base = adapter.repo_config(repo)['base']
+
+            if not BRANCH_NAME.match(base):
+                raise PipelineError(f'base {base!r} is not a branch name')
+
+            clone, pulls = adapter.clone_path(repo), {}
+
+            for item, root in group:
+                item['evidence_check'] = evidence_check(repo, clone, base, item,
+                                                        owner_state(repo, item['feature'], root, item['owner']), pulls)
+        except (*ERRORS, OSError, ValueError) as error:
+            print(f'{repo}: cannot gather evidence: {headline(str(error))}', file=sys.stderr)
+            failed = True
+            continue
+
+        kept += [item for item, _ in group]
+
+    return kept, failed
+
+
 def command_deferred(argv):
     """The open deferred items of merged steps (live and parked features), then the metrics of every feature of the
     repos in scope, archived ones included."""
@@ -5190,9 +5307,11 @@ def command_deferred(argv):
     rest = list(argv)
     as_json = rest.count('--json') == 1
     rest = [word for word in rest if word != '--json'] if as_json else rest
+    with_evidence = rest.count('--evidence') == 1
+    rest = [word for word in rest if word != '--evidence'] if with_evidence else rest
     repo = pick_repo(rest) if '--repo' in rest else None
 
-    if len(rest) > 1 or any(word.startswith('-') for word in rest):
+    if len(rest) > 1 or any(word.startswith('-') for word in rest) or with_evidence and not as_json:
         return usage_error('deferred')
 
     if rest:
@@ -5208,7 +5327,7 @@ def command_deferred(argv):
     features += [(name, feature, adapter.archive_root(name), False) for name in repos
                  for feature in adapter.feature_folders(name, adapter.archive_root(name))]
     counts = dict.fromkeys(DEFERRED_COUNTS, 0)
-    items, failed = [], False
+    found, failed = [], False
 
     for name, feature, root, shown in features:
         try:
@@ -5223,10 +5342,16 @@ def command_deferred(argv):
         add_deferred_counts(counts, states, entries)
 
         if shown:
-            items += [{'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
-                       'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
-                       'evidence': deferred_field(item, 'evidence')}
+            found += [({'repo': name, 'feature': feature, 'id': item_id, 'pr': deferred_pr(state),
+                        'owner': deferred_field(item, 'owner'), 'item': deferred_field(item, 'item'),
+                        'evidence': deferred_field(item, 'evidence')}, root)
                       for item_id, state, item, verdict in entries if isinstance(item, dict) and verdict is None]
+
+    items = [item for item, _ in found]
+
+    if with_evidence:
+        items, problem = add_evidence(found)
+        failed = failed or problem
 
     if as_json:
         print(json.dumps({'items': items, 'metrics': counts}, indent=2))
@@ -6942,9 +7067,10 @@ COMMANDS = {
     'revise': ('revise <feature> [--repo <o>/<r>]', 'send the plan back (`## Feedback` in plan.md)', 'daily'),
     'respond': ('respond <feature> [--repo <o>/<r>]', 'turn your PR comments into a respond round, now', 'daily'),
     'queue': ('queue', 'running, queued in start order, held, waiting, needs you, backlog', 'queue'),
-    'deferred': ('deferred [<feature>] [--json] [--repo <o>/<r>] | deferred close <feature> <NN.K> done|moot|wontdo '
-                 '<note> | deferred close <feature> <NN.K> owned <target> [<note>]',
-                 'open deferred items of merged steps, with metrics; close records one verdict per item', 'queue'),
+    'deferred': ('deferred [<feature>] [--json [--evidence]] [--repo <o>/<r>] | deferred close <feature> <NN.K> '
+                 'done|moot|wontdo <note> | deferred close <feature> <NN.K> owned <target> [<note>]',
+                 'open deferred items of merged steps, with metrics (--evidence: what the base branch shows for each); '
+                 'close records one verdict per item', 'queue'),
     'start': ('start [<feature>] [--repo <o>/<r>] [--after <feature>[:NN]]',
               'unpark from _backlog, lift the hold, start it (paused: now) or once that merged; none: end the drain',
               'queue'),
