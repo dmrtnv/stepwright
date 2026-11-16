@@ -301,6 +301,34 @@ class EvidenceTest(DeferredCommandCase):
         self.assertEqual(checks['01.2']['show']['exit'], 128)
         self.assertEqual(checks['01.2']['pickaxe'], {'exit': 0, 'output': ''})
 
+    def test_a_read_that_cannot_run_fails_only_its_own_item(self):
+        self.push({'src/cache.py': 'fine\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py:1 "a\x00b"'), deferred('b', 'src/cache.py "fine"')])
+        checks = self.evidence()
+        self.assertEqual(checks['01.1']['grep'], {'exit': -1, 'output': 'embedded null byte'})
+        self.assertEqual(checks['01.1']['pickaxe'], {'exit': -1, 'output': 'embedded null byte'})
+        self.assertEqual((checks['01.1']['show']['exit'], checks['01.1']['log']['exit']), (0, 0))
+        self.assertEqual(checks['01.2']['grep']['exit'], 0)
+        self.assertEqual(self.errors, '')
+
+    def test_a_read_that_times_out_fails_only_its_own_item(self):
+        self.push({'src/cache.py': 'fine\n'})
+        self.seed(FEATURE, '01', [deferred('a', 'src/cache.py "slow"'), deferred('b', 'src/cache.py "fine"')])
+        real = core.git_result
+
+        def slow(directory, *arguments, env=None):
+            if '-S' in arguments and 'slow' in arguments:
+                raise core.PipelineError('git log -S slow timed out after 300s')
+
+            return real(directory, *arguments, env=env)
+
+        with unittest.mock.patch.object(core, 'git_result', slow):
+            checks = self.evidence()
+
+        self.assertEqual(checks['01.1']['pickaxe'], {'exit': -1, 'output': 'git log -S slow timed out after 300s'})
+        self.assertEqual(checks['01.1']['grep']['exit'], 1)
+        self.assertEqual(checks['01.2']['pickaxe']['exit'], 0)
+
     def merge(self, files):
         other = self.fixture.other
         git(other, 'checkout', '-qb', 'agent/thing-02')

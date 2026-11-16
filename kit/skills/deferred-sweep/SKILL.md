@@ -45,8 +45,9 @@ takes the work on), a step brief for each item still worth a PR, and a report.
    - `show`, `grep`, `pickaxe` and `log` are each `{"exit", "output"}`, or `null` when not run: `show` the file
      (exit 128: the base has no such path), `grep` the literal's lines (exit 1: not found), `pickaxe` the commits
      that added or removed the literal, `log` the last 50 commits on the path (on the whole base when the path is
-     unusable). `show` runs only on a usable path, `grep` and `pickaxe` only with a literal. Output is cut at 2,000
-     characters.
+     unusable). `show` runs only on a usable path, `grep` and `pickaxe` only with a literal. Exit -1 means git
+     could not run that read (the output says why): treat it as no answer, never as not found. Output is cut at
+     2,000 characters.
    - `handoff` is `null` for a gap. For owner `"NN"` it is `{"step", "pr", "commit", "files"}`: `pr` is step NN's
      merged PR (`null` while it is not merged, or NN is not a step), `commit` the merge commit's `<sha> <date>
      <subject>` when it is on the base (`""` when none is known), and `files` the files that PR changed.

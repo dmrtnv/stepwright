@@ -5208,7 +5208,12 @@ def evidence_split(evidence):
 
 
 def evidence_run(clone, *arguments):
-    result = git_result(clone, *arguments)
+    """One read's `{exit, output}`; a read git cannot be handed (a NUL, an argument too long) or that times out is
+    exit -1 with the reason, so it fails only its own item."""
+    try:
+        result = git_result(clone, *arguments)
+    except (PipelineError, OSError, ValueError) as error:
+        return {'exit': -1, 'output': cap(headline(str(error)), EVIDENCE_CHARACTERS)}
 
     return {'exit': result.returncode,
             'output': cap(result.stdout if result.returncode == 0 else result.stderr, EVIDENCE_CHARACTERS)}
