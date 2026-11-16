@@ -4992,7 +4992,8 @@ def compress_old_logs(directory, step_id, cutoff):
             if not target.exists():
                 compress_log(path, data)
             elif not xz_holds(target, data):
-                raise PipelineError(f'{target} already exists with other content; kept it and {path.name}')
+                raise PipelineError(f'{target} already exists with other content; kept it and {path.name}; compare '
+                                    f'them with xzcat {target} | diff - {path}, then delete the one you do not want')
 
             path.unlink()
             compressed += 1

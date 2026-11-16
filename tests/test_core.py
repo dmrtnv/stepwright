@@ -2709,6 +2709,8 @@ class LogCompressionTest(unittest.TestCase):
                 self.assertEqual(log.read_bytes(), b'mine\n')
                 self.assertEqual(target.read_bytes(), existing)
                 self.assertIn(str(target), self.errors)
+                self.assertIn(f'compare them with xzcat {target} | diff - {log}, then delete the one you do not want',
+                              self.errors)
 
     def test_an_existing_xz_with_the_same_content_finishes_the_job(self):
         log = self.old('01-plan.log', b'mine\n')
