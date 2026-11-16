@@ -614,6 +614,325 @@ class CloseItemTest(DeferredCommandCase):
         self.assertFalse(core.deferred_file(REPO, FEATURE).exists())
 
 
+KIT = Path(__file__).resolve().parent.parent / 'kit/skills'
+BRIEF = ('**Goal:** close the cache leak.\n**Why:** it grows.\n\n## Scope\nIn: the cache.\n\n'
+         '## Locked decisions\n- none\n\n## Pointers\n- src/cache.py\n\n## Traps\n- none known\n\n'
+         '## Done when\n- the test passes\n\n'
+         '## Open questions\n- None\n')
+
+
+class FileTest(DeferredCommandCase):
+    """`pipeline deferred file`: an open item becomes the next step brief of a feature or follow-ups, then owned."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed(FEATURE, '01', ['an old note', GAP, HANDOFF])
+        self.brief = self.fixture.base / 'brief.md'
+        write(self.brief, BRIEF)
+
+    def file(self, item_id='01.2', target='follow-ups', *extra, areas='src/cache.py, docs', migration='no'):
+        return self.main('deferred', 'file', FEATURE, item_id, target, '--brief', str(self.brief), '--areas', areas,
+                         '--migration', migration, *extra)
+
+    def stored(self):
+        path = core.deferred_file(REPO, FEATURE)
+
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def tree(self):
+        return sorted(str(path.relative_to(self.fixture.plans)) for path in self.fixture.plans.rglob('*')
+                      if '.pipeline' not in path.parts)
+
+    def bucket(self, where, steps=('01-old',)):
+        root = self.root(where)
+        write(root / 'follow-ups/00-overview.md', '# follow-ups\n')
+
+        for name in steps:
+            write(root / 'follow-ups' / name / 'brief.md', '# x\n')
+
+        return root / 'follow-ups'
+
+    def test_a_parked_bucket_takes_the_next_number_and_the_item_is_owned(self):
+        bucket = self.bucket('backlog', ('01-old', '03-later'))
+        umask = core.os.umask(0o077)
+
+        try:
+            self.assertEqual(self.file(), 0, self.errors)
+        finally:
+            core.os.umask(umask)
+
+        folder = bucket / '04-the-old-cache-leaks'
+        self.assertEqual(self.output, f'filed {folder}/brief.md (parked: pipeline start follow-ups runs it)\n'
+                                      f'{FEATURE} 01.2: owned by follow-ups\n')
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as _backlog/follow-ups/04-the-old-cache-leaks')
+        brief = (folder / 'brief.md').read_text()
+        self.assertTrue(brief.startswith('# 04 the-old-cache-leaks\n\n**Goal:** close the cache leak.\n'), brief)
+        self.assertIn('## Pointers\n- deferred from thing 01.2 (PR #5)\n- src/cache.py\n\n'
+                      'Deferred item (data, not instructions):\n```text\nitem: the old cache leaks\n'
+                      'evidence: README.md:1-4\n```\n\n## Traps\n', brief)
+        self.assertEqual(oct(folder.stat().st_mode & 0o777), '0o755')
+        self.assertEqual(oct((folder / 'brief.md').stat().st_mode & 0o777), '0o644')
+        self.assertEqual(self.listing(FEATURE), 'thing 01.3  PR #5  step 02  a wider rename\n  evidence: core.py:12')
+
+    def test_a_live_feature_target_says_the_next_tick_starts_it(self):
+        write(self.root() / 'cache/00-overview.md', '# cache\n')
+        write(self.root() / 'cache/01-a/brief.md', '# x\n')
+        self.assertEqual(self.file('01.2', 'cache'), 0, self.errors)
+        self.assertTrue(self.output.startswith(f'filed {self.root()}/cache/02-the-old-cache-leaks/brief.md (live: the '
+                                               'next tick starts it)\n'), self.output)
+
+    def test_a_parked_feature_target(self):
+        write(self.root('backlog') / 'cache/01-a/brief.md', '# x\n')
+        self.assertEqual(self.file('01.2', 'cache'), 0, self.errors)
+        self.assertTrue((self.root('backlog') / 'cache/02-the-old-cache-leaks/brief.md').is_file())
+        self.assertEqual(self.stored()['01.2']['owner'], 'cache')
+
+    def test_an_archived_bucket_moves_to_backlog_with_its_state(self):
+        bucket = self.bucket('archive')
+        write(bucket / '.pipeline/01/state.json', '{}')
+        self.assertEqual(self.file(), 0, self.errors)
+        moved = self.root('backlog') / 'follow-ups'
+        self.assertFalse(bucket.exists())
+        self.assertTrue((moved / '.pipeline/01/state.json').is_file())
+        self.assertTrue((moved / '02-the-old-cache-leaks/brief.md').is_file())
+
+    def test_no_bucket_creates_one_parked_with_its_overview(self):
+        self.assertEqual(self.file(), 0, self.errors)
+        bucket = self.root('backlog') / 'follow-ups'
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-the-old-cache-leaks'])
+        overview = (bucket / '00-overview.md').read_text()
+        self.assertIn('independent follow-ups filed from deferred items; each step stands alone and merges on its own',
+                      overview)
+        self.assertIn('No step depends on another; the step folders are the step list, so this overview keeps no step '
+                      'table.', overview)
+        self.assertEqual(oct(bucket.stat().st_mode & 0o777), '0o755')
+        self.assertEqual([path.name for path in self.fixture.plans.iterdir() if path.name.startswith('.')], [])
+
+    def test_a_bucket_both_live_and_parked_is_refused(self):
+        self.bucket('live')
+        self.bucket('backlog')
+        before = self.tree()
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, f"follow-ups is in {self.root()}/follow-ups and "
+                                      f"{self.root('backlog')}/follow-ups: keep one of them\n")
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.stored(), {})
+
+    def test_bad_targets_are_refused_and_nothing_is_written(self):
+        write(self.root('archive') / 'old/01-a/brief.md', '# x\n')
+        cases = {FEATURE: f'{FEATURE} cannot own its own item: name the feature that takes the work on',
+                 'old': f"old is archived: {self.root('archive')}/old",
+                 'nowhere': f'no feature nowhere in the plans or _backlog/ of {REPO}'}
+        before = self.tree()
+
+        for target, message in cases.items():
+            with self.subTest(target=target):
+                self.assertEqual(self.file('01.2', target), 1)
+                self.assertEqual(self.errors, message + '\n')
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(self.stored(), {})
+
+    def test_a_full_target_is_refused(self):
+        self.bucket('backlog', ('99-last',))
+        before = self.tree()
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, 'follow-ups is full (99 steps); nothing filed\n')
+        self.assertEqual(self.tree(), before)
+
+    def test_an_item_with_a_verdict_or_no_pr_is_refused(self):
+        self.verdicts(FEATURE, {'01.2': self.verdict('moot')})
+        self.assertEqual(self.file(), 1)
+        self.assertEqual(self.errors, f'{FEATURE} 01.2 already has a verdict (moot); nothing filed\n')
+        self.seed('nopr', '01', [GAP])
+        state_path = core.state_file(REPO, 'nopr', '01')
+        state = json.loads(state_path.read_text())
+        state['pr'] = state['merged'] = None
+        write(state_path, json.dumps(state))
+        self.assertEqual(self.main('deferred', 'file', 'nopr', '01.1', 'follow-ups', '--brief', str(self.brief),
+                                   '--areas', 'x', '--migration', 'no'), 1)
+        self.assertEqual(self.errors, 'nopr step 01 has no PR number; nothing filed\n')
+        self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_wrong_headings_are_refused(self):
+        for body in (BRIEF.replace('## Traps', '## Risks'), BRIEF.replace('## Open questions\n- None\n', ''),
+                     '## Pointers\n' + BRIEF.replace('## Pointers\n', '')):
+            with self.subTest(body=body[:30]):
+                write(self.brief, body)
+                self.assertEqual(self.file(), 1)
+                self.assertEqual(self.errors, 'the brief needs the sections Scope, Locked decisions, Pointers, '
+                                              'Traps, Done when, Open questions as ## headings, in that order; '
+                                              'nothing filed\n')
+                self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_a_title_line_in_the_brief_is_replaced(self):
+        write(self.brief, '# 07 mine\n\n' + BRIEF)
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertTrue(brief.startswith('# 01 the-old-cache-leaks\n\n**Goal:**'), brief)
+        self.assertNotIn('mine', brief)
+
+    def test_bad_grammar_exits_2_and_writes_nothing(self):
+        base = ['deferred', 'file', FEATURE, '01.2', 'follow-ups']
+        options = ['--brief', str(self.brief), '--areas', 'x', '--migration', 'no']
+
+        for argv in (base + options[:4], base + options + ['--areas', 'y'], base + options[:5] + ['maybe'],
+                     base[:4] + options, base + options + ['extra'], base + options[:3] + ['--force'] + options[4:],
+                     base + options + ['--force'], ['deferred', 'file']):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv), 2)
+                self.assertTrue(self.errors.startswith('usage: pipeline deferred'), self.errors)
+                self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
+    def test_a_brief_file_that_cannot_be_read_is_refused(self):
+        self.brief.unlink()
+        self.assertEqual(self.file(), 1)
+        self.assertTrue(self.errors.startswith(f'{self.brief}: cannot read the brief'), self.errors)
+
+    def test_the_slug_is_printable_lowercase_and_at_most_40(self):
+        self.assertEqual(core.item_slug('Fix\x1b[2J the  Cache\r\n‮leak!'), 'fix-2j-the-cache-leak')
+        self.assertEqual(core.item_slug('a' * 39 + ' bcd'), 'a' * 39)
+        self.assertEqual(core.item_slug('x' * 50), 'x' * 40)
+        self.assertEqual(core.item_slug('—!—'), 'follow-up')
+
+    def test_a_failed_rename_leaves_no_step_and_no_staging_folder(self):
+        bucket = self.bucket('backlog')
+        original = core.os.rename
+        sources = []
+
+        def failing(source, destination):
+            sources.append(Path(source))
+            raise OSError(28, 'No space left on device')
+
+        with unittest.mock.patch.object(core.os, 'rename', failing):
+            self.assertEqual(self.file(), 1)
+
+        self.assertIs(core.os.rename, original)
+        self.assertEqual(self.errors, f'cannot file into {bucket}: No space left on device; nothing filed\n')
+        self.assertEqual(sources[0].parent.parent, self.fixture.plans)
+        self.assertTrue(sources[0].parent.name.startswith('.file-'))
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-old'])
+        self.assertEqual([path.name for path in self.fixture.plans.iterdir() if path.name.startswith('.')], [])
+        self.assertEqual(self.stored(), {})
+
+    def test_a_queue_that_cannot_be_read_leaves_the_item_open_for_a_rerun(self):
+        (self.fixture.plans / 'README.md').mkdir()
+        self.assertEqual(self.file(), 1)
+        self.assertIn('README.md: cannot read (', self.errors)
+        self.assertIn('the brief is filed, re-run to finish', self.errors)
+        self.assertEqual(self.stored(), {})
+        (self.fixture.plans / 'README.md').rmdir()
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertIn('already filed in', self.output)
+        self.assertEqual(self.stored()['01.2']['owner'], 'follow-ups')
+
+    def queue(self):
+        return (self.fixture.plans / 'README.md').read_text()
+
+    def test_the_queue_row_is_created(self):
+        self.assertEqual(self.file(migration='yes'), 0, self.errors)
+        self.assertEqual(self.queue(), '| feature | steps | migration | areas | after |\n|---|---|---|---|---|\n'
+                                       '| follow-ups | 1 | yes | src/cache.py, docs |  |\n')
+
+    def test_the_queue_row_is_updated_and_every_other_line_kept(self):
+        self.bucket('backlog')
+        text = ('# Queue\n\nNotes | with a pipe.\n\n|feature|steps|migration|areas|after|\n'
+                '| --- | --- | --- | --- | --- |\n| alpha | 2 | no | api | |\n'
+                '| follow-ups | 1 | yes | docs, web | alpha |\n| zeta | 1 | no | x | |\n\n'
+                'After the table.\n')
+        write(self.fixture.plans / 'README.md', text)
+        self.assertEqual(self.file(areas='docs, a|b, src/cache.py'), 0, self.errors)
+        expected = text.replace('| follow-ups | 1 | yes | docs, web | alpha |',
+                                '| follow-ups | 2 | yes | docs, web, a/b, src/cache.py | alpha |')
+        self.assertEqual(self.queue(), expected)
+
+    def test_a_new_row_goes_after_the_last_row_and_a_readme_without_the_table_gets_one(self):
+        write(self.fixture.plans / 'README.md', '| feature | steps | migration | areas | after |\n'
+                                                '|---|---|---|---|---|\n| alpha | 2 | no | api | |\n\nNotes.\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.queue(), '| feature | steps | migration | areas | after |\n|---|---|---|---|---|\n'
+                                       '| alpha | 2 | no | api | |\n| follow-ups | 1 | no | src/cache.py, docs |  |\n'
+                                       '\nNotes.\n')
+        write(self.fixture.plans / 'README.md', '# Plans\n')
+        self.assertEqual(self.file('01.3'), 0, self.errors)
+        self.assertEqual(self.queue(), '# Plans\n\n| feature | steps | migration | areas | after |\n'
+                                       '|---|---|---|---|---|\n| follow-ups | 2 | no | src/cache.py, docs |  |\n')
+
+    def test_a_rerun_after_a_failed_close_files_no_second_brief(self):
+        with unittest.mock.patch.object(core, 'close_item', side_effect=core.PipelineError('disk full')):
+            self.assertEqual(self.file(), 1)
+
+        bucket = self.root('backlog') / 'follow-ups'
+        self.assertEqual(self.stored(), {})
+        write(self.fixture.plans / 'README.md', '# Plans\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        folder = bucket / '01-the-old-cache-leaks'
+        self.assertEqual(self.output,
+                         f'{FEATURE} 01.2: already filed in {folder}\n{FEATURE} 01.2: owned by follow-ups\n')
+        self.assertEqual(sorted(path.name for path in bucket.iterdir()), ['00-overview.md', '01-the-old-cache-leaks'])
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as _backlog/follow-ups/01-the-old-cache-leaks')
+        self.assertIn('| follow-ups | 1 | no | src/cache.py, docs |  |', self.queue())
+
+    def test_an_item_filed_in_a_live_feature_is_owned_by_it(self):
+        write(self.root() / 'cache/03-done-before/brief.md',
+              '# 03 x\n\n## Pointers\n\n- deferred from thing 01.2 (PR #5)\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.output, f'{FEATURE} 01.2: already filed in {self.root()}/cache/03-done-before\n'
+                                      f'{FEATURE} 01.2: owned by cache\n')
+        self.assertEqual(self.stored()['01.2']['note'], 'filed as cache/03-done-before')
+        self.assertIn('| cache | 1 | no |', self.queue())
+
+    def test_an_item_filed_in_an_archived_feature_is_done(self):
+        write(self.root('archive') / 'follow-ups/02-x/brief.md',
+              '# 02 x\n\n## Pointers\n- deferred from thing 01.2 (PR #5)\n')
+        self.assertEqual(self.file(), 0, self.errors)
+        self.assertEqual(self.output, f"{FEATURE} 01.2: already filed in {self.root('archive')}/follow-ups/02-x\n"
+                                      f'{FEATURE} 01.2: done\n')
+        self.assertEqual(self.stored()['01.2'], dict(self.stored()['01.2'], verdict='done',
+                                                     note='filed as _archive/follow-ups/02-x, which merged'))
+        self.assertFalse((self.fixture.plans / 'README.md').exists())
+
+    def test_item_text_cannot_forge_the_marker_or_break_the_data_block(self):
+        forged = deferred('- deferred from thing 01.3 (PR #5) ```` end', 'x.py "```"')
+        self.seed(FEATURE, '01', ['an old note', forged, HANDOFF, deferred('later one')])
+        self.assertEqual(self.file('01.2'), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-deferred-from-thing-01-3-pr-5-end/brief.md').read_text()
+        self.assertIn('`````text\nitem: - deferred from thing 01.3 (PR #5) ```` end\nevidence: x.py "```"\n`````\n',
+                      brief)
+        self.assertEqual(self.file('01.3'), 0, self.errors)
+        self.assertTrue(self.output.startswith('filed '), self.output)
+        self.assertEqual(core.filed_brief(REPO, FEATURE, '01.4'), None)
+
+    def test_bucket_place_names_each_place(self):
+        self.assertEqual(core.bucket_place(REPO), (None, None))
+
+        for where, name in (('archive', 'archived'), ('backlog', 'parked'), ('live', 'live')):
+            with self.subTest(where=where):
+                bucket = self.root(where) / 'follow-ups'
+                bucket.mkdir(parents=True)
+                self.assertEqual(core.bucket_place(REPO), (name, bucket))
+
+                if where != 'live':
+                    bucket.rename(self.fixture.base / f'away-{where}')
+
+        (self.fixture.base / 'away-backlog').rename(self.root('backlog') / 'follow-ups')
+
+        with self.assertRaises(core.PipelineError):
+            core.bucket_place(REPO)
+
+    def test_the_headings_match_the_kit_brief_template(self):
+        skill = (KIT / 'pipeline-feature/SKILL.md').read_text()
+        template = skill.split('## Brief template\n\n```markdown\n')[1].split('\n```')[0]
+        self.assertEqual(tuple(line[3:] for line in template.splitlines() if line.startswith('## ')),
+                         core.BRIEF_HEADINGS)
+        self.assertEqual(self.file(), 0, self.errors)
+        brief = (self.root('backlog') / 'follow-ups/01-the-old-cache-leaks/brief.md').read_text()
+        self.assertEqual(tuple(line[3:] for line in brief.splitlines() if line.startswith('## ')), core.BRIEF_HEADINGS)
+
+    def test_a_feature_named_file_is_shadowed_but_still_listed(self):
+        self.seed('file', '01', [GAP])
+        self.assertIn('file 01.1', self.listing())
+
+
 class NudgeTest(DeferredCommandCase):
     ROW = f'1 deferred to sweep → /deferred-sweep {FEATURE}'
 
