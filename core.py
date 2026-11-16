@@ -5063,7 +5063,7 @@ SWEEP_INSTRUCTIONS = (
 
 class JudgeFailure(PipelineError):
     """A judging call that gave no usable answer. `noted`: it would fail the same way again (the budget, the timeout,
-    an answer without a verdicts list), so its items are left open with a note instead of costing a call each night."""
+    an answer that never fit the schema or has no verdicts list), so its items are left open with a note instead of costing a call each night."""
 
     def __init__(self, reason, noted=False, cost=0.0):
         super().__init__(reason)
@@ -5460,8 +5460,12 @@ def judge(prompt, log_path):
     if result.get('subtype') == 'error_max_budget_usd':
         raise JudgeFailure(f'the judging call spent its ${SWEEP_BUDGET_USD} budget', True, cost)
 
+    if result.get('subtype') == 'error_max_structured_output_retries':
+        raise JudgeFailure('the judging call gave no valid answer', True, cost)
+
     if result.get('is_error'):
-        raise JudgeFailure(f"{result.get('subtype')}: {str(result.get('result') or '')[:200]}", cost=cost)
+        text = str(result.get('result') or '')[:200]
+        raise JudgeFailure(f"{result.get('subtype')}: {text}" if text else str(result.get('subtype')), cost=cost)
 
     answer = result.get('structured_output')
 

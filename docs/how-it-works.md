@@ -174,8 +174,8 @@ Unknown keys are an error.
     survivor is filed as a step brief the runner writes from the answer's fields into a parked `follow-ups` (marked
     written unattended: check it before `pipeline start follow-ups`). The rest stay open for `/deferred-sweep`: a
     live `follow-ups`, a won't do or any doubt, a missing or repeated answer, or proof the runner cannot confirm. Each
-    item left open gets a note and is not judged again; so does each item of a call that timed out, spent its budget
-    or gave no verdicts list. A transient failure (an API error, a bad `init`) records nothing and the next sweep
+    item left open gets a note and is not judged again; so does each item of a call that timed out, spent its budget,
+    never fit the answer schema or gave no verdicts list. A transient failure (an API error, a bad `init`) records nothing and the next sweep
     tries again. The kill switch, a usage limit, a held run lock or a GitHub outage skips the feature with no call.
     It prints a line per item and per skipped or failed feature, then the counts and the cost. It exits 1 only when
     a feature failed, and 130 when interrupted (the call is killed);

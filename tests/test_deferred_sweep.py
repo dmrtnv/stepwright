@@ -201,8 +201,12 @@ class JudgeTest(JudgeCase):
     def test_each_failure_says_whether_it_would_repeat(self):
         error = {'type': 'result', 'subtype': 'error_during_execution', 'is_error': True, 'result': 'API Error: 500'}
         budget = {'type': 'result', 'subtype': 'error_max_budget_usd', 'is_error': True, 'total_cost_usd': 5.2}
+        invalid = {'type': 'result', 'subtype': 'error_max_structured_output_retries', 'is_error': True,
+                   'total_cost_usd': 1.2}
         cases = [
             ([INIT, error], 'error_during_execution: API Error: 500', False, 0.0),
+            ([INIT, dict(error, result='')], 'error_during_execution', False, 0.0),
+            ([INIT, invalid], 'the judging call gave no valid answer', True, 1.2),
             ([INIT, {'exit': 1}], 'claude exited 1 without a result', False, 0.0),
             ([{'exit': 0}], 'claude exited 0 without a result', False, 0.0),
             ([INIT, budget], 'the judging call spent its $5 budget', True, 5.2),
@@ -544,6 +548,16 @@ class SweepTest(SweepCase):
         self.assertEqual(self.errors, f'{FEATURE}: failed, the judging call spent its $5 budget (log: {log})\n')
         self.assertEqual(self.notes()['01.1']['reason'], 'the judge failed: the judging call spent its $5 budget')
         self.assertTrue(self.output.splitlines()[-1].endswith('· $5.10'))
+        self.sweep()
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_an_answer_that_never_fits_the_schema_notes_the_items_and_costs_one_call(self):
+        invalid = {'type': 'result', 'subtype': 'error_max_structured_output_retries', 'is_error': True,
+                   'total_cost_usd': 1.2}
+        self.seed(FEATURE, '01', [deferred('a', 'x.py')])
+        self.runs([INIT, invalid])
+        self.sweep(code=1)
+        self.assertEqual(self.notes()['01.1']['reason'], 'the judge failed: the judging call gave no valid answer')
         self.sweep()
         self.assertEqual(len(self.calls()), 1)
 
