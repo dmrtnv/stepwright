@@ -799,6 +799,14 @@ class FileTest(DeferredCommandCase):
         self.assertIn('\n## Pointers\n- deferred from thing 01.2 (PR #5)\n- src/cache.py\n', brief)
         self.assertIn('```\n\n## Traps\n- none known\n', brief)
 
+    def test_a_plans_folder_that_cannot_hold_the_staging_folder_is_a_refusal(self):
+        with unittest.mock.patch.object(core.tempfile, 'mkdtemp', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(self.file(), 1)
+
+        self.assertTrue(self.errors.startswith('cannot file into '), self.errors)
+        self.assertTrue(self.errors.endswith(': Permission denied; nothing filed\n'), self.errors)
+        self.assertFalse((self.root('backlog') / 'follow-ups').exists())
+
     def test_a_title_line_in_the_brief_is_replaced(self):
         write(self.brief, '# 07 mine\n\n' + BRIEF)
         self.assertEqual(self.file(), 0, self.errors)

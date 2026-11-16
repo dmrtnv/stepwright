@@ -5685,9 +5685,10 @@ def file_item(repo, root, feature, item_id, target, body, areas, migration):
         name = f'{number:02d}-{slug}'
         text = brief_text(f'# {number:02d} {slug}', sections, marker, item)
         destination = existing if where in ('live', 'parked') else adapter.backlog_root(repo) / FOLLOW_UPS
-        staging = Path(tempfile.mkdtemp(dir=plans, prefix='.file-', suffix='.tmp'))
+        staging = None
 
         try:
+            staging = Path(tempfile.mkdtemp(dir=plans, prefix='.file-', suffix='.tmp'))
             os.chmod(staging, 0o755)
 
             if where is None:
@@ -5707,7 +5708,8 @@ def file_item(repo, root, feature, item_id, target, body, areas, migration):
         except OSError as error:
             raise PipelineError(f'cannot file into {destination}: {error.strerror or error}; nothing filed') from None
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
 
         update_queue(repo, target, destination, areas, migration)
 
