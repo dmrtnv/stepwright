@@ -61,6 +61,7 @@ UPKEEP_UNIT = 'pipeline-upkeep.service'
 UPKEEP_TIMER = 'pipeline-upkeep.timer'
 UPKEEP_RESULT = LOGS / 'upkeep.json'  # the last finished upkeep run: {at, stages: {sweep, archive, gc}}
 UPKEEP_STAGES = ('sweep', 'archive', 'gc')
+INIT_UNITS = (TICK_UNIT, TICK_TIMER, UPKEEP_UNIT, UPKEEP_TIMER)  # copied as they are from systemd/; sbx.service is sized
 UPKEEP_TICK_WAIT_SECONDS = 600
 UPKEEP_STALE_SECONDS = 3 * 86400
 ARCHIVE_SETTLE_SECONDS = 86400  # upkeep leaves a feature this long after its newest verdict, so you can reopen one
@@ -6998,15 +6999,15 @@ def init_item(path, link=None, content=None):
 
 
 def command_init():
-    """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the three user units with caps
-    sized for this box, and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
+    """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the user units (sbx.service's caps
+    sized for this box), and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
     starts or runs anything: it prints the next commands, the setup steps only when it wrote sbx.service."""
     sizes = init_sizes(mem_total_kib(), os.cpu_count())
     units = HOME / '.config/systemd/user'
     # Everything is rendered before the first write: a drifted or missing template fails the run with nothing written.
     contents = {SBX_UNIT: render_sbx_unit(sizes), adapter.CONFIG: render_pipeline_config(sizes)}
 
-    for name in (TICK_UNIT, TICK_TIMER):
+    for name in INIT_UNITS:
         try:
             contents[name] = (PIPELINE_DIR / 'systemd' / name).read_text()
         except OSError as error:
@@ -7032,7 +7033,7 @@ def command_init():
                 results.append(init_item(HOME / '.claude' / item / entry.name, link=entry))
 
     unit = init_item(units / SBX_UNIT, content=contents[SBX_UNIT])
-    results += [unit, *(init_item(units / name, content=contents[name]) for name in (TICK_UNIT, TICK_TIMER))]
+    results += [unit, *(init_item(units / name, content=contents[name]) for name in INIT_UNITS)]
     config = init_item(adapter.CONFIG, content=contents[adapter.CONFIG])
     results.append(config)
 
@@ -7398,8 +7399,33 @@ def doctor_tick_timer(loaded):
     return [(f'unit {TICK_TIMER}', state == 'enabled', detail, fix)]
 
 
+def doctor_upkeep_service(loaded):
+    return service_check(UPKEEP_UNIT)
+
+
+def doctor_upkeep_timer(loaded):
+    """Nightly upkeep is opt-in: a timer that is installed but off is a SKIP that names the command turning it on."""
+    state, detail = unit_state(UPKEEP_TIMER)
+    enable = f'systemctl --user enable --now {UPKEEP_TIMER} (INSTALL step 8)'
+
+    if state is None:
+        return [(f'unit {UPKEEP_TIMER}', False, detail, NO_USER_MANAGER_FIX)]
+
+    if state == '':
+        return [(f'unit {UPKEEP_TIMER}', False, detail, f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then "
+                                                        'systemctl --user daemon-reload (INSTALL step 8)')]
+
+    if state == 'enabled':
+        return [(f'unit {UPKEEP_TIMER}', True, detail, None)]
+
+    unmask = f'systemctl --user unmask {UPKEEP_TIMER}, then ' if state == 'masked' else ''
+
+    return [(f'unit {UPKEEP_TIMER}', None, f'{detail}; nightly upkeep is off: {unmask}{enable}', None)]
+
+
 DOCTOR_CHECKS = (doctor_tools, doctor_kvm, doctor_docker, doctor_runner, doctor_kit, doctor_sbx_unit, doctor_linger,
-                 doctor_app_key, doctor_config, doctor_reserve, doctor_tick_service, doctor_tick_timer)
+                 doctor_app_key, doctor_config, doctor_reserve, doctor_tick_service, doctor_tick_timer,
+                 doctor_upkeep_service, doctor_upkeep_timer)
 
 
 def command_doctor():

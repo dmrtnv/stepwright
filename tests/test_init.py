@@ -119,7 +119,8 @@ class InitCase(unittest.TestCase):
 
     def files(self):
         return [self.units / 'sbx.service', self.units / 'pipeline-tick.service', self.units / 'pipeline-tick.timer',
-                self.pipeline_config, self.host_config]
+                self.units / 'pipeline-upkeep.service', self.units / 'pipeline-upkeep.timer', self.pipeline_config,
+                self.host_config]
 
     def items(self, lines):
         return [line for line in lines if line.split(' ', 1)[0] in ('wrote', 'linked', 'skipped', 'failed')]
@@ -152,7 +153,7 @@ class FreshTest(InitCase):
                          [])  # 32 GiB and 16 threads: the shipped caps
         self.assertEqual(self.caps(self.units / 'sbx.service'), ['MemoryHigh=21G', 'MemoryMax=24G', 'CPUQuota=1200%'])
 
-        for name in ('pipeline-tick.service', 'pipeline-tick.timer'):
+        for name in ('pipeline-tick.service', 'pipeline-tick.timer', 'pipeline-upkeep.service', 'pipeline-upkeep.timer'):
             self.assertEqual((self.units / name).read_bytes(), (REPO / 'systemd' / name).read_bytes())
 
         for path in self.files():
@@ -171,6 +172,18 @@ class FreshTest(InitCase):
         self.assertEqual(len(items), len(self.links()) + len(self.files()), '\n'.join(lines))
         self.assertTrue(all(line.split(' ', 1)[0] in ('wrote', 'linked') for line in items), '\n'.join(lines))
         self.assertFalse(any(line.startswith('Warning') for line in lines), '\n'.join(lines))
+
+    def test_the_upkeep_units_run_it_nightly_after_sbx_within_an_hour(self):
+        self.assertEqual(self.init()[0], 0)
+        service = (self.units / 'pipeline-upkeep.service').read_text().splitlines()
+        timer = (self.units / 'pipeline-upkeep.timer').read_text().splitlines()
+
+        for line in ('After=sbx.service', 'Type=oneshot', 'TimeoutStartSec=1h', 'ExecStart=%h/.local/bin/pipeline upkeep',
+                     'Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin'):
+            self.assertIn(line, service)
+
+        for line in ('OnCalendar=*-*-* 04:42', 'Persistent=true', 'WantedBy=timers.target'):
+            self.assertIn(line, timer)
 
     def test_a_16_gib_box(self):
         self.box(16, 8)
