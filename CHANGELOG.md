@@ -6,6 +6,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.16 - 2026-11-17
+
 **Rerun the gate:** no (no stage kit or `STAGES` change).
 
 ### Added
