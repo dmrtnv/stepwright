@@ -36,6 +36,12 @@ What changed for you in each release, newest first. Each release says whether to
   those of parked and reserved-name features. It exits 1 when it cannot read one, and stops before any change when
   `sbx ls` fails.
 
+### Fixed
+
+- A step no longer pauses with "fetching … does not appear to be a git repository" on sbx 0.54.0, which serves a
+  sandbox's clone through the remote's own command instead of a `git://` URL. The runner now fetches the sandbox
+  remote by name. Re-run a step paused this way.
+
 ## v0.14 - 2026-11-12
 
 **Rerun the gate:** yes (the stage kit, the result schema and test 9 changed).

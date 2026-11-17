@@ -41,7 +41,7 @@ CI_UNITS = core.ci_units  # the real one: RunnerCase stubs it to {}
 FAKE_SBX = r'''#!/usr/bin/python3
 """Fake sbx: each sandbox is <root>/<name>/{home,workspace}; exec runs on the host with HOME=<home>, in its own
 session, marked FAKE_SBX_NAME=<name> so stop can end whatever it left (as a VM stop would)."""
-import fcntl, json, os, pathlib, shutil, signal, subprocess, sys, time
+import fcntl, json, os, pathlib, shlex, shutil, signal, subprocess, sys, time
 
 root = pathlib.Path(os.environ['FAKE_SBX_ROOT'])
 root.mkdir(parents=True, exist_ok=True)
@@ -68,8 +68,14 @@ def git(*arguments):
 
 
 def add_remote(name, info):
-    subprocess.run(['git', '-C', info['source'], 'remote', 'remove', f'sandbox-{name}'], capture_output=True)
-    git('-C', info['source'], 'remote', 'add', f'sandbox-{name}', str(root / name / 'workspace'))
+    """The remote as sbx 0.54 writes it: no real URL, only the remote's own uploadpack command reaches the clone."""
+    remote, source = f'sandbox-{name}', info['source']
+    serve = ' '.join(shlex.quote(part) for part in ('env', f'FAKE_SBX_ROOT={root}', os.path.abspath(sys.argv[0]),
+                                                     'upload-pack', name))
+    subprocess.run(['git', '-C', source, 'remote', 'remove', remote], capture_output=True)
+    git('-C', source, 'remote', 'add', remote, f'/sandbox/{name}')
+    git('-C', source, 'config', '--add', f'remote.{remote}.fetch', f'+refs/heads/*:refs/sandboxes/{name}/*')
+    git('-C', source, 'config', f'remote.{remote}.uploadpack', serve)
 
 
 def kill(name):
@@ -332,6 +338,8 @@ elif command == 'inspect':
         fail(f'sandbox {name} not found')
 
     print(json.dumps({'name': name, 'state': meta[name]['status'], 'image': meta[name].get('image')}))
+elif command == 'upload-pack':
+    os.execvp('git', ['git', 'upload-pack', str(root / args[1] / 'workspace')])
 else:
     fail(f'fake sbx: unknown command {command}')
 '''
@@ -1831,6 +1839,16 @@ class RunnerTest(RunnerCase):
         self.assertTrue(self.ref())
         self.assertEqual(tags(self.fixture.clone), tags(self.fixture.origin),
                          'an agent-made or agent-moved tag never reaches the clean clone')
+
+    def test_a_branch_fetched_out_of_a_sandbox_lands_in_the_runners_ref_only(self):
+        self.happy_path()
+        self.main(FEATURE, '--until', 'implement')
+        self.assertTrue(self.ref())
+        self.assertIn(['upload-pack', SANDBOX, f'/sandbox/{SANDBOX}'], self.sbx_calls(),
+                      "fetched through the remote's own uploadpack command")
+        strays = git(self.fixture.clone, 'for-each-ref', '--format=%(refname)', f'refs/remotes/sandbox-{SANDBOX}',
+                     'refs/sandboxes')
+        self.assertEqual(strays, '', "the remote's own refspecs are not followed")
 
     def test_the_vm_fetches_from_the_host_clone_not_github(self):
         self.happy_path()

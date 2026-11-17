@@ -3,7 +3,7 @@ truth (the runner's clean clone and the refs it fetches out of each VM).
 
 Verified sbx facts (sandbox/README.md "Known sbx facts") this relies on: `sbx exec` passes the exit code and auto-starts
 a stopped sandbox; it forwards no signal, so a claude turn is ended from inside the VM; `sbx stop` ends every VM process
-and removes the host remote `sandbox-<name>` until the next start (new port); a missing sandbox makes exec exit 1;
+and removes the host remote `sandbox-<name>` until the next start; a missing sandbox makes exec exit 1;
 `sbx cp` keeps symlinks and fifos as they are; `sbx policy rm` needs --force without a terminal.
 """
 import json
@@ -589,8 +589,10 @@ def fetch_branch(name, source, branch, ref, base):
     if url.returncode != 0:
         raise BackendError(f'{source} has no remote sandbox-{name} although the sandbox runs: {url.stderr.strip()}')
 
+    # By name: the remote carries its own transport (sbx 0.54: an uploadpack command; its URL alone reaches nothing).
+    # The empty --refmap keeps the remote's own refspecs out, so only `ref` is written.
     fetched = subprocess.run(['git', '-C', str(source), '-c', 'transfer.fsckObjects=true', '-c', 'fetch.fsckObjects=true',
-                              'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', url.stdout.strip(),
+                              'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--refmap=', f'sandbox-{name}',
                               f'+refs/heads/{branch}:{ref}'],
                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900)
 
