@@ -61,7 +61,7 @@ UPKEEP_UNIT = 'pipeline-upkeep.service'
 UPKEEP_TIMER = 'pipeline-upkeep.timer'
 UPKEEP_RESULT = LOGS / 'upkeep.json'  # the last finished upkeep run: {at, stages: {sweep, archive, gc}}
 UPKEEP_STAGES = ('sweep', 'archive', 'gc')
-INIT_UNITS = (TICK_UNIT, TICK_TIMER, UPKEEP_UNIT, UPKEEP_TIMER)  # copied as they are from systemd/; sbx.service is sized
+INIT_UNITS = (TICK_UNIT, TICK_TIMER, UPKEEP_UNIT, UPKEEP_TIMER)  # copied from systemd/ as they are
 UPKEEP_TICK_WAIT_SECONDS = 600
 UPKEEP_STALE_SECONDS = 3 * 86400
 ARCHIVE_SETTLE_SECONDS = 86400  # upkeep leaves a feature this long after its newest verdict, so you can reopen one
@@ -4119,8 +4119,8 @@ def template_problem():
 
 
 def upkeep_problem(now):
-    """`upkeep Nd old` when the last finished run is over UPKEEP_STALE_SECONDS old (doctor says whether the timer is on),
-    else `upkeep failed (stages)`, `upkeep ?` for an unreadable result, or None (no badge before a first run)."""
+    """`upkeep Nd old` when the last finished run is over UPKEEP_STALE_SECONDS old (doctor says whether the timer is
+    on), else `upkeep failed (stages)`, `upkeep ?` for an unreadable result, or None (no badge before a first run)."""
     try:
         result = json.loads(UPKEEP_RESULT.read_text())
     except FileNotFoundError:
@@ -6409,8 +6409,8 @@ def command_archive(settle=False):
                           f'/deferred-sweep {feature}, then pipeline archive again.')
                     skipped += 1
                 elif settle and time.time() - newest_verdict(repo, feature) < ARCHIVE_SETTLE_SECONDS:
-                    print(f'{feature}: skipped, because its newest deferred verdict is under a day old. Upkeep archives '
-                          'it tomorrow; pipeline archive moves it now.')
+                    print(f'{feature}: skipped, because its newest deferred verdict is under a day old. Upkeep '
+                          'archives it tomorrow; pipeline archive moves it now.')
                     skipped += 1
                 elif (archive / feature).exists():
                     print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
@@ -6603,7 +6603,8 @@ def upkeep_lines(stages, outcomes):
     if stages.get('sweep') == 'failed' and not failures:
         failures.append('sweep failed: pipeline deferred sweep says why')
 
-    failures += [f'{name} failed: pipeline {name} says why' for name in ('archive', 'gc') if stages.get(name) == 'failed']
+    failures += [f'{name} failed: pipeline {name} says why' for name in ('archive', 'gc')
+                 if stages.get(name) == 'failed']
 
     return failures, left_open, settled
 

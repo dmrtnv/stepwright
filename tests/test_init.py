@@ -153,7 +153,8 @@ class FreshTest(InitCase):
                          [])  # 32 GiB and 16 threads: the shipped caps
         self.assertEqual(self.caps(self.units / 'sbx.service'), ['MemoryHigh=21G', 'MemoryMax=24G', 'CPUQuota=1200%'])
 
-        for name in ('pipeline-tick.service', 'pipeline-tick.timer', 'pipeline-upkeep.service', 'pipeline-upkeep.timer'):
+        for name in ('pipeline-tick.service', 'pipeline-tick.timer', 'pipeline-upkeep.service',
+                     'pipeline-upkeep.timer'):
             self.assertEqual((self.units / name).read_bytes(), (REPO / 'systemd' / name).read_bytes())
 
         for path in self.files():
@@ -178,8 +179,8 @@ class FreshTest(InitCase):
         service = (self.units / 'pipeline-upkeep.service').read_text().splitlines()
         timer = (self.units / 'pipeline-upkeep.timer').read_text().splitlines()
 
-        for line in ('After=sbx.service', 'Type=oneshot', 'TimeoutStartSec=1h', 'ExecStart=%h/.local/bin/pipeline upkeep',
-                     'Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin'):
+        for line in ('After=sbx.service', 'Type=oneshot', 'ExecStart=%h/.local/bin/pipeline upkeep',
+                     'TimeoutStartSec=1h', 'Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin'):
             self.assertIn(line, service)
 
         for line in ('OnCalendar=*-*-* 04:42', 'Persistent=true', 'WantedBy=timers.target'):

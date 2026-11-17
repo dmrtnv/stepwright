@@ -372,8 +372,8 @@ What it does:
 - It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
   `sandbox/gate.py` command for each of your repos: run them.
 - It ends with `pipeline doctor`.
-- A release that adds a unit, such as `pipeline-upkeep.service`, gets it from init. Rerun step 8.1's block to give it your `PATH`, and turn it on with
-  step 8.2 if you want it.
+- A release that adds a unit, such as `pipeline-upkeep.service`, gets it from init. Rerun step 8.1's block to give
+  it your `PATH`, and turn it on with step 8.2 if you want it.
 
 It changes nothing and tells you why when:
 - the fetch fails, for example because a tag moved on GitHub;
