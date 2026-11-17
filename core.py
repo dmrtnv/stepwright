@@ -57,6 +57,14 @@ CONTROL = LOGS / 'control.json'  # yours, from the CLI: parallel, drain, order (
 TICK_UNIT = 'pipeline-tick.service'
 TICK_TIMER = 'pipeline-tick.timer'
 TEMPLATE_FAILED = LOGS / 'template-failed.json'
+UPKEEP_UNIT = 'pipeline-upkeep.service'
+UPKEEP_TIMER = 'pipeline-upkeep.timer'
+UPKEEP_RESULT = LOGS / 'upkeep.json'  # the last finished upkeep run: {at, stages: {sweep, archive, gc}}
+UPKEEP_STAGES = ('sweep', 'archive', 'gc')
+INIT_UNITS = (TICK_UNIT, TICK_TIMER, UPKEEP_UNIT, UPKEEP_TIMER)  # copied from systemd/ as they are
+UPKEEP_TICK_WAIT_SECONDS = 600
+UPKEEP_STALE_SECONDS = 3 * 86400
+ARCHIVE_SETTLE_SECONDS = 86400  # upkeep leaves a feature this long after its newest verdict, so you can reopen one
 SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (docs/how-it-works.md "What runs where")
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
 PRESSURE_BADGE_PERCENT = 1.0  # PSI full avg60 of sbx.service (memory.high throttling counts) that badges the status
@@ -680,9 +688,13 @@ def ntfy_topic():
 
 
 def notify(state, message, click=None, priority='default'):
+    """A step's phone ping, titled with its repo, feature and step."""
+    ping(f"{adapter.short(state['repo'])} {state['feature']} {state['id']}", message, click, priority)
+
+
+def ping(title, message, click=None, priority='default'):
     """A phone ping (ntfy) and a log line. `click` opens a URL (the PR) when the notification is tapped; `priority`
     (ntfy's: high for what needs you, default for news, low for what heals itself) decides how loud it is."""
-    title = f"{adapter.short(state['repo'])} {state['feature']} {state['id']}"
     print(f'[{title}] {message}', flush=True)
     topic = ntfy_topic()
 
@@ -3648,6 +3660,16 @@ def with_lock(name, function):
         return function()
 
 
+def wait_while(condition, seconds):
+    """Polls `condition` every half second until it is false or `seconds` pass; returns its last reading."""
+    deadline = time.monotonic() + seconds
+
+    while (held := condition()) and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+    return held
+
+
 def with_stop_signals(function):
     """SIGTERM and SIGHUP (a closed terminal, systemctl stop) take the Ctrl+C path: the stage stops, resumable."""
     previous = {sig: signal.signal(sig, signal.default_int_handler) for sig in (signal.SIGTERM, signal.SIGHUP)}
@@ -4096,6 +4118,28 @@ def template_problem():
     return 'template missing' if policy['build'] == 'manual' else None
 
 
+def upkeep_problem(now):
+    """`upkeep Nd old` when the last finished run is over UPKEEP_STALE_SECONDS old (doctor says whether the timer is
+    on), else `upkeep failed (stages)`, `upkeep ?` for an unreadable result, or None (no badge before a first run)."""
+    try:
+        result = json.loads(UPKEEP_RESULT.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return 'upkeep ?'
+
+    if not isinstance(result, dict) or not isinstance(result.get('at'), (int, float)) or \
+            not isinstance(result.get('stages'), dict):
+        return 'upkeep ?'
+
+    if now - result['at'] > UPKEEP_STALE_SECONDS:
+        return f"upkeep {int((now - result['at']) // 86400)}d old: pipeline doctor"
+
+    failed = [name for name in UPKEEP_STAGES if result['stages'].get(name) == 'failed']
+
+    return f"upkeep failed ({', '.join(failed)}): pipeline upkeep" if failed else None
+
+
 def host_readings(probes, now, verbose=False):
     """sbx.service, its memory and VMs, the CI slots and the template: re-read at most every PROBE_SECONDS for a watch
     (`probes` is its cache; `verbose` adds the template summary). No sbx call while the unit is down: any would
@@ -4185,6 +4229,11 @@ def status_model(show_all=False, probes=None, now=None):
 
     if host['template']:
         badges.append(host['template'])
+
+    upkeep = upkeep_problem(now)
+
+    if upkeep:
+        badges.append(upkeep)
 
     rows = [feature_view(repo, feature, now, control) for repo, feature in adapter.all_features()]
 
@@ -4904,10 +4953,7 @@ def command_stop(argv):
                 os.kill(pid, signal.SIGTERM)
                 signalled.append(path)
 
-    deadline = time.monotonic() + KILL_SWITCH_WAIT_SECONDS
-
-    while any(locked_path(path) for path in signalled) and time.monotonic() < deadline:
-        time.sleep(0.5)
+    wait_while(lambda: any(locked_path(path) for path in signalled), KILL_SWITCH_WAIT_SECONDS)
 
     if not sbx_service_active():
         # Replacing a hand-started daemon (docs/how-it-works.md "Setup notes") runs this while the unit is down: an sbx
@@ -5636,17 +5682,17 @@ def sweep_refusal(limits):
     return usage_problem(limits)
 
 
-def sweep_feature(repo, feature, evidence, limits):
-    """Judges one feature's items in one call and acts on each answer. The caller holds the run lock. Returns
-    (outcomes, cost)."""
-    outcomes, cost = [], 0.0
+def sweep_feature(repo, feature, evidence, limits, add):
+    """Judges one feature's items in one call and acts on each answer, handing each outcome to `add` as it happens.
+    The caller holds the run lock. Returns the cost."""
+    cost = 0.0
     notes = read_sweep_notes(repo, feature)
     noted = {}
     items = [evidence[item['id']] for item in items_to_judge(repo, feature) if item['id'] in evidence]
     by_id = {item['id']: item for item in items}
 
     def outcome(item_id, kind, line):
-        outcomes.append((repo, feature, item_id, kind, line))
+        add([(repo, feature, item_id, kind, line)])
 
     def leave_open(item_id, reason, verdict='none', note=''):
         noted[item_id] = {'verdict': verdict, 'note': sweep_text(note, DEFERRED_NOTE_CHARACTERS),
@@ -5658,7 +5704,7 @@ def sweep_feature(repo, feature, evidence, limits):
 
         if refusal:
             outcome('', 'skipped', f'{feature}: skipped, {refusal}')
-            return outcomes, cost
+            return cost
 
         prompt, ids = sweep_prompt(items)
 
@@ -5670,7 +5716,7 @@ def sweep_feature(repo, feature, evidence, limits):
                                                'sweep takes it')
 
         if not ids:
-            return outcomes, cost
+            return cost
 
         log_path = state_dir(repo, feature) / 'sweep.log'
 
@@ -5684,7 +5730,7 @@ def sweep_feature(repo, feature, evidence, limits):
                     leave_open(item_id, f'the judge failed: {failure}')
 
             outcome('', 'failed', f'{feature}: failed, {printable(str(failure))} (log: {log_path})')
-            return outcomes, cost
+            return cost
 
         outcome('', 'judged', f"{feature}: judged {plural(len(ids), 'item')}")
         answers, reasons = sweep_answers(verdicts, ids)
@@ -5698,7 +5744,7 @@ def sweep_feature(repo, feature, evidence, limits):
             except PipelineError as error:
                 outcome('', 'failed', f'{feature}: failed, {error}')
 
-    return outcomes, cost
+    return cost
 
 
 def settle_answers(repo, feature, ids, answers, reasons, by_id, outcome, leave_open):
@@ -5812,28 +5858,34 @@ def sweep_all(report=None):
 
         for feature in candidates:
             evidence = {item['id']: item for item in kept if item['feature'] == feature}
-            done = {}
-
-            def settle():
-                done['result'] = sweep_feature(repo, feature, evidence, config['admission'])
-
-                return 0
-
             try:
-                with_lock(run_lock(repo, feature), settle)
+                ran, feature_cost = held_call(run_lock(repo, feature),
+                                              lambda: sweep_feature(repo, feature, evidence, config['admission'], add))
             except (*ERRORS, OSError, ValueError) as error:
                 add([(repo, feature, '', 'failed', f'{feature}: failed, {headline(str(error))}')])
                 continue
 
-            if 'result' not in done:
+            if not ran:
                 add([(repo, feature, '', 'skipped', f'{feature}: skipped, a run holds it')])
                 continue
 
-            feature_outcomes, feature_cost = done['result']
-            add(feature_outcomes)
             cost += feature_cost
 
     return outcomes, cost
+
+
+def sweep_report(entry):
+    """Prints one sweep outcome as it happens: failures on stderr."""
+    print(entry[4], file=sys.stderr if entry[3] == 'failed' else sys.stdout, flush=True)
+
+
+def sweep_summary(outcomes, cost):
+    counts = collections.Counter(kind for _, _, _, kind, _ in outcomes)
+    print(f"sweep: closed {counts['closed']}, filed {counts['filed']}, left open {counts['left_open']} · "
+          f"features: judged {counts['judged']}, skipped {counts['skipped']}, failed {counts['failed']} · "
+          f'${cost:.2f}')
+
+    return counts
 
 
 def command_deferred_sweep(argv):
@@ -5842,22 +5894,14 @@ def command_deferred_sweep(argv):
     if argv:
         return usage_error('deferred')
 
-    def report(entry):
-        print(entry[4], file=sys.stderr if entry[3] == 'failed' else sys.stdout, flush=True)
-
     def run():
         try:
-            outcomes, cost = sweep_all(report)
+            outcomes, cost = sweep_all(sweep_report)
         except KeyboardInterrupt:
             print('sweep: interrupted; the judging call was stopped and its feature left as it was', file=sys.stderr)
             return 130
 
-        counts = collections.Counter(kind for _, _, _, kind, _ in outcomes)
-        print(f"sweep: closed {counts['closed']}, filed {counts['filed']}, left open {counts['left_open']} · "
-              f"features: judged {counts['judged']}, skipped {counts['skipped']}, failed {counts['failed']} · "
-              f'${cost:.2f}')
-
-        return 1 if counts['failed'] else 0
+        return 1 if sweep_summary(outcomes, cost)['failed'] else 0
 
     return with_lock('sweep', lambda: with_stop_signals(run))
 
@@ -6320,9 +6364,14 @@ def command_deferred_file(argv):
     return with_lock(run_lock(repo, feature), record)
 
 
-def command_archive():
+def newest_verdict(repo, feature):
+    """When the feature's newest deferred verdict was recorded, 0 when none was or its time does not parse."""
+    return max((parse_iso(verdict.get('at')) for verdict in read_verdicts(repo, feature).values()), default=0)
+
+
+def command_archive(settle=False):
     """Moves every feature whose steps are all merged into its repo's _archive/, unless a run holds it or the name is
-    taken there."""
+    taken there. `settle` (upkeep) also leaves a feature whose newest verdict is under ARCHIVE_SETTLE_SECONDS old."""
     moved, left, skipped, failed = 0, 0, 0, 0
 
     for repo in adapter.load_config()['repos']:
@@ -6350,6 +6399,10 @@ def command_archive():
                 elif unswept := len(open_deferred(repo, feature)):
                     print(f"{feature}: skipped, because it has {plural(unswept, 'open deferred item')}. Run "
                           f'/deferred-sweep {feature}, then pipeline archive again.')
+                    skipped += 1
+                elif settle and time.time() - newest_verdict(repo, feature) < ARCHIVE_SETTLE_SECONDS:
+                    print(f'{feature}: skipped, because its newest deferred verdict is under a day old. Upkeep '
+                          'archives it tomorrow; pipeline archive moves it now.')
                     skipped += 1
                 elif (archive / feature).exists():
                     print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
@@ -6467,6 +6520,121 @@ def command_gc():
     pruned = command_template_prune()
 
     return 1 if failed else pruned
+
+
+def held_call(name, function):
+    """(True, function's result) under lock `name`, or (False, None) when another process holds it."""
+    done = {}
+
+    def call():
+        done['result'] = function()
+
+        return 0
+
+    with_lock(name, call)
+
+    return 'result' in done, done.get('result')
+
+
+def upkeep_sweep(outcomes):
+    """The sweep stage: failed when a feature failed, skipped when nothing could be judged, else ok."""
+    def report(entry):
+        outcomes.append(entry)
+        sweep_report(entry)
+
+    ran, result = held_call('sweep', lambda: sweep_all(report))
+
+    if not ran:
+        return 'skipped'
+
+    sweep_summary(*result)
+    kinds = {kind for _, _, _, kind, _ in result[0]}
+
+    if 'failed' in kinds:
+        return 'failed'
+
+    return 'skipped' if kinds and kinds <= {'skipped', 'waiting'} else 'ok'
+
+
+def upkeep_archive():
+    """Archive under tick's lock, once a running tick ends (10 minutes at most)."""
+    if wait_while(lambda: locked('tick'), UPKEEP_TICK_WAIT_SECONDS):
+        print(f'archive: skipped, tick still runs after {UPKEEP_TICK_WAIT_SECONDS // 60} minutes')
+        return 'skipped'
+
+    ran, code = held_call('tick', lambda: command_archive(settle=True))
+
+    return 'skipped' if not ran else 'failed' if code else 'ok'
+
+
+def upkeep_gc():
+    if not sbx_service_active():
+        print(f'gc: skipped, {SBX_UNIT} not active')
+        return 'skipped'
+
+    ran, code = held_call('gc', command_gc)
+
+    return 'skipped' if not ran else 'failed' if code else 'ok'
+
+
+def upkeep_lines(stages, outcomes):
+    """The ping's lines, the news last so the ntfy cut drops it first: failures, items left open, closed or filed."""
+    failures, left_open, settled = [], [], []
+
+    for repo, feature, _, kind, line in outcomes:
+        if kind == 'failed':
+            failures.append(f'{adapter.short(repo)} {line}')
+        elif kind == 'left_open':
+            left_open.append(f'{adapter.short(repo)} {line} → /deferred-sweep {feature}')
+        elif kind in ('closed', 'filed'):
+            settled.append(f'{adapter.short(repo)} {line}')
+
+    if stages.get('sweep') == 'failed' and not failures:
+        failures.append('sweep failed: pipeline deferred sweep says why')
+
+    failures += [f'{name} failed: pipeline {name} says why' for name in ('archive', 'gc')
+                 if stages.get(name) == 'failed']
+
+    return failures, left_open, settled
+
+
+def command_upkeep():
+    """Sweep, archive and gc in that order; each ends ok, skipped or failed and none stops the next. The result goes to
+    UPKEEP_RESULT, and one ping says what needs you (high) or what the sweep settled (default)."""
+    stages, outcomes, current = {}, [], None
+    runs = {'sweep': lambda: upkeep_sweep(outcomes), 'archive': upkeep_archive, 'gc': upkeep_gc}
+
+    try:
+        for current, run in runs.items():
+            try:
+                stages[current] = run()
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'{current}: failed, {error}', file=sys.stderr)
+                stages[current] = 'failed'
+    except KeyboardInterrupt:
+        print('upkeep: interrupted; no result recorded', file=sys.stderr)
+        failures, left_open, settled = upkeep_lines(stages, outcomes)
+        ping('pipeline upkeep', '\n'.join([f'upkeep interrupted during {current}', *failures, *left_open, *settled]),
+             priority='high')
+        return 130
+
+    failures, left_open, settled = upkeep_lines(stages, outcomes)
+
+    try:
+        save_record(UPKEEP_RESULT, {'at': round(time.time()), 'stages': stages})
+        saved = True
+    except PipelineError as error:
+        print(error, file=sys.stderr)
+        failures.append(f'upkeep result not saved: {error}')
+        saved = False
+
+    if failures or left_open or settled:
+        ping('pipeline upkeep', '\n'.join(failures + left_open + settled),
+             priority='high' if failures or left_open else 'default')
+
+    print('upkeep: ' + ' · '.join(f'{name} {stages[name]}' for name in UPKEEP_STAGES))
+
+    return 0 if saved and 'failed' not in stages.values() else 1
 
 
 # ---------------------------------------------------------------------------------------------- templates
@@ -6822,15 +6990,15 @@ def init_item(path, link=None, content=None):
 
 
 def command_init():
-    """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the three user units with caps
-    sized for this box, and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
+    """Turn this checkout into an install (INSTALL steps 2-5): the bin and kit links, the user units (sbx.service's caps
+    sized for this box), and the pipeline and sbx-host config skeletons. Never overwrites anything, and never enables,
     starts or runs anything: it prints the next commands, the setup steps only when it wrote sbx.service."""
     sizes = init_sizes(mem_total_kib(), os.cpu_count())
     units = HOME / '.config/systemd/user'
     # Everything is rendered before the first write: a drifted or missing template fails the run with nothing written.
     contents = {SBX_UNIT: render_sbx_unit(sizes), adapter.CONFIG: render_pipeline_config(sizes)}
 
-    for name in (TICK_UNIT, TICK_TIMER):
+    for name in INIT_UNITS:
         try:
             contents[name] = (PIPELINE_DIR / 'systemd' / name).read_text()
         except OSError as error:
@@ -6856,7 +7024,7 @@ def command_init():
                 results.append(init_item(HOME / '.claude' / item / entry.name, link=entry))
 
     unit = init_item(units / SBX_UNIT, content=contents[SBX_UNIT])
-    results += [unit, *(init_item(units / name, content=contents[name]) for name in (TICK_UNIT, TICK_TIMER))]
+    results += [unit, *(init_item(units / name, content=contents[name]) for name in INIT_UNITS)]
     config = init_item(adapter.CONFIG, content=contents[adapter.CONFIG])
     results.append(config)
 
@@ -7199,13 +7367,17 @@ def doctor_reserve(loaded):
              fix)]
 
 
-def doctor_tick_service(loaded):
-    """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
-    state, detail = unit_state(TICK_UNIT)
-    fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {TICK_UNIT}'}.get(
+def service_check(unit):
+    """Installed and not masked: a timer starts it, and it has no [Install] section, so `static` is normal."""
+    state, detail = unit_state(unit)
+    fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {unit}'}.get(
         state, f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then systemctl --user daemon-reload (INSTALL step 8)")
 
-    return [(f'unit {TICK_UNIT}', state in STARTABLE, detail, fix)]
+    return [(f'unit {unit}', state in STARTABLE, detail, fix)]
+
+
+def doctor_tick_service(loaded):
+    return service_check(TICK_UNIT)
 
 
 def doctor_tick_timer(loaded):
@@ -7218,8 +7390,33 @@ def doctor_tick_timer(loaded):
     return [(f'unit {TICK_TIMER}', state == 'enabled', detail, fix)]
 
 
+def doctor_upkeep_service(loaded):
+    return service_check(UPKEEP_UNIT)
+
+
+def doctor_upkeep_timer(loaded):
+    """Nightly upkeep is opt-in: a timer that is installed but off is a SKIP that names the command turning it on."""
+    state, detail = unit_state(UPKEEP_TIMER)
+    enable = f'systemctl --user enable --now {UPKEEP_TIMER} (INSTALL step 8.2)'
+
+    if state is None:
+        return [(f'unit {UPKEEP_TIMER}', False, detail, NO_USER_MANAGER_FIX)]
+
+    if state == '':
+        return [(f'unit {UPKEEP_TIMER}', False, detail, f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then "
+                                                        'systemctl --user daemon-reload (INSTALL step 8)')]
+
+    if state == 'enabled':
+        return [(f'unit {UPKEEP_TIMER}', True, detail, None)]
+
+    unmask = f'systemctl --user unmask {UPKEEP_TIMER}, then ' if state == 'masked' else ''
+
+    return [(f'unit {UPKEEP_TIMER}', None, f'{detail}; nightly upkeep is off: {unmask}{enable}', None)]
+
+
 DOCTOR_CHECKS = (doctor_tools, doctor_kvm, doctor_docker, doctor_runner, doctor_kit, doctor_sbx_unit, doctor_linger,
-                 doctor_app_key, doctor_config, doctor_reserve, doctor_tick_service, doctor_tick_timer)
+                 doctor_app_key, doctor_config, doctor_reserve, doctor_tick_service, doctor_tick_timer,
+                 doctor_upkeep_service, doctor_upkeep_timer)
 
 
 def command_doctor():
@@ -7939,6 +8136,7 @@ COMMANDS = {
     'tick': ('tick', 'start what has work (the timer does it every 5 min)', 'admin'),
     'gc': ('gc', "clean merged steps' VMs and refs (logs compressed), old snapshot refs, unused templates", 'admin'),
     'archive': ('archive', 'move fully merged features into _archive/', 'admin'),
+    'upkeep': ('upkeep', 'sweep deferred items, archive, gc in that order; its opt-in timer runs it nightly', 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
@@ -8063,7 +8261,7 @@ def main(argv=None):
             return {'start': command_start, 'pause': command_pause, 'order': command_order,
                     'parallel': command_parallel, 'autonomy': command_autonomy}[command](argv[1:])
 
-        if command in ('tick', 'gc', 'archive') and len(argv) > 1:
+        if command in ('tick', 'gc', 'archive', 'upkeep') and len(argv) > 1:
             return usage_error(command)
 
         if command == 'tick':
@@ -8074,6 +8272,9 @@ def main(argv=None):
 
         if command == 'archive':
             return with_lock('tick', command_archive)
+
+        if command == 'upkeep':
+            return with_lock('upkeep', lambda: with_stop_signals(command_upkeep))
 
         if command == 'template':
             return command_template(argv[1:])

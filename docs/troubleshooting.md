@@ -14,6 +14,8 @@ What each status and message means, and what you do. How the runner works: [How 
   - default: news (CI green, merged);
   - low: it heals itself (a retry, a usage or memory queue).
   - All stage slots busy is never pinged (status shows the queue).
+  - `pipeline upkeep` sends one ping per run: high when a stage failed or the sweep left items open, default when it
+    only closed or filed items.
 
 ## Status and messages
 

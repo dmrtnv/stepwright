@@ -67,7 +67,8 @@ sys.exit(1)
 }
 HEADER = '#!{python}\nimport json, os, pathlib, pwd, sys, time\nroot = pathlib.Path(__file__).resolve().parent.parent\n' \
          "state = json.loads((root / 'state.json').read_text())\n"
-GOOD_STATE = {'enabled': {'sbx.service': 'enabled', 'pipeline-tick.service': 'static', 'pipeline-tick.timer': 'enabled'},
+GOOD_STATE = {'enabled': {'sbx.service': 'enabled', 'pipeline-tick.service': 'static', 'pipeline-tick.timer': 'enabled',
+                          'pipeline-upkeep.service': 'static', 'pipeline-upkeep.timer': 'enabled'},
               'active': True, 'linger': 'yes', 'docker': {'stdout': '29.8.1'}}
 
 
@@ -197,7 +198,8 @@ class SummaryTest(DoctorCase):
         self.assertEqual(labels, ['tool claude', 'tool node', 'tool git', 'tool jq', 'tool sbx',
                                   'tool ssh-keygen', 'kvm group', 'docker',
                                   'runner', *kit, 'unit sbx.service', 'linger', 'app key', 'config',
-                                  'sbx-host reserve', 'unit pipeline-tick.service', 'unit pipeline-tick.timer'])
+                                  'sbx-host reserve', 'unit pipeline-tick.service', 'unit pipeline-tick.timer',
+                                  'unit pipeline-upkeep.service', 'unit pipeline-upkeep.timer'])
 
     def test_one_fail_exits_1(self):
         (self.bin / 'jq').unlink()
@@ -490,12 +492,15 @@ class UnitsTest(DoctorCase):
         for answer in (self.NO_BUS, *self.NO_SOCKET):
             with self.subTest(answer['stderr']):
                 self.enabled(**{'sbx.service': answer, 'pipeline-tick.service': answer,
-                                'pipeline-tick.timer': answer})
+                                'pipeline-tick.timer': answer, 'pipeline-upkeep.service': answer,
+                                'pipeline-upkeep.timer': answer})
                 self.change(active=False)
                 error = answer['stderr']
                 self.assertFail('unit sbx.service', f'{error}, inactive', self.BUS_FIX)
                 self.assertFail('unit pipeline-tick.service', error, self.BUS_FIX)
                 self.assertFail('unit pipeline-tick.timer', error, self.BUS_FIX)
+                self.assertFail('unit pipeline-upkeep.service', error, self.BUS_FIX)
+                self.assertFail('unit pipeline-upkeep.timer', error, self.BUS_FIX)
 
     def test_no_systemctl_is_not_installed(self):
         missing = subprocess.CompletedProcess([], 1, '', "[Errno 2] No such file or directory: 'systemctl'")
@@ -530,6 +535,53 @@ class UnitsTest(DoctorCase):
                         f'{self.runner}/pipeline init, then systemctl --user daemon-reload && '
                         'systemctl --user enable --now pipeline-tick.timer (INSTALL step 8)')
 
+    def test_upkeep_service_states(self):
+        for state in ('static', 'enabled', 'disabled', 'indirect', 'linked', 'alias'):
+            self.enabled(**{'pipeline-upkeep.service': state})
+            self.assertPass('unit pipeline-upkeep.service', state)
+
+    def test_upkeep_service_masked(self):
+        self.enabled(**{'pipeline-upkeep.service': 'masked'})
+        self.assertFail('unit pipeline-upkeep.service', 'masked', 'systemctl --user unmask pipeline-upkeep.service')
+
+    def test_upkeep_service_missing(self):
+        for state in ('not-found', '', self.NO_FILE):
+            self.enabled(**{'pipeline-upkeep.service': state})
+            self.assertFail('unit pipeline-upkeep.service', 'not installed',
+                            f'{self.runner}/pipeline init, then systemctl --user daemon-reload (INSTALL step 8)')
+
+    def test_upkeep_timer_enabled(self):
+        self.assertPass('unit pipeline-upkeep.timer', 'enabled')
+
+    def test_upkeep_timer_off_is_a_skip_that_names_the_enable_command(self):
+        for state in ('disabled', 'linked', 'static'):
+            with self.subTest(state):
+                self.enabled(**{'pipeline-upkeep.timer': state})
+                code, lines = self.doctor()
+                self.assertEqual(code, 0, '\n'.join(lines))
+                self.assertIn(f'SKIP  unit pipeline-upkeep.timer: {state}; nightly upkeep is off: systemctl --user '
+                              'enable --now pipeline-upkeep.timer (INSTALL step 8.2)', lines)
+                self.assertFalse(any(line.startswith('FAIL') for line in lines), '\n'.join(lines))
+                self.assertEqual(lines[-1], f"{sum(line[:4] == 'PASS' for line in lines)} checks, 0 FAIL")
+
+    def test_upkeep_timer_masked_names_unmask_first(self):
+        self.enabled(**{'pipeline-upkeep.timer': 'masked'})
+        line, after = self.check('unit pipeline-upkeep.timer')
+        self.assertEqual(line, 'SKIP  unit pipeline-upkeep.timer: masked; nightly upkeep is off: systemctl --user '
+                               'unmask pipeline-upkeep.timer, then systemctl --user enable --now pipeline-upkeep.timer '
+                               '(INSTALL step 8.2)')
+        self.assertFalse(after.strip().startswith('fix:'), after)
+
+    def test_upkeep_timer_not_installed(self):
+        for state in ('not-found', self.NO_FILE):
+            self.enabled(**{'pipeline-upkeep.timer': state})
+            self.assertFail('unit pipeline-upkeep.timer', 'not installed',
+                            f'{self.runner}/pipeline init, then systemctl --user daemon-reload (INSTALL step 8)')
+
+    def test_upkeep_timer_without_a_user_manager(self):
+        self.enabled(**{'pipeline-upkeep.timer': self.NO_BUS})
+        self.assertFail('unit pipeline-upkeep.timer', self.NO_BUS['stderr'], self.BUS_FIX)
+
 
 class SpacedRunnerTest(DoctorCase):
     prefix = 'doctor runner-'
@@ -548,9 +600,11 @@ class SpacedRunnerTest(DoctorCase):
 
     def test_the_unit_fixes_quote_the_runner_path(self):
         self.enabled(**{'sbx.service': 'not-found', 'pipeline-tick.service': 'not-found',
-                        'pipeline-tick.timer': 'not-found'})
+                        'pipeline-tick.timer': 'not-found', 'pipeline-upkeep.service': 'not-found',
+                        'pipeline-upkeep.timer': 'not-found'})
 
-        for label in ('unit sbx.service', 'unit pipeline-tick.service', 'unit pipeline-tick.timer'):
+        for label in ('unit sbx.service', 'unit pipeline-tick.service', 'unit pipeline-tick.timer',
+                      'unit pipeline-upkeep.service', 'unit pipeline-upkeep.timer'):
             with self.subTest(label):
                 self.assertInitFirst(label)
 

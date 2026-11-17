@@ -92,8 +92,8 @@ To Anthropic, from the host:
 To GitHub: the pushed commits, the PR title and body, the evidence comment and the review request.
 
 To ntfy.sh, only when `~/.config/ntfy/topic` exists:
-- a title of repo, feature and step;
-- error lines, plan questions and PR links;
+- a title of repo, feature and step, or `pipeline upkeep`;
+- error lines, plan questions, PR links, upkeep's failed stages, and the deferred items it closed, filed or left open;
 - up to 1,000 characters per message.
 
 Anyone who knows the topic can read them. Keep it secret.
@@ -158,6 +158,7 @@ The full list, with a Check: [INSTALL: What you need](INSTALL.md#what-you-need).
 - `pipeline update`: move to the newest release.
 - `pipeline gc`: clean up after merged steps and compress their old logs.
 - `pipeline archive`: move fully merged features into `_archive/`.
+- `pipeline upkeep`: sweep, archive and gc in one go. Its opt-in timer runs it nightly.
 - `pipeline deferred`: open deferred items. `close` records a verdict, `file` files a brief, `sweep` settles them.
 - `/deferred-sweep [<name>]` in Claude Code: re-check a merged feature's deferred items and file the ones left.
 

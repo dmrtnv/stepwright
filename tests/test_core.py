@@ -967,7 +967,7 @@ class RunnerCase(unittest.TestCase):
                                 TEMPLATE_CACHE=fixture.base / 'cache'),
             mock.patch.multiple(core, LOGS=logs, STOP_FLAG=logs / 'STOP', USAGE=logs / 'usage.json',
                                 CONTROL=logs / 'control.json', kick_tick=lambda: self.kicks.append(1),
-                                TEMPLATE_FAILED=logs / 'template-failed.json',
+                                TEMPLATE_FAILED=logs / 'template-failed.json', UPKEEP_RESULT=logs / 'upkeep.json',
                                 PROJECTS=fixture.base / 'projects', NTFY_TOPIC=fixture.base / 'ntfy-topic',
                                 STOP_GRACE_SECONDS=5, MERGEABLE_RETRY_SECONDS=0, github_api=self.github,
                                 github_raw=self.github.raw, push_url=lambda repo: str(fixture.origin),
@@ -4085,7 +4085,7 @@ class StatePathTest(unittest.TestCase):
         self.assertEqual(adapter.LOGS, Path.home() / '.local/state/pipeline')
         self.assertIs(core.LOGS, adapter.LOGS)
 
-        for path in (core.STOP_FLAG, core.USAGE, core.CONTROL, core.TEMPLATE_FAILED):
+        for path in (core.STOP_FLAG, core.USAGE, core.CONTROL, core.TEMPLATE_FAILED, core.UPKEEP_RESULT):
             self.assertEqual(path.parent, adapter.LOGS, path)
 
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Pipeline upkeep every night
+
+[Timer]
+OnCalendar=*-*-* 04:42
+Persistent=true
+
+[Install]
+WantedBy=timers.target
