@@ -57,6 +57,13 @@ CONTROL = LOGS / 'control.json'  # yours, from the CLI: parallel, drain, order (
 TICK_UNIT = 'pipeline-tick.service'
 TICK_TIMER = 'pipeline-tick.timer'
 TEMPLATE_FAILED = LOGS / 'template-failed.json'
+UPKEEP_UNIT = 'pipeline-upkeep.service'
+UPKEEP_TIMER = 'pipeline-upkeep.timer'
+UPKEEP_RESULT = LOGS / 'upkeep.json'  # the last finished upkeep run: {at, stages: {sweep, archive, gc}}
+UPKEEP_STAGES = ('sweep', 'archive', 'gc')
+UPKEEP_TICK_WAIT_SECONDS = 600
+UPKEEP_STALE_SECONDS = 3 * 86400
+ARCHIVE_SETTLE_SECONDS = 86400  # upkeep leaves a feature this long after its newest verdict, so you can reopen one
 SBX_UNIT = sbx_host.UNIT  # the capped daemon that owns every VM (docs/how-it-works.md "What runs where")
 CI_STATE = HOME / '.local/state/ci-runner'  # a companion ci-runner's slot-<n>.json: what each CI slot does now
 PRESSURE_BADGE_PERCENT = 1.0  # PSI full avg60 of sbx.service (memory.high throttling counts) that badges the status
@@ -6337,9 +6344,14 @@ def command_deferred_file(argv):
     return with_lock(run_lock(repo, feature), record)
 
 
-def command_archive():
+def newest_verdict(repo, feature):
+    """When the feature's newest deferred verdict was recorded, 0 when none was or its time does not parse."""
+    return max((parse_iso(verdict.get('at')) for verdict in read_verdicts(repo, feature).values()), default=0)
+
+
+def command_archive(settle=False):
     """Moves every feature whose steps are all merged into its repo's _archive/, unless a run holds it or the name is
-    taken there."""
+    taken there. `settle` (upkeep) also leaves a feature whose newest verdict is under ARCHIVE_SETTLE_SECONDS old."""
     moved, left, skipped, failed = 0, 0, 0, 0
 
     for repo in adapter.load_config()['repos']:
@@ -6367,6 +6379,10 @@ def command_archive():
                 elif unswept := len(open_deferred(repo, feature)):
                     print(f"{feature}: skipped, because it has {plural(unswept, 'open deferred item')}. Run "
                           f'/deferred-sweep {feature}, then pipeline archive again.')
+                    skipped += 1
+                elif settle and time.time() - newest_verdict(repo, feature) < ARCHIVE_SETTLE_SECONDS:
+                    print(f'{feature}: skipped, because its newest deferred verdict is under a day old. Upkeep archives '
+                          'it tomorrow; pipeline archive moves it now.')
                     skipped += 1
                 elif (archive / feature).exists():
                     print(f'{feature}: skipped, because {archive / feature} already exists. An archived name is '
@@ -6484,6 +6500,122 @@ def command_gc():
     pruned = command_template_prune()
 
     return 1 if failed else pruned
+
+
+def held_call(name, function):
+    """(True, function's result) under lock `name`, or (False, None) when another process holds it."""
+    done = {}
+
+    def call():
+        done['result'] = function()
+
+        return 0
+
+    with_lock(name, call)
+
+    return 'result' in done, done.get('result')
+
+
+def upkeep_sweep(outcomes):
+    """The sweep stage: failed when a feature failed, skipped when nothing could be judged, else ok."""
+    def report(entry):
+        outcomes.append(entry)
+        sweep_report(entry)
+
+    ran, result = held_call('sweep', lambda: sweep_all(report))
+
+    if not ran:
+        return 'skipped'
+
+    sweep_summary(*result)
+    kinds = {kind for _, _, _, kind, _ in result[0]}
+
+    if 'failed' in kinds:
+        return 'failed'
+
+    return 'skipped' if kinds and kinds <= {'skipped', 'waiting'} else 'ok'
+
+
+def upkeep_archive(outcomes):
+    """Archive under tick's lock, once a running tick ends (10 minutes at most)."""
+    if wait_while(lambda: locked('tick'), UPKEEP_TICK_WAIT_SECONDS):
+        print(f'archive: skipped, tick still runs after {UPKEEP_TICK_WAIT_SECONDS // 60} minutes')
+        return 'skipped'
+
+    ran, code = held_call('tick', lambda: command_archive(settle=True))
+
+    return 'skipped' if not ran else 'failed' if code else 'ok'
+
+
+def upkeep_gc(outcomes):
+    if not sbx_service_active():
+        print(f'gc: skipped, {SBX_UNIT} not active')
+        return 'skipped'
+
+    ran, code = held_call('gc', command_gc)
+
+    return 'skipped' if not ran else 'failed' if code else 'ok'
+
+
+UPKEEP_RUNS = {'sweep': upkeep_sweep, 'archive': upkeep_archive, 'gc': upkeep_gc}
+
+
+def upkeep_lines(stages, outcomes):
+    """The ping's lines, the news last so the ntfy cut drops it first: failures, items left open, closed or filed."""
+    failures, left_open, settled = [], [], []
+
+    for repo, feature, _, kind, line in outcomes:
+        if kind == 'failed':
+            failures.append(f'{adapter.short(repo)} {line}')
+        elif kind == 'left_open':
+            left_open.append(f'{adapter.short(repo)} {line} → /deferred-sweep {feature}')
+        elif kind in ('closed', 'filed'):
+            settled.append(f'{adapter.short(repo)} {line}')
+
+    if stages.get('sweep') == 'failed' and not failures:
+        failures.append('sweep failed: pipeline deferred sweep says why')
+
+    failures += [f'{name} failed: pipeline {name} says why' for name in ('archive', 'gc') if stages.get(name) == 'failed']
+
+    return failures, left_open, settled
+
+
+def command_upkeep():
+    """Sweep, archive and gc in that order; each ends ok, skipped or failed and none stops the next. The result goes to
+    UPKEEP_RESULT, and one ping says what needs you (high) or what the sweep settled (default)."""
+    stages, outcomes, current = {}, [], None
+
+    try:
+        for current, run in UPKEEP_RUNS.items():
+            try:
+                stages[current] = run(outcomes)
+            except (*ERRORS, OSError, ValueError) as error:
+                print(f'{current}: failed, {error}', file=sys.stderr)
+                stages[current] = 'failed'
+    except KeyboardInterrupt:
+        print('upkeep: interrupted; no result recorded', file=sys.stderr)
+        failures, left_open, settled = upkeep_lines(stages, outcomes)
+        ping('pipeline upkeep', '\n'.join([f'upkeep interrupted during {current}', *failures, *left_open, *settled]),
+             priority='high')
+        return 130
+
+    failures, left_open, settled = upkeep_lines(stages, outcomes)
+
+    try:
+        save_record(UPKEEP_RESULT, {'at': round(time.time()), 'stages': stages})
+        saved = True
+    except PipelineError as error:
+        print(error, file=sys.stderr)
+        failures.append(f'upkeep result not saved: {error}')
+        saved = False
+
+    if failures or left_open or settled:
+        ping('pipeline upkeep', '\n'.join(failures + left_open + settled),
+             priority='high' if failures or left_open else 'default')
+
+    print('upkeep: ' + ' · '.join(f'{name} {stages[name]}' for name in UPKEEP_STAGES))
+
+    return 0 if saved and 'failed' not in stages.values() else 1
 
 
 # ---------------------------------------------------------------------------------------------- templates
@@ -7960,6 +8092,7 @@ COMMANDS = {
     'tick': ('tick', 'start what has work (the timer does it every 5 min)', 'admin'),
     'gc': ('gc', "clean merged steps' VMs and refs (logs compressed), old snapshot refs, unused templates", 'admin'),
     'archive': ('archive', 'move fully merged features into _archive/', 'admin'),
+    'upkeep': ('upkeep', 'sweep deferred items, archive, gc in that order; its opt-in timer runs it nightly', 'admin'),
     'stop': ('stop --all | --clear', 'kill switch: stop every run and VM (resumable) | lift it', 'admin'),
     'template': ('template [build [<x.y.z>] | prune]', 'sandbox templates (policy: config.json "template")', 'admin'),
     'init': ('init', 'set up this install: links, config skeletons, user units sized from /proc; never overwrites',
@@ -8084,7 +8217,7 @@ def main(argv=None):
             return {'start': command_start, 'pause': command_pause, 'order': command_order,
                     'parallel': command_parallel, 'autonomy': command_autonomy}[command](argv[1:])
 
-        if command in ('tick', 'gc', 'archive') and len(argv) > 1:
+        if command in ('tick', 'gc', 'archive', 'upkeep') and len(argv) > 1:
             return usage_error(command)
 
         if command == 'tick':
@@ -8095,6 +8228,9 @@ def main(argv=None):
 
         if command == 'archive':
             return with_lock('tick', command_archive)
+
+        if command == 'upkeep':
+            return with_lock('upkeep', lambda: with_stop_signals(command_upkeep))
 
         if command == 'template':
             return command_template(argv[1:])
