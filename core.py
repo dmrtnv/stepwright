@@ -4117,6 +4117,28 @@ def template_problem():
     return 'template missing' if policy['build'] == 'manual' else None
 
 
+def upkeep_problem(now):
+    """`upkeep Nd old` when the last finished run is over UPKEEP_STALE_SECONDS old (doctor says whether the timer is on),
+    else `upkeep failed (stages)`, `upkeep ?` for an unreadable result, or None (no badge before a first run)."""
+    try:
+        result = json.loads(UPKEEP_RESULT.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return 'upkeep ?'
+
+    if not isinstance(result, dict) or not isinstance(result.get('at'), (int, float)) or \
+            not isinstance(result.get('stages'), dict):
+        return 'upkeep ?'
+
+    if now - result['at'] > UPKEEP_STALE_SECONDS:
+        return f"upkeep {int((now - result['at']) // 86400)}d old: pipeline doctor"
+
+    failed = [name for name in UPKEEP_STAGES if result['stages'].get(name) == 'failed']
+
+    return f"upkeep failed ({', '.join(failed)}): pipeline upkeep" if failed else None
+
+
 def host_readings(probes, now, verbose=False):
     """sbx.service, its memory and VMs, the CI slots and the template: re-read at most every PROBE_SECONDS for a watch
     (`probes` is its cache; `verbose` adds the template summary). No sbx call while the unit is down: any would
@@ -4206,6 +4228,11 @@ def status_model(show_all=False, probes=None, now=None):
 
     if host['template']:
         badges.append(host['template'])
+
+    upkeep = upkeep_problem(now)
+
+    if upkeep:
+        badges.append(upkeep)
 
     rows = [feature_view(repo, feature, now, control) for repo, feature in adapter.all_features()]
 

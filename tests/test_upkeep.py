@@ -353,5 +353,47 @@ class ResultTest(UpkeepCase):
         self.assertTrue(message.startswith('upkeep result not saved: '), message)
 
 
+class BadgeTest(UpkeepCase):
+    def badges(self):
+        with unittest.mock.patch.object(core, 'template_problem', lambda: None):  # the fake claude has no version
+            return [badge for badge in core.status_model()['badges'] if badge.startswith('upkeep')]
+
+    def record(self, age, **stages):
+        write(core.UPKEEP_RESULT, json.dumps({'at': time.time() - age,
+                                              'stages': {'sweep': 'ok', 'archive': 'ok', 'gc': 'ok', **stages}}))
+
+    def test_no_result_no_badge(self):
+        self.assertEqual(self.badges(), [])
+
+    def test_a_fresh_ok_has_no_badge(self):
+        self.record(3600)
+        self.assertEqual(self.badges(), [])
+
+    def test_a_fresh_failure_names_its_stages(self):
+        self.record(3600, gc='failed')
+        self.assertEqual(self.badges(), ['upkeep failed (gc): pipeline upkeep'])
+        self.record(3600, sweep='failed', gc='failed')
+        self.assertEqual(self.badges(), ['upkeep failed (sweep, gc): pipeline upkeep'])
+
+    def test_a_result_over_3_days_old_is_stale_and_wins_over_a_failure(self):
+        self.record(4 * DAY)
+        self.assertEqual(self.badges(), ['upkeep 4d old: pipeline doctor'])
+        self.record(4 * DAY, gc='failed')
+        self.assertEqual(self.badges(), ['upkeep 4d old: pipeline doctor'])
+        self.record(3 * DAY - 60)
+        self.assertEqual(self.badges(), [])
+
+    def test_an_unreadable_result_is_a_question_mark(self):
+        for content in ('{broken', '[]', '{"at": "x", "stages": {}}', '{"at": 1}'):
+            with self.subTest(content=content):
+                write(core.UPKEEP_RESULT, content)
+                self.assertEqual(self.badges(), ['upkeep ?'])
+
+    def test_a_finished_run_clears_a_failed_badge(self):
+        self.record(3600, gc='failed')
+        self.upkeep()
+        self.assertEqual(self.badges(), [])
+
+
 if __name__ == '__main__':
     unittest.main()
