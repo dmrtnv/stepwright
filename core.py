@@ -680,9 +680,13 @@ def ntfy_topic():
 
 
 def notify(state, message, click=None, priority='default'):
+    """A step's phone ping, titled with its repo, feature and step."""
+    ping(f"{adapter.short(state['repo'])} {state['feature']} {state['id']}", message, click, priority)
+
+
+def ping(title, message, click=None, priority='default'):
     """A phone ping (ntfy) and a log line. `click` opens a URL (the PR) when the notification is tapped; `priority`
     (ntfy's: high for what needs you, default for news, low for what heals itself) decides how loud it is."""
-    title = f"{adapter.short(state['repo'])} {state['feature']} {state['id']}"
     print(f'[{title}] {message}', flush=True)
     topic = ntfy_topic()
 
@@ -3648,6 +3652,16 @@ def with_lock(name, function):
         return function()
 
 
+def wait_while(condition, seconds):
+    """Polls `condition` every half second until it is false or `seconds` pass; returns its last reading."""
+    deadline = time.monotonic() + seconds
+
+    while (held := condition()) and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+    return held
+
+
 def with_stop_signals(function):
     """SIGTERM and SIGHUP (a closed terminal, systemctl stop) take the Ctrl+C path: the stage stops, resumable."""
     previous = {sig: signal.signal(sig, signal.default_int_handler) for sig in (signal.SIGTERM, signal.SIGHUP)}
@@ -4904,10 +4918,7 @@ def command_stop(argv):
                 os.kill(pid, signal.SIGTERM)
                 signalled.append(path)
 
-    deadline = time.monotonic() + KILL_SWITCH_WAIT_SECONDS
-
-    while any(locked_path(path) for path in signalled) and time.monotonic() < deadline:
-        time.sleep(0.5)
+    wait_while(lambda: any(locked_path(path) for path in signalled), KILL_SWITCH_WAIT_SECONDS)
 
     if not sbx_service_active():
         # Replacing a hand-started daemon (docs/how-it-works.md "Setup notes") runs this while the unit is down: an sbx
@@ -5836,28 +5847,34 @@ def sweep_all(report=None):
     return outcomes, cost
 
 
+def sweep_report(entry):
+    """Prints one sweep outcome as it happens: failures on stderr."""
+    print(entry[4], file=sys.stderr if entry[3] == 'failed' else sys.stdout, flush=True)
+
+
+def sweep_summary(outcomes, cost):
+    counts = collections.Counter(kind for _, _, _, kind, _ in outcomes)
+    print(f"sweep: closed {counts['closed']}, filed {counts['filed']}, left open {counts['left_open']} · "
+          f"features: judged {counts['judged']}, skipped {counts['skipped']}, failed {counts['failed']} · "
+          f'${cost:.2f}')
+
+    return counts
+
+
 def command_deferred_sweep(argv):
     """Settles the open deferred items of every fully merged live feature unattended: one tool-free Claude call per
     feature judges them, and the runner closes, files or leaves open each one on its own evidence."""
     if argv:
         return usage_error('deferred')
 
-    def report(entry):
-        print(entry[4], file=sys.stderr if entry[3] == 'failed' else sys.stdout, flush=True)
-
     def run():
         try:
-            outcomes, cost = sweep_all(report)
+            outcomes, cost = sweep_all(sweep_report)
         except KeyboardInterrupt:
             print('sweep: interrupted; the judging call was stopped and its feature left as it was', file=sys.stderr)
             return 130
 
-        counts = collections.Counter(kind for _, _, _, kind, _ in outcomes)
-        print(f"sweep: closed {counts['closed']}, filed {counts['filed']}, left open {counts['left_open']} · "
-              f"features: judged {counts['judged']}, skipped {counts['skipped']}, failed {counts['failed']} · "
-              f'${cost:.2f}')
-
-        return 1 if counts['failed'] else 0
+        return 1 if sweep_summary(outcomes, cost)['failed'] else 0
 
     return with_lock('sweep', lambda: with_stop_signals(run))
 
@@ -7199,13 +7216,17 @@ def doctor_reserve(loaded):
              fix)]
 
 
-def doctor_tick_service(loaded):
-    """Installed and not masked: the timer starts it, and it has no [Install] section, so `static` is normal."""
-    state, detail = unit_state(TICK_UNIT)
-    fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {TICK_UNIT}'}.get(
+def service_check(unit):
+    """Installed and not masked: a timer starts it, and it has no [Install] section, so `static` is normal."""
+    state, detail = unit_state(unit)
+    fix = {None: NO_USER_MANAGER_FIX, 'masked': f'systemctl --user unmask {unit}'}.get(
         state, f"{shlex.quote(str(PIPELINE_DIR / 'pipeline'))} init, then systemctl --user daemon-reload (INSTALL step 8)")
 
-    return [(f'unit {TICK_UNIT}', state in STARTABLE, detail, fix)]
+    return [(f'unit {unit}', state in STARTABLE, detail, fix)]
+
+
+def doctor_tick_service(loaded):
+    return service_check(TICK_UNIT)
 
 
 def doctor_tick_timer(loaded):
