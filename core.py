@@ -7405,7 +7405,7 @@ def doctor_upkeep_service(loaded):
 def doctor_upkeep_timer(loaded):
     """Nightly upkeep is opt-in: a timer that is installed but off is a SKIP that names the command turning it on."""
     state, detail = unit_state(UPKEEP_TIMER)
-    enable = f'systemctl --user enable --now {UPKEEP_TIMER} (INSTALL step 8)'
+    enable = f'systemctl --user enable --now {UPKEEP_TIMER} (INSTALL step 8.2)'
 
     if state is None:
         return [(f'unit {UPKEEP_TIMER}', False, detail, NO_USER_MANAGER_FIX)]

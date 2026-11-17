@@ -560,7 +560,7 @@ class UnitsTest(DoctorCase):
                 code, lines = self.doctor()
                 self.assertEqual(code, 0, '\n'.join(lines))
                 self.assertIn(f'SKIP  unit pipeline-upkeep.timer: {state}; nightly upkeep is off: systemctl --user '
-                              'enable --now pipeline-upkeep.timer (INSTALL step 8)', lines)
+                              'enable --now pipeline-upkeep.timer (INSTALL step 8.2)', lines)
                 self.assertFalse(any(line.startswith('FAIL') for line in lines), '\n'.join(lines))
                 self.assertEqual(lines[-1], f"{sum(line[:4] == 'PASS' for line in lines)} checks, 0 FAIL")
 
@@ -569,7 +569,7 @@ class UnitsTest(DoctorCase):
         line, after = self.check('unit pipeline-upkeep.timer')
         self.assertEqual(line, 'SKIP  unit pipeline-upkeep.timer: masked; nightly upkeep is off: systemctl --user '
                                'unmask pipeline-upkeep.timer, then systemctl --user enable --now pipeline-upkeep.timer '
-                               '(INSTALL step 8)')
+                               '(INSTALL step 8.2)')
         self.assertFalse(after.strip().startswith('fix:'), after)
 
     def test_upkeep_timer_not_installed(self):
