@@ -5858,24 +5858,18 @@ def sweep_all(report=None):
 
         for feature in candidates:
             evidence = {item['id']: item for item in kept if item['feature'] == feature}
-            done = {}
-
-            def settle():
-                done['result'] = sweep_feature(repo, feature, evidence, config['admission'], add)
-
-                return 0
-
             try:
-                with_lock(run_lock(repo, feature), settle)
+                ran, feature_cost = held_call(run_lock(repo, feature),
+                                              lambda: sweep_feature(repo, feature, evidence, config['admission'], add))
             except (*ERRORS, OSError, ValueError) as error:
                 add([(repo, feature, '', 'failed', f'{feature}: failed, {headline(str(error))}')])
                 continue
 
-            if 'result' not in done:
+            if not ran:
                 add([(repo, feature, '', 'skipped', f'{feature}: skipped, a run holds it')])
                 continue
 
-            cost += done['result']
+            cost += feature_cost
 
     return outcomes, cost
 
@@ -6562,7 +6556,7 @@ def upkeep_sweep(outcomes):
     return 'skipped' if kinds and kinds <= {'skipped', 'waiting'} else 'ok'
 
 
-def upkeep_archive(outcomes):
+def upkeep_archive():
     """Archive under tick's lock, once a running tick ends (10 minutes at most)."""
     if wait_while(lambda: locked('tick'), UPKEEP_TICK_WAIT_SECONDS):
         print(f'archive: skipped, tick still runs after {UPKEEP_TICK_WAIT_SECONDS // 60} minutes')
@@ -6573,7 +6567,7 @@ def upkeep_archive(outcomes):
     return 'skipped' if not ran else 'failed' if code else 'ok'
 
 
-def upkeep_gc(outcomes):
+def upkeep_gc():
     if not sbx_service_active():
         print(f'gc: skipped, {SBX_UNIT} not active')
         return 'skipped'
@@ -6581,9 +6575,6 @@ def upkeep_gc(outcomes):
     ran, code = held_call('gc', command_gc)
 
     return 'skipped' if not ran else 'failed' if code else 'ok'
-
-
-UPKEEP_RUNS = {'sweep': upkeep_sweep, 'archive': upkeep_archive, 'gc': upkeep_gc}
 
 
 def upkeep_lines(stages, outcomes):
@@ -6611,11 +6602,12 @@ def command_upkeep():
     """Sweep, archive and gc in that order; each ends ok, skipped or failed and none stops the next. The result goes to
     UPKEEP_RESULT, and one ping says what needs you (high) or what the sweep settled (default)."""
     stages, outcomes, current = {}, [], None
+    runs = {'sweep': lambda: upkeep_sweep(outcomes), 'archive': upkeep_archive, 'gc': upkeep_gc}
 
     try:
-        for current, run in UPKEEP_RUNS.items():
+        for current, run in runs.items():
             try:
-                stages[current] = run(outcomes)
+                stages[current] = run()
             except (*ERRORS, OSError, ValueError) as error:
                 print(f'{current}: failed, {error}', file=sys.stderr)
                 stages[current] = 'failed'
