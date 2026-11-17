@@ -68,6 +68,8 @@ you: review; comments → `pipeline respond <name>`; merge → next step starts 
     only when no stage runs.
 - tick: `systemctl --user list-timers pipeline-tick.timer` (every 5 min; runs are transient units
   `pipeline-run-*`).
+- upkeep (opt-in): `systemctl --user list-timers pipeline-upkeep.timer` (nightly at 04:42; its log:
+  `journalctl --user -u pipeline-upkeep`; [Upkeep](#upkeep)).
 
 ## Setup notes
 
@@ -224,6 +226,8 @@ Unknown keys are an error.
     plans folder is missing, and every sandbox of a parked or reserved-name feature it cannot read.
 - Put merged features away: `pipeline archive` (moves every feature whose steps are all merged into `_archive/`;
   [Archive](#archive)).
+- All three in one go: `pipeline upkeep` (`deferred sweep`, `archive`, then `gc`; its opt-in timer runs it nightly;
+  [Upkeep](#upkeep)).
 - Sandbox templates:
   - `pipeline template` (show);
   - `pipeline template build [<x.y.z>]` (now, foreground);
@@ -399,6 +403,8 @@ Tick then polls each done step's PR:
   `/home/agent/plans`; a run that finds the VM running stops it first, ending this shell).
 - runs started by tick: `~/.local/state/pipeline/<repo>-<name>.out`, `journalctl --user -u 'pipeline-run-*'`.
 - usage, slots, kill switch: `usage.json`, `slot-*.lock`, `STOP` in `~/.local/state/pipeline/`.
+- the last finished upkeep run: `~/.local/state/pipeline/upkeep.json` (`{at, stages: {sweep, archive, gc}}`, each
+  `ok`, `skipped` or `failed`). Deleting it only drops the status badge until the next run.
 
 ## Backlog
 
@@ -413,6 +419,32 @@ Tick then polls each done step's PR:
 - Rule: never two features that add migrations at once (each PR may hold one migration, and parallel ones collide
   on the journal).
 - Plan-mode files go to `.claude/plans/_plan-mode/` (`plansDirectory`).
+
+## Upkeep
+
+- `pipeline upkeep` runs `pipeline deferred sweep`, then `pipeline archive`, then `pipeline gc`. It prints each
+  stage's own lines, then `upkeep: sweep ok · archive skipped · gc ok`. It exits 1 when a stage failed.
+- Each stage ends `ok`, `skipped` or `failed`, and none stops the next. A skip is not a failure:
+  - sweep: another sweep runs, or nothing could be judged (the kill switch, usage at its limit, GitHub not
+    answering, a run holds the feature, or every open item waits for `/deferred-sweep`);
+  - archive: a tick still runs after 10 minutes, since archive runs under tick's lock;
+  - gc: `sbx.service` is not active.
+- The kill switch stops only the sweep's Claude call. Archive and gc touch only merged steps, so they still run.
+- Under upkeep, archive leaves a feature whose newest deferred verdict is under a day old, so you can still reopen
+  an item the sweep closed. `pipeline archive` by hand moves it now.
+- The timer (`pipeline-upkeep.timer`, [INSTALL step 8](../INSTALL.md#82-turn-on-nightly-upkeep-optional)) is
+  off until you enable it. It runs at 04:42, catches up after a night the box was off (`Persistent=true`), starts
+  after `sbx.service`, and stops a run after 1 hour.
+- What it costs: at most one judging call per finished feature with items not judged before, $5 and 10 minutes
+  each. A night with nothing new makes no Claude call.
+- One phone ping per run, titled `pipeline upkeep`:
+  - high when a stage failed or the sweep left items open (each with `/deferred-sweep <name>`);
+  - default when the sweep only closed or filed items;
+  - none otherwise. An item left open is pinged once: the sweep notes it and never judges it again.
+  - An interrupted run (Ctrl+C, or the 1 hour cap) pings high with what it already did, and records no result.
+- `pipeline status` shows `upkeep failed (<stages>): pipeline upkeep` after a run with a failed stage, or
+  `upkeep Nd old: pipeline doctor` once the last finished run is over 3 days old. `pipeline doctor` then says
+  whether the timer is on.
 
 ## Archive
 

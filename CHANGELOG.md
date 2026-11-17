@@ -6,6 +6,25 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (no stage kit or `STAGES` change).
+
+### Added
+
+- `pipeline upkeep` runs `pipeline deferred sweep`, `pipeline archive` and `pipeline gc` in that order. Each stage
+  ends ok, skipped or failed, and none stops the next. It sends one ping per run: high when a stage failed or the
+  sweep left items open, default when it only closed or filed items. Under upkeep, archive leaves a feature whose
+  newest deferred verdict is under a day old.
+- `pipeline init` writes `pipeline-upkeep.service` and `pipeline-upkeep.timer`, which runs upkeep every night at
+  04:42. It enables neither: turn the timer on with INSTALL step 8.2. On an existing install, run `pipeline update`,
+  then rerun step 8.1's block so the new service gets your `PATH`.
+- `pipeline doctor` checks the upkeep service like the tick service. The upkeep timer is a SKIP line naming the
+  enable command until you turn it on.
+
+### Changed
+
+- `pipeline status` shows an upkeep badge when the last run had a failed stage, or when it is over 3 days old.
+- A feature folder named `upkeep` is skipped like any command name.
+
 ## v0.15 - 2026-11-17
 
 **Rerun the gate:** no (no stage kit or `STAGES` change).

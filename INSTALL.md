@@ -52,8 +52,8 @@ Keep this clone for running the pipeline only. Don't develop in it.
 exists: it prints `skipped … (exists)` for it instead. It never enables or starts anything. It writes:
 - the links `~/.local/bin/pipeline` and `~/.local/bin/sbx-host` into this clone;
 - a link in `~/.claude/skills` and `~/.claude/agents` for each skill and agent in the kit dir;
-- the units `sbx.service`, `pipeline-tick.service` and `pipeline-tick.timer` in `~/.config/systemd/user/`, with
-  `sbx.service`'s caps sized for this machine;
+- the units `sbx.service`, `pipeline-tick.service`, `pipeline-tick.timer`, `pipeline-upkeep.service` and
+  `pipeline-upkeep.timer` in `~/.config/systemd/user/`, with `sbx.service`'s caps sized for this machine;
 - `~/.config/pipeline/config.json`, from the example, with `vm` and `admission.slots` sized for this machine;
 - `~/.config/sbx-host/config.json`, with the memory each stage VM reserves.
 
@@ -300,18 +300,21 @@ tiny Claude calls on your subscription.
 
 **Check:** `gate.py` ends with `N checks, 0 FAIL`. It prints that line only after every check has run.
 
-## 8. Turn on the timer
+## 8. Turn on the timers
 
-init installed the tick units in step 2. This adds the directories of `node` and `claude` to the unit's `PATH=`
-once, then starts the timer:
+### 8.1 Turn on the tick timer
+
+init installed the tick and upkeep units in step 2. This adds the directories of `node` and `claude` to both
+services' `PATH=` once, then starts the tick timer:
 
 ```bash
-UNIT=~/.config/systemd/user/pipeline-tick.service
 NODE=$(type -P node)
 CLAUDE=$(type -P claude)
 if [ -n "$NODE" ] && [ -n "$CLAUDE" ]; then
   DIRS=$(dirname "$NODE"):$(dirname "$CLAUDE")
-  grep -qF "PATH=$DIRS:" "$UNIT" || sed -i "s|^Environment=PATH=|&$DIRS:|" "$UNIT"
+  for UNIT in ~/.config/systemd/user/pipeline-tick.service ~/.config/systemd/user/pipeline-upkeep.service; do
+    grep -qF "PATH=$DIRS:" "$UNIT" || sed -i "s|^Environment=PATH=|&$DIRS:|" "$UNIT"
+  done
 else
   echo "node or claude is not on your PATH. Finish step 1 first."
 fi
@@ -321,6 +324,18 @@ systemctl --user enable --now pipeline-tick.timer
 
 **Check:** `systemctl --user list-timers pipeline-tick.timer` shows the next run, `pipeline status` prints a
 header without errors, and `pipeline doctor` ends with `N checks, 0 FAIL`.
+
+### 8.2 Turn on nightly upkeep (optional)
+
+The upkeep timer runs `pipeline upkeep` every night at 04:42: it settles the deferred items of merged features,
+archives them, then runs `pipeline gc`. It makes at most one Claude call per finished feature with items it has not
+judged before. Until you turn it on, doctor shows a SKIP line for it.
+
+```bash
+systemctl --user enable --now pipeline-upkeep.timer
+```
+
+**Check:** `systemctl --user list-timers pipeline-upkeep.timer` shows the next run at 04:42.
 
 ## 9. Run your first feature
 
@@ -357,6 +372,8 @@ What it does:
 - It prints the Rerun the gate line of each release it adds or undoes. When one says yes, it also prints the
   `sandbox/gate.py` command for each of your repos: run them.
 - It ends with `pipeline doctor`.
+- A release that adds a unit, such as `pipeline-upkeep.service`, gets it from init. Rerun step 8.1's block to give it your `PATH`, and turn it on with
+  step 8.2 if you want it.
 
 It changes nothing and tells you why when:
 - the fetch fails, for example because a tag moved on GitHub;
@@ -418,7 +435,7 @@ ln -s "$R/pipeline" ~/.local/bin/pipeline
 ln -s "$R/sbx-host/sbx-host" ~/.local/bin/sbx-host
 for skill in "$R"/kit/skills/*; do ln -s "$skill" ~/.claude/skills/; done
 for agent in "$R"/kit/agents/*; do ln -s "$agent" ~/.claude/agents/; done
-cp --update=none "$R"/systemd/sbx.service "$R"/systemd/pipeline-tick.service "$R"/systemd/pipeline-tick.timer ~/.config/systemd/user/
+cp --update=none "$R"/systemd/sbx.service "$R"/systemd/pipeline-tick.service "$R"/systemd/pipeline-tick.timer "$R"/systemd/pipeline-upkeep.service "$R"/systemd/pipeline-upkeep.timer ~/.config/systemd/user/
 cp --update=none "$R/examples/config.example.json" ~/.config/pipeline/config.json
 ```
 
@@ -438,8 +455,8 @@ threads (the default is 6). Under 24 GiB of RAM, also set `vm.memoryGb` to 4, an
 ## Uninstall
 
 ```bash
-systemctl --user disable --now pipeline-tick.timer sbx.service
-rm ~/.local/bin/pipeline ~/.local/bin/sbx-host ~/.config/systemd/user/{sbx.service,pipeline-tick.service,pipeline-tick.timer}
+systemctl --user disable --now pipeline-tick.timer pipeline-upkeep.timer sbx.service
+rm ~/.local/bin/pipeline ~/.local/bin/sbx-host ~/.config/systemd/user/{sbx.service,pipeline-tick.service,pipeline-tick.timer,pipeline-upkeep.service,pipeline-upkeep.timer}
 find ~/.claude/skills ~/.claude/agents -maxdepth 1 -lname "$HOME/.local/share/pipeline/runner/*" -delete
 rm -rf ~/.local/share/pipeline ~/.config/pipeline ~/.config/sbx-host ~/.local/state/pipeline
 ```
