@@ -16,6 +16,11 @@ What changed for you in each release, newest first. Each release says whether to
 - `pipeline deferred file <name> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no` files one item
   as the next step brief of a feature or of `follow-ups`, updates the queue row and records the item owned. A
   re-run never files the same item twice.
+- `pipeline deferred sweep` settles the open deferred items of every fully merged live feature with nobody present.
+  One Claude call per feature with no tools ($5, 10 minutes) judges them, and the runner checks each answer on its
+  own evidence: it closes what it can prove done or moot, files survivors as briefs into a parked `follow-ups`, and
+  leaves the rest open for `/deferred-sweep`. An item it left open is noted in `.pipeline/sweep.json` and not judged
+  again.
 
 ### Changed
 

@@ -351,6 +351,10 @@ class Cost(unittest.TestCase):
             with self.subTest(sentence):
                 self.assertIn(sentence, flat)
 
+    def test_the_sweep_cap_is_listed(self):
+        self.assertIn(f'${core.SWEEP_BUDGET_USD} and {core.SWEEP_TIMEOUT_SECONDS // 60} minutes each',
+                      ' '.join(self.readme.split()))
+
     def test_models(self):
         self.assertEqual({caps['model'] for caps in core.STAGES.values()}, {'claude-opus-5-5'})
         self.assertIn('Opus 5.5 (`claude-opus-5-5`)', self.readme)

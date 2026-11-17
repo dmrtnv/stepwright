@@ -164,6 +164,21 @@ Unknown keys are an error.
     verdict for each. It runs no git. An item still worth a PR becomes a step brief through `pipeline deferred file`,
     in a matching feature, else in `follow-ups`. A won't do, or a brief for a live feature (the next tick starts
     it), waits for your answer to one question.
+  - `pipeline deferred sweep` settles the open items of every fully merged live feature with nobody present, under
+    its own lock and each feature's run lock. One Claude call per feature, on the review stage's model with no tools,
+    no MCP server, no hook and no session kept, judges the items with their evidence (`--evidence`) by `rubric.md`;
+    it has $5 and 10 minutes, and an `init` event that lists any tool but the answer's kills it. The runner then
+    checks each answer on its own reads: `done` needs a commit from the pickaxe search that is not an ancestor of the
+    item's own step merge, or the handoff's merge commit; `moot` needs a path with history, or a literal the pickaxe
+    search found, that is gone from the base. A proven `done` or `moot` is closed with the proof first in the note. A
+    survivor is filed as a step brief the runner writes from the answer's fields into a parked `follow-ups` (marked
+    written unattended: check it before `pipeline start follow-ups`). The rest stay open for `/deferred-sweep`: a
+    live `follow-ups`, a won't do or any doubt, a missing or repeated answer, or proof the runner cannot confirm. Each
+    item left open gets a note and is not judged again; so does each item of a call that timed out, spent its budget,
+    never fit the answer schema or gave no verdicts list. A transient failure (an API error, a bad `init`) records nothing and the next sweep
+    tries again. The kill switch, a usage limit, a held run lock or a GitHub outage skips the feature with no call.
+    It prints a line per item and per skipped or failed feature, then the counts and the cost. It exits 1 only when
+    a feature failed, and 130 when interrupted (the call is killed);
 - What a stage is doing: `pipeline log <name>` (`HH:MM tool target` lines of the newest stage log; `-f` follows).
 - Answer a plan's questions: `pipeline answer <name>`:
   - `plan.md` opens in `$VISUAL`/`$EDITOR`; answer under `## Unresolved questions`, save: a changed file approves;
@@ -365,8 +380,11 @@ Tick then polls each done step's PR:
 - your controls: `<name>/.pipeline/feature.json` (hold, after, autonomy), `~/.local/state/pipeline/control.json`
   (parallel, drain, order).
 - step state (read, don't edit): `<name>/.pipeline/NN.json`.
-- deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close` and
-  `pipeline deferred file`).
+- deferred item verdicts: `<name>/.pipeline/deferred.json` (written only by `pipeline deferred close`,
+  `pipeline deferred file` and `pipeline deferred sweep`).
+- items the unattended sweep left open: `<name>/.pipeline/sweep.json` (`{"NN.K": {verdict, note, reason, at}}`).
+  Delete it to let the next `pipeline deferred sweep` judge them again. Its last call's stream:
+  `<name>/.pipeline/sweep.log`.
 - deferred items filed by `pipeline deferred file`: a step of a matching feature, else of `follow-ups` (live, or
   `<repo>/.claude/plans/_backlog/follow-ups/`).
 - stage logs (stream-json): `<name>/.pipeline/NN-<stage>.log`; the final answer:
@@ -405,8 +423,8 @@ Tick then polls each done step's PR:
 - It leaves unfinished features where they are. A step with no state file yet counts as unfinished, and so does a
   PR closed without merging.
 - It skips a feature that a run holds. Run it again once the run ends.
-- It skips a feature with open deferred items. Run `/deferred-sweep <name>` (or `pipeline deferred close` each
-  item), then run it again. An unreadable `deferred.json` counts as failed.
+- It skips a feature with open deferred items. Run `pipeline deferred sweep` or `/deferred-sweep <name>` (or
+  `pipeline deferred close` each item), then run it again. An unreadable `deferred.json` counts as failed.
 - It skips a feature whose name already exists in `_archive/`, even as an empty folder. Rename the live folder,
   then run it again.
 - The `_` keeps archived features out of tick, `status` (`--all` too) and `queue`.
