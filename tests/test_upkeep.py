@@ -331,6 +331,33 @@ class ResultTest(UpkeepCase):
         self.assertEqual(self.pings(), [('pipeline upkeep', 'high', f'upkeep interrupted during sweep\nshop {line}')])
         self.assertIsNone(self.result())
 
+    def test_an_interrupt_inside_a_feature_pings_what_it_already_settled(self):
+        self.push({'src/old.py': 'x\n', 'src/older.py': 'y\n'})
+        self.remove('src/old.py')
+        self.remove('src/older.py')
+        self.seed(FEATURE, '01', [deferred('ask me', 'x.py'), deferred('gone', 'src/old.py'),
+                                  deferred('gone too', 'src/older.py')])
+        self.runs(answering(answer('01.1', 'needs_owner'), answer('01.2', 'moot'), answer('01.3', 'moot')))
+        real = core.close_item
+
+        def close_then_interrupt(*args, **kwargs):
+            if args[3] == '01.3':
+                raise KeyboardInterrupt
+
+            return real(*args, **kwargs)
+
+        with unittest.mock.patch.object(core, 'close_item', close_then_interrupt):
+            self.upkeep(code=130)
+
+        (_, priority, message), = self.pings()
+        lines = message.split('\n')
+        self.assertEqual(priority, 'high')
+        self.assertEqual(lines[0], 'upkeep interrupted during sweep')
+        self.assertEqual(lines[1], f'shop {FEATURE} 01.1: left open, the judge says it needs the owner → '
+                                   f'/deferred-sweep {FEATURE}')
+        self.assertTrue(lines[2].startswith(f'shop {FEATURE} 01.2: moot'), lines)
+        self.assertEqual(len(lines), 3, lines)
+
     def test_a_signal_during_the_judging_call_stops_the_run(self):
         self.seed(FEATURE, '01', [deferred('a', 'x.py')])
         self.runs([{'sleep': 30}])

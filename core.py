@@ -5682,17 +5682,17 @@ def sweep_refusal(limits):
     return usage_problem(limits)
 
 
-def sweep_feature(repo, feature, evidence, limits):
-    """Judges one feature's items in one call and acts on each answer. The caller holds the run lock. Returns
-    (outcomes, cost)."""
-    outcomes, cost = [], 0.0
+def sweep_feature(repo, feature, evidence, limits, add):
+    """Judges one feature's items in one call and acts on each answer, handing each outcome to `add` as it happens.
+    The caller holds the run lock. Returns the cost."""
+    cost = 0.0
     notes = read_sweep_notes(repo, feature)
     noted = {}
     items = [evidence[item['id']] for item in items_to_judge(repo, feature) if item['id'] in evidence]
     by_id = {item['id']: item for item in items}
 
     def outcome(item_id, kind, line):
-        outcomes.append((repo, feature, item_id, kind, line))
+        add([(repo, feature, item_id, kind, line)])
 
     def leave_open(item_id, reason, verdict='none', note=''):
         noted[item_id] = {'verdict': verdict, 'note': sweep_text(note, DEFERRED_NOTE_CHARACTERS),
@@ -5704,7 +5704,7 @@ def sweep_feature(repo, feature, evidence, limits):
 
         if refusal:
             outcome('', 'skipped', f'{feature}: skipped, {refusal}')
-            return outcomes, cost
+            return cost
 
         prompt, ids = sweep_prompt(items)
 
@@ -5716,7 +5716,7 @@ def sweep_feature(repo, feature, evidence, limits):
                                                'sweep takes it')
 
         if not ids:
-            return outcomes, cost
+            return cost
 
         log_path = state_dir(repo, feature) / 'sweep.log'
 
@@ -5730,7 +5730,7 @@ def sweep_feature(repo, feature, evidence, limits):
                     leave_open(item_id, f'the judge failed: {failure}')
 
             outcome('', 'failed', f'{feature}: failed, {printable(str(failure))} (log: {log_path})')
-            return outcomes, cost
+            return cost
 
         outcome('', 'judged', f"{feature}: judged {plural(len(ids), 'item')}")
         answers, reasons = sweep_answers(verdicts, ids)
@@ -5744,7 +5744,7 @@ def sweep_feature(repo, feature, evidence, limits):
             except PipelineError as error:
                 outcome('', 'failed', f'{feature}: failed, {error}')
 
-    return outcomes, cost
+    return cost
 
 
 def settle_answers(repo, feature, ids, answers, reasons, by_id, outcome, leave_open):
@@ -5861,7 +5861,7 @@ def sweep_all(report=None):
             done = {}
 
             def settle():
-                done['result'] = sweep_feature(repo, feature, evidence, config['admission'])
+                done['result'] = sweep_feature(repo, feature, evidence, config['admission'], add)
 
                 return 0
 
@@ -5875,9 +5875,7 @@ def sweep_all(report=None):
                 add([(repo, feature, '', 'skipped', f'{feature}: skipped, a run holds it')])
                 continue
 
-            feature_outcomes, feature_cost = done['result']
-            add(feature_outcomes)
-            cost += feature_cost
+            cost += done['result']
 
     return outcomes, cost
 
