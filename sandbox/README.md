@@ -60,11 +60,15 @@ Verified by probes (2026-09-30, sbx 0.46.0; the runner relies on each):
   and tags, so `origin` in a VM lists the repo's tags. The VM's `~/.gitconfig` carries `safe.directory` and your git
   `user.name`/`user.email`; a repo-local `user.*` in the workspace overrides it for author and committer and
   survives a stop/start (2026-10-01): the runner sets the App's bot there.
-- `--clone` also adds the host remote `sandbox-<name>` (`git://127.0.0.1:<port>/…`, a git-daemon in the VM). Its own
-  refspecs fetch every branch into `refs/remotes/` and `refs/sandboxes/`, so the runner fetches its URL with one
-  explicit refspec. `sbx stop` removes that remote; the next start restores it on a new port ⇒ read the URL after
-  the VM runs. Git has no fetch-side object size limit (`transfer.maxObjectSize` does not exist): the runner caps new
-  objects with `rev-list --disk-usage` after the fetch.
+- `--clone` also adds the host remote `sandbox-<name>`. Up to sbx 0.51.0 its URL was `git://127.0.0.1:<port>/…`, a
+  git-daemon in the VM. sbx 0.54.0 (2026-11-17) writes the URL `/sandbox/<name>`, which names nothing on the host,
+  and a `remote.sandbox-<name>.uploadpack` command (`sbx upload-pack <name>`) that serves the VM's clone over the
+  daemon socket: a fetch of the bare URL fails with "does not appear to be a git repository". The remote's own
+  refspecs fetch every branch into `refs/remotes/` and `refs/sandboxes/` ⇒ the runner fetches the remote by name,
+  with one explicit refspec and an empty `--refmap`, which works for both shapes. `sbx stop` removes that remote
+  and the next start restores it ⇒ fetch after the VM runs. Git has no fetch-side object size limit
+  (`transfer.maxObjectSize` does not exist): the runner caps new objects with `rev-list --disk-usage` after the
+  fetch.
 - `sbx stop` takes ~0.4 s, an exec auto-starts the VM in ~1.6 s, and `claude -p` works after it (init
   `claude-opus-5-5`/`auto`, `unifiedWindows` present). No process survives a stop; the disk and dockerd's images do.
 - `sbx exec` forwards neither SIGINT nor SIGTERM. `sbx exec <name> -- pkill -INT -x claude` ends a turn in < 1 s
