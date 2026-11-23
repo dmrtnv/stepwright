@@ -1082,6 +1082,7 @@ class NudgeTest(DeferredCommandCase):
         self.main('status')
         self.assertNotIn(self.ROW, self.output)
         self.assertNotIn('DEFERRED', self.output)
+        self.assertNotIn('NEEDS YOU', self.output)
 
 
 class MergePingTest(DeferredCase):
