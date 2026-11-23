@@ -5887,16 +5887,43 @@ class ViewTest(RunnerCase):
         self.assertEqual(core.clip('short', 10), 'short')
         self.assertEqual(core.clip('x' * 50, None), 'x' * 50)
 
-    def watch(self, keyboard, terminal, **patches):
-        """command_watch on a fake terminal; self.restored collects the terminal modes written back."""
+    def watch(self, keyboard, terminal, size=(60, 20), verbose=False, **patches):
+        """command_watch on a fake terminal; self.restored collects the terminal modes written back. `size` is a
+        (columns, rows) tuple, or a list of them whose last one repeats."""
         self.restored = []
+        sizes = [size] if isinstance(size, tuple) else list(size)
+
+        def terminal_size(*arguments):
+            return os.terminal_size(sizes.pop(0) if len(sizes) > 1 else sizes[0])
 
         with mock.patch.multiple(core.termios, tcgetattr=lambda fd: ['saved'],
                                  tcsetattr=lambda fd, when, attributes: self.restored.append(attributes)), \
                 mock.patch.object(core.tty, 'setcbreak', lambda fd: None), \
-                mock.patch.object(core.shutil, 'get_terminal_size', return_value=os.terminal_size((60, 20))), \
+                mock.patch.object(core.shutil, 'get_terminal_size', terminal_size), \
                 mock.patch.multiple(core, **patches) if patches else contextlib.nullcontext():
-            return core.command_watch(False, 0.1, stdin=keyboard, stdout=terminal)
+            return core.command_watch(False, 0.1, verbose, stdin=keyboard, stdout=terminal)
+
+    def until(self, condition):
+        deadline = time.monotonic() + 30
+
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    def quit_after(self, keyboard, terminal, frames, then=None):
+        """Presses q once `frames` frames are drawn (after `then`, if given), or after 30 s."""
+        def drive():
+            try:
+                self.until(lambda: terminal.getvalue().count('\x1b[H') >= frames)
+
+                if then:
+                    then()
+            finally:
+                keyboard.press(b'q')
+
+        threading.Thread(target=drive, daemon=True).start()
+
+    def footer_tail(self, terminal, footer='every 0.1s · p pauses · q quits'):
+        return core.paint(footer, '2', core.use_color(terminal)) + '\x1b[K\x1b[J' + core.WATCH_LEAVE
 
     def test_watch_redraws_in_place_until_q_and_restores_the_terminal(self):
         keyboard, terminal = FakeKeyboard(self), FakeTerminal()
@@ -5913,10 +5940,15 @@ class ViewTest(RunnerCase):
         self.assertEqual(self.watch(keyboard, terminal), 0)
         output = terminal.getvalue()
         self.assertEqual(self.restored, [['saved']])
-        self.assertTrue(output.startswith(core.WATCH_ENTER + '\x1b[H'))
+        self.assertTrue(output.startswith(core.WATCH_ENTER + '\n' * 19 + '\x1b[H'))
         self.assertTrue(output.endswith(core.WATCH_LEAVE))
         self.assertGreaterEqual(output.count('\x1b[H'), 2, 'redrawn more than once')
-        self.assertIn('every 0.1s · q quits', output)
+        self.assertIn('every 0.1s · p pauses · q quits', output)
+        self.assertNotIn('\x1b[?1049', output, 'the normal screen, so the mouse selects text')
+        self.assertEqual(core.WATCH_LEAVE, '\r\x1b[K\x1b[?25h')
+        self.assertTrue(output.endswith(self.footer_tail(terminal)), 'the cursor ends on the footer, then erases it')
+        last = output.rsplit('\x1b[H', 1)[1]
+        self.assertEqual(last.count('\n'), last.count('\x1b[K') - 2, 'no newline after the footer')
 
     def test_watch_restores_the_terminal_when_a_frame_fails_or_on_ctrl_c(self):
         def interrupted(*arguments):
@@ -5936,6 +5968,101 @@ class ViewTest(RunnerCase):
 
         self.assertTrue(terminal.getvalue().endswith(core.WATCH_LEAVE))
         self.assertEqual(self.restored, [['saved']])
+
+    def test_watch_failing_after_a_resize_leaves_the_cursor_on_the_footer(self):
+        status_model, calls = core.status_model, []
+
+        def fails_second(*arguments):
+            calls.append(1)
+
+            if len(calls) > 1:
+                raise RuntimeError('boom')
+
+            return status_model(*arguments)
+
+        terminal = FakeTerminal()
+
+        with self.assertRaises(RuntimeError):
+            self.watch(FakeKeyboard(self), terminal, size=[(60, 20), (60, 10)], status_model=fails_second)
+
+        self.assertTrue(terminal.getvalue().endswith(self.footer_tail(terminal)), 'nothing written by the failed frame')
+        self.assertEqual(self.restored, [['saved']])
+
+    def test_watch_p_pauses_without_writing_and_p_resumes(self):
+        keyboard, terminal = FakeKeyboard(self), FakeTerminal()
+        paused = '\r' + core.paint('paused · p resumes · q quits', '33', core.use_color(terminal)) + '\x1b[K'
+        lengths = []
+
+        def pause_and_resume():
+            keyboard.press(b'p')
+            self.until(lambda: paused in terminal.getvalue())
+            lengths.append(len(terminal.getvalue()))
+            time.sleep(0.6)
+            lengths.append(len(terminal.getvalue()))
+            frames = terminal.getvalue().count('\x1b[H')
+            keyboard.press(b'p')
+            self.until(lambda: terminal.getvalue().count('\x1b[H') > frames)
+
+        self.quit_after(keyboard, terminal, 1, pause_and_resume)
+        self.assertEqual(self.watch(keyboard, terminal), 0)
+        output = terminal.getvalue()
+        self.assertEqual(len(lengths), 2)
+        self.assertEqual(lengths[0], lengths[1], 'nothing is written while paused')
+        self.assertEqual(output.count(paused), 1, 'the footer is rewritten in place, once')
+        self.assertIn('\x1b[H', output[output.index(paused):], 'p again draws a frame')
+
+    def test_watch_says_how_many_lines_a_short_window_hides(self):
+        for count, notice in ((10, '… 6 more lines (make the window taller)'), (6, '… 2 more lines (make the'),
+                              (5, None)):
+            with self.subTest(count=count):
+                keyboard, terminal = FakeKeyboard(self), FakeTerminal()
+                self.quit_after(keyboard, terminal, 2)
+                lines = [f'line {index}' for index in range(count)]
+                self.assertEqual(self.watch(keyboard, terminal, size=(60, 6),
+                                            render=lambda *arguments: lines), 0)
+                output = terminal.getvalue()
+                self.assertTrue(all(frame.count('\n') <= 5 for frame in output.split('\x1b[H')))
+
+                if notice:
+                    self.assertIn(notice, output)
+                    self.assertIn('line 3', output)
+                    self.assertNotIn('line 4', output)
+                else:
+                    self.assertNotIn('more lines', output)
+                    self.assertIn('line 4', output)
+
+    def test_watch_lines_stop_one_column_short_of_the_edge(self):
+        for verbose in (False, True):
+            with self.subTest(verbose=verbose):
+                keyboard, terminal = FakeKeyboard(self), FakeTerminal()
+
+                def pause():
+                    keyboard.press(b'p')
+                    self.until(lambda: 'paused' in terminal.getvalue())
+
+                self.quit_after(keyboard, terminal, 2, pause)
+                self.assertEqual(self.watch(keyboard, terminal, size=(20, 20), verbose=verbose), 0)
+                pieces = [re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', re.sub(r'\x1b\]8;;[^\x1b]*\x1b\\', '', piece))
+                          for piece in re.split(r'\n|\r|\x1b\[H', terminal.getvalue())]
+                self.assertIn('paused', ''.join(pieces))
+                self.assertEqual([piece for piece in pieces if core.text_width(piece) > 19], [])
+
+    def test_watch_scrolls_the_screen_away_again_after_a_resize(self):
+        keyboard, terminal = FakeKeyboard(self), FakeTerminal()
+        self.quit_after(keyboard, terminal, 3)
+        self.assertEqual(self.watch(keyboard, terminal, size=[(60, 20), (60, 10)]), 0)
+        self.assertEqual([len(run) for run in re.findall(r'(\n+)\x1b\[H', terminal.getvalue())], [19, 9])
+
+    def test_watch_ends_when_the_keyboard_closes(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        os.close(write_end)
+        keyboard = mock.Mock(isatty=lambda: True, fileno=lambda: read_end)
+        results = []
+        thread = threading.Thread(target=lambda: results.append(self.watch(keyboard, FakeTerminal())), daemon=True)
+        thread.start()
+        thread.join(30)
+        self.assertEqual(results, [0], 'an end of file quits like q')
 
     def test_watch_needs_a_terminal(self):
         self.assertEqual(self.main('status', '--watch'), 2)
@@ -6419,6 +6546,20 @@ class ExtrasTest(RunnerCase):
         self.main('queue')
         self.assertEqual(self.held_lines(), ['HELD     after y: x', f'         after {FEATURE}: a → b → c',
                                              '         by you: y (pipeline start y)'])
+
+    def test_render_clips_held_chains_and_the_empty_notes(self):
+        model = core.status_model()
+        merged = {**model, 'rows': [dict(row, group='closed') for row in model['rows']], 'show_all': False}
+        self.assertEqual(core.render(merged, width=19)[-1], 'every feature is m…')
+        self.assertEqual(core.render({**model, 'rows': []}, width=10)[-1], 'no featur…')
+
+        for name, after in (('c', 'b'), ('a', FEATURE), ('b', 'a')):
+            self.feature(name)
+            core.update_feature_control(REPO, name, after=after)
+
+        lines = core.render(core.status_model(), color=True, width=19)
+        self.assertTrue(any('HELD' in line for line in lines))
+        self.assertEqual([line for line in lines if core.text_width(re.sub(r'\x1b\[[0-9;]*m', '', line)) > 19], [])
 
     def test_held_siblings_and_cycles(self):
         for name, after in (('a', FEATURE), ('b', 'a'), ('c', 'a'), ('p', 'q'), ('q', 'p')):
