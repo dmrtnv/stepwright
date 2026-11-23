@@ -3874,7 +3874,7 @@ ICONS = {'needs': '✋', 'running': '▶'}
 PROBE_SECONDS = 15  # sbx, cgroup and template readings in --watch, at most this often
 ACTIVITY_BYTES = 64 * 1024
 TOOL_TARGET_KEYS = ('file_path', 'command', 'pattern', 'path', 'description', 'url', 'prompt', 'query')
-WATCH_ENTER, WATCH_LEAVE = '\x1b[?1049h\x1b[?25l', '\x1b[?25h\x1b[?1049l'  # alt screen + hidden cursor, and back
+WATCH_ENTER, WATCH_LEAVE = '\x1b[?25l', '\r\x1b[K\x1b[?25h'  # hidden cursor; erase the footer and show it again
 
 
 def use_color(stream):
@@ -4342,7 +4342,7 @@ def render(model, color=False, width=None, groups=GROUPS):
         code = GROUP_COLORS[group]
 
         if group == 'held':
-            lines += [paint(line, code, color) for line in held_lines(members, name, model['order'], width)]
+            lines += [paint(clip(line, width), code, color) for line in held_lines(members, name, model['order'], width)]
             continue
 
         if group in LISTED_GROUPS:
@@ -4360,9 +4360,9 @@ def render(model, color=False, width=None, groups=GROUPS):
             lines.append(paint(hyperlink(text, row['link']) if color else text, code, color))
 
     if not model['rows']:
-        lines.append('no features yet')
+        lines.append(clip('no features yet', width))
     elif not rows:
-        lines.append('every feature is merged (--all lists them)')
+        lines.append(clip('every feature is merged (--all lists them)', width))
 
     return lines + [clip(line, width) for line in model['skipped']]
 
@@ -4421,7 +4421,8 @@ def held_lines(members, name, order, width):
 
 
 def wrapped_chain(head, levels, width):
-    """`head` + levels joined by → over as many indented lines as the width needs (never cut)."""
+    """`head` + levels joined by → over as many indented lines as the width needs (wrapped between levels, clipped
+    by `render` only when one level is wider than the width)."""
     lines, line = [], HELD_INDENT + head
 
     for index, piece in enumerate(levels):
@@ -4511,8 +4512,9 @@ def verbose_frame(show_all, probes):
 
 
 def command_watch(show_all, interval, verbose=False, stdin=None, stdout=None):
-    """`status --watch`: the status redrawn in place every `interval` s on the alternate screen until q or Ctrl+C
-    (SIGTERM/SIGHUP take the Ctrl+C path); the terminal is restored however it ends."""
+    """`status --watch`: the status redrawn in place every `interval` s on the normal screen (so the mouse selects
+    text) until q, Ctrl+C or a closed keyboard (SIGTERM/SIGHUP take the Ctrl+C path); p pauses and resumes. The last
+    frame stays and the terminal is restored however it ends."""
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
 
     if not (stdin.isatty() and stdout.isatty()):
@@ -4521,26 +4523,34 @@ def command_watch(show_all, interval, verbose=False, stdin=None, stdout=None):
 
     descriptor = stdin.fileno()
     saved = termios.tcgetattr(descriptor)
-    probes = {}
+    probes, drawn_size, color = {}, None, use_color(stdout)
 
     try:
         tty.setcbreak(descriptor)
         stdout.write(WATCH_ENTER)
 
         while True:
-            columns, rows = shutil.get_terminal_size()
-            footer = f'every {interval:g}s · q quits'
+            columns, rows = size = tuple(shutil.get_terminal_size())
+            width = columns - 1
 
             if verbose:
-                lines = [clip(line, columns) for line in verbose_frame(show_all, probes)]
+                lines = [clip(line, width) for line in verbose_frame(show_all, probes)]
             else:
-                lines = render(status_model(show_all, probes), use_color(stdout), columns)
+                lines = render(status_model(show_all, probes), color, width)
 
-            lines = lines[:max(1, rows - 1)] + [paint(footer, '2', use_color(stdout))]
-            stdout.write('\x1b[H' + '\n'.join(line + '\x1b[K' for line in lines) + '\x1b[J')
+            frame = watch_frame(lines, rows, width, f'every {interval:g}s · p pauses · q quits', color)
+            enter = '\n' * (rows - 1) if size != drawn_size else ''
+            stdout.write(enter + '\x1b[H' + frame)
             stdout.flush()
+            drawn_size = size
+            key = wait_for_key(descriptor, interval)
 
-            if wait_for_quit(descriptor, interval):
+            if key == 'p':
+                stdout.write('\r' + paint(clip('paused · p resumes · q quits', width), '33', color) + '\x1b[K')
+                stdout.flush()
+                key = wait_for_key(descriptor)
+
+            if key == 'q':
                 return 0
     except KeyboardInterrupt:
         return 0
@@ -4550,17 +4560,40 @@ def command_watch(show_all, interval, verbose=False, stdin=None, stdout=None):
         termios.tcsetattr(descriptor, termios.TCSAFLUSH, saved)
 
 
-def wait_for_quit(descriptor, seconds):
-    """Waits out a frame; True once q is pressed (other keys are ignored)."""
-    deadline = time.monotonic() + seconds
+def watch_frame(lines, rows, width, footer, color):
+    """One watch frame: at most `rows - 1` lines (the last one says how many are hidden), then the footer, each line
+    erased to its end and the rest of the screen below; no newline after the footer, so nothing scrolls."""
+    budget = max(1, rows - 1)
 
-    while (left := deadline - time.monotonic()) > 0:
-        ready, _, _ = select.select([descriptor], [], [], left)
+    if len(lines) > budget:
+        hidden = len(lines) - budget + 1
+        lines = lines[:budget - 1] + [paint(clip(f'… {hidden} more lines (make the window taller)', width), '33', color)]
 
-        if ready and b'q' in os.read(descriptor, 64).lower():
-            return True
+    lines = lines + [paint(clip(footer, width), '2', color)]
 
-    return False
+    return '\n'.join(line + '\x1b[K' for line in lines) + '\x1b[J'
+
+
+def wait_for_key(descriptor, seconds=None):
+    """Waits out a frame (`seconds`, or until a key when None): 'q' on q or a closed keyboard, 'p' on p (q wins in one
+    read), None once the time is up; other keys are ignored."""
+    deadline = None if seconds is None else time.monotonic() + seconds
+
+    while deadline is None or (left := deadline - time.monotonic()) > 0:
+        ready, _, _ = select.select([descriptor], [], [], None if deadline is None else left)
+
+        if not ready:
+            continue
+
+        keys = os.read(descriptor, 64).lower()
+
+        if not keys or b'q' in keys:
+            return 'q'
+
+        if b'p' in keys:
+            return 'p'
+
+    return None
 
 
 def command_show(repo, feature):
@@ -8104,7 +8137,7 @@ def pick_repo(argv, feature=None):
 # adapter.RESERVED keeps a feature folder from being named like one (tick's `pipeline <feature>` would run the command).
 COMMANDS = {
     'status': ('status [-v] [--all] [--watch [-n SECS]]',
-               'what runs, waits and needs you (-v: every step in full; --all: merged too; --watch: live, q quits)',
+               'what runs, waits and needs you (-v: every step in full; --all: merged too; --watch: live, p pauses, q quits)',
                'daily'),
     'show': ('show <feature> [--repo <o>/<r>]', 'one feature in full: steps, reason, files, PR/CI, logs, history', 'daily'),
     'log': ('log <feature> [--repo <o>/<r>] [-f]',

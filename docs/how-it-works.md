@@ -127,7 +127,8 @@ Unknown keys are an error.
   - then NEEDS YOU · RUNNING (stage, time, last tool call) · QUEUED (start order) · `CI` (each optional companion CI
     runner slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature
     whose PR waits stays in WAITING with `· held`) · WAITING;
-  - `--watch [-n s]` redraws in place (q quits);
+  - `--watch [-n s]` redraws in place on the normal screen, so the mouse selects text (also in tmux with
+    `mouse on`); `p` pauses and resumes; `q` quits and leaves the last frame;
   - `--all` adds merged features that are not archived;
   - `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command).
 - One feature in full: `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command,
