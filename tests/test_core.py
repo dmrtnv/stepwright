@@ -5547,6 +5547,53 @@ class FakeKeyboard:
         os.write(self.write_end, keys)
 
 
+def view_row(feature, group, position, text, repo=REPO, action=None, link=None, hold=None, queue=(0, '')):
+    return {'repo': repo, 'feature': feature, 'group': group, 'position': position, 'text': text, 'action': action,
+            'link': link, 'hold': hold, 'queue': queue}
+
+
+def view_model(rows, **extra):
+    """A compact status model without any repo state behind it."""
+    return {'now': time.time(), 'usage': None, 'slots': (1, 2), 'memory': None, 'ci': [], 'badges': [],
+            'show_all': False, 'rows': rows, 'order': [], 'repos': len({row['repo'] for row in rows}), 'skipped': [],
+            'backlog': [], **extra}
+
+
+MOCKUP_ROWS = [
+    view_row('tags', 'needs', '1/4', 'plan asks 2 questions', action='pipeline answer tags'),
+    view_row('billing', 'needs', '2/2 auto', 'review 2: 3 blocking', action='pipeline approve billing'),
+    view_row('search', 'needs', '1/3', 'implement paused: gates failed 3×: test', action='pipeline show search'),
+    view_row('csv-export', 'review', '3/5', 'PR #701 green', link='https://github.com/acme/shop/pull/701'),
+    view_row('follow-ups', 'running', '2/7 auto', 'implement  12m  14:02 Edit src/app/thing.ts'),
+    view_row('reports', 'queued', '1/3', 'plan · all 2 stage slots busy'),
+    view_row('follow-ups-web', 'waiting', '6/7 auto', 'PR #707 CI running', link='https://github.com/acme/shop/pull/707'),
+    view_row('limits', 'waiting', '2/3', 'limit until 15:00'),
+    view_row('exports', 'held', '1/2', 'after csv-export', hold='csv-export'),
+    view_row('old', 'held', '2/2', 'by you', action='pipeline start old', hold='you'),
+    view_row('upkeep-automation', 'deferred', '4/4', '1 open item', repo='acme/tools',
+             action='/deferred-sweep upkeep-automation'),
+]
+
+
+def plain(line):
+    return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', re.sub(r'\x1b\]8;;[^\x1b]*\x1b\\', '', line))
+
+
+def sections(lines, titles):
+    """{title: its row lines} of rendered status lines."""
+    found, current = {}, None
+
+    for line in lines:
+        if line in titles:
+            current = found.setdefault(line, [])
+        elif line == '':
+            current = None
+        elif current is not None:
+            current.append(line)
+
+    return found
+
+
 class ViewTest(RunnerCase):
     """The CLI's face: help, the compact status, --watch and show."""
 
@@ -5628,7 +5675,7 @@ class ViewTest(RunnerCase):
         self.feature('next')
         core.update_feature_control(REPO, 'next', after=FEATURE)
         self.main('status', '--all')
-        self.assertIn(f'{FEATURE} (merged)', self.output)
+        self.assertRegex(self.output, rf'MERGED\n · {FEATURE} +1/1 +merged\n')
         self.assertEqual(self.main('archive'), 0, self.errors)
         self.assertEqual(self.output, f'{FEATURE}: moved to {self.archived()}\n'
                                       'moved 1, left 2 unfinished, skipped 0, failed 0\n')
@@ -5637,7 +5684,8 @@ class ViewTest(RunnerCase):
         self.assertTrue((self.archived() / STEP / 'brief.md').exists())
         self.assertTrue((self.fixture.plans / 'open').is_dir())
         self.main('status', '--all')
-        self.assertNotIn(f'{FEATURE} (merged)', self.output)
+        self.assertNotIn('MERGED', self.output)
+        self.assertNotRegex(self.output, rf' · {FEATURE} +1/1 +merged')
         self.assertIsNone(core.hold_reason(REPO, 'next'), 'a wait on an archived merged feature is met')
 
     def test_archive_passes_over_a_repo_without_plans(self):
@@ -5818,18 +5866,25 @@ class ViewTest(RunnerCase):
         self.assertRegex(lines[0], r'^pipeline \d\d:\d\d  claude weekly 20% · 5h 10% · stages 0 running of 2$')
         at = time.strftime('%H:%M', time.localtime(core.parse_iso('2026-10-02T18:51:34Z')))
         self.assertEqual(lines[1:], [
+            '',
             'NEEDS YOU',
-            ' ✋ asks    02/02  plan asks 2 → pipeline answer asks',
-            ' ✋ green   01/01  PR #9 green → review & merge  https://example/pull/9',
+            ' ! asks     2/2  plan asks 2 questions → pipeline answer asks',
+            '',
+            'REVIEW & MERGE',
+            ' ✓ green    1/1  PR #9 green  https://example/pull/9',
+            '',
             'RUNNING',
-            f' ▶ busy    01/01  implement  0m  {at} Edit apps/web/src/card.tsx',
+            f' ▶ busy     1/1  implement  0m  {at} Edit apps/web/src/card.tsx',
+            '',
             'QUEUED',
-            ' 1 older   01/01  plan · all 2 stage slots busy',
-            f' 2 {FEATURE}   01/01  plan · weekly usage 82% ≥ 80%',
-            'WAITING  limited (limit until Fri 14:00)',
+            ' 1 older    1/1  plan · all 2 stage slots busy',
+            f' 2 {FEATURE}    1/1  plan · weekly usage 82% ≥ 80%',
+            '',
+            'WAITING',
+            ' · limited  1/1  limit until Fri 14:00',
         ])
         self.main('status', '--all')
-        self.assertIn('MERGED  merged (PR #4)', self.output)
+        self.assertTrue(self.output.endswith('\n\nMERGED\n · merged   1/1  PR #4\n'), self.output)
 
     def test_the_status_header_badges_only_what_is_abnormal(self):
         with mock.patch.object(core, 'sbx_service_active', return_value=False):
@@ -5859,9 +5914,9 @@ class ViewTest(RunnerCase):
         core.mark(self.state(), 'running', 'plan running')
         model = core.status_model()
         self.assertEqual([line for line in core.render(model) if 'run died' in line],
-                         [f'WAITING  {FEATURE} (plan: run died, tick resumes it)'])
-        link = core.render({**model, 'rows': [dict(model['rows'][0], group='needs', text='PR #9 green',
-                                                   link='https://example/pull/9')]}, color=True, width=40)[2]
+                         [f' · {FEATURE}  1/1  plan: run died, tick resumes it'])
+        link = core.render({**model, 'rows': [dict(model['rows'][0], group='review', text='PR #9 green',
+                                                   link='https://example/pull/9')]}, color=True, width=40)[3]
         self.assertIn('\x1b]8;;https://example/pull/9\x1b\\PR #9\x1b]8;;\x1b\\ green', link)
         self.assertNotIn('  https://', link, 'the URL is left out when it does not fit; the link carries it')
         coloured = core.render(model, color=True, width=30)
@@ -5886,6 +5941,154 @@ class ViewTest(RunnerCase):
         self.assertEqual(core.clip(' ✋ abcdef', 6), ' ✋ a…')
         self.assertEqual(core.clip('short', 10), 'short')
         self.assertEqual(core.clip('x' * 50, None), 'x' * 50)
+
+    def test_the_status_matches_the_mockup_at_150_and_80_columns(self):
+        model = view_model(MOCKUP_ROWS, ci=[(1, 'busy'), (2, 'busy')])
+        self.assertEqual(core.render(model, width=150)[1:], [
+            'CI       ci-1 busy · ci-2 busy   (ci-runner status)',
+            '',
+            'NEEDS YOU',
+            ' ! shop/tags                1/4       plan asks 2 questions → pipeline answer tags',
+            ' ! shop/billing             2/2 auto  review 2: 3 blocking → pipeline approve billing',
+            ' ! shop/search              1/3       implement paused: gates failed 3×: test → pipeline show search',
+            '',
+            'REVIEW & MERGE',
+            ' ✓ shop/csv-export          3/5       PR #701 green  https://github.com/acme/shop/pull/701',
+            '',
+            'RUNNING',
+            ' ▶ shop/follow-ups          2/7 auto  implement  12m  14:02 Edit src/app/thing.ts',
+            '',
+            'QUEUED',
+            ' 1 shop/reports             1/3       plan · all 2 stage slots busy',
+            '',
+            'WAITING',
+            ' · shop/follow-ups-web      6/7 auto  PR #707 CI running  https://github.com/acme/shop/pull/707',
+            ' · shop/limits              2/3       limit until 15:00',
+            '',
+            'HELD',
+            ' · shop/exports             1/2       after csv-export',
+            ' · shop/old                 2/2       by you → pipeline start old',
+            '',
+            'DEFERRED',
+            ' · tools/upkeep-automation  4/4       1 open item → /deferred-sweep upkeep-automation',
+        ])
+        command_indent = ' ' * 38
+        self.assertEqual(core.render(model, width=80)[1:], [
+            'CI       ci-1 busy · ci-2 busy   (ci-runner status)',
+            '',
+            'NEEDS YOU',
+            ' ! shop/tags                1/4       plan asks 2 questions',
+            command_indent + '→ pipeline answer tags',
+            ' ! shop/billing             2/2 auto  review 2: 3 blocking',
+            command_indent + '→ pipeline approve billing',
+            ' ! shop/search              1/3       implement paused: gates failed 3×: test',
+            command_indent + '→ pipeline show search',
+            '',
+            'REVIEW & MERGE',
+            ' ✓ shop/csv-export          3/5       PR #701 green',
+            '',
+            'RUNNING',
+            ' ▶ shop/follow-ups          2/7 auto  implement  12m  14:02 Edit src/app/thing.…',
+            '',
+            'QUEUED',
+            ' 1 shop/reports             1/3       plan · all 2 stage slots busy',
+            '',
+            'WAITING',
+            ' · shop/follow-ups-web      6/7 auto  PR #707 CI running',
+            ' · shop/limits              2/3       limit until 15:00',
+            '',
+            'HELD',
+            ' · shop/exports             1/2       after csv-export',
+            ' · shop/old                 2/2       by you → pipeline start old',
+            '',
+            'DEFERRED',
+            ' · tools/upkeep-automation  4/4       1 open item',
+            command_indent + '→ /deferred-sweep upkeep-automation',
+        ])
+
+    def test_a_long_command_starts_further_left_to_stay_whole(self):
+        name = 'a-feature-named-28-chars-xyz'
+        action = f'pipeline answer {name}'
+        lines = core.render(view_model([view_row(name, 'needs', '1/4', 'plan asks 2 questions', action=action)]),
+                            width=80)
+        self.assertEqual(lines[-2], f' ! {name}  1/4  plan asks 2 questions')
+        self.assertEqual(lines[-1], ' ' * (80 - core.text_width('→ ' + action)) + '→ ' + action)
+        self.assertEqual(core.text_width(lines[-1]), 80)
+
+    def test_every_section_is_rows_with_the_step(self):
+        long_name = 'a-feature-whose-name-is-30-chr'
+        self.assertEqual(len(long_name), 30)
+        queued = [view_row(f'q{number:02}', 'queued', '1/1', 'plan', queue=(number, '')) for number in range(1, 11)]
+        rows = [
+            view_row('asks', 'needs', '1/4', 'plan asks 2 questions', action='pipeline answer asks'),
+            view_row('search', 'needs', '1/3', 'implement paused: gates failed 3×: test', action='pipeline show search'),
+            view_row('green', 'review', '2/2 auto', 'PR #9 green', link='https://example/pull/9'),
+            view_row('busy', 'running', '1/2', 'implement  3m'),
+            *reversed(queued),
+            view_row('ci', 'waiting', '1/1', 'PR #7 CI running', link='https://example/pull/7'),
+            view_row(long_name, 'waiting', '2/3', 'limit until 15:00'),
+            view_row('parked', 'held', '1/2', 'by you', action='pipeline start parked', hold='you'),
+            view_row('swept', 'deferred', '3/3', '1 open item', action='/deferred-sweep swept'),
+            view_row('done', 'closed', '1/1', 'PR #4', link='https://example/pull/4'),
+        ]
+        model = view_model(rows, show_all=True, backlog=['later'])
+        titles = [title for _, title in core.GROUPS]
+        lines = core.render(model)
+        self.assertEqual([line for line in lines if line in titles], titles)
+        self.assertTrue(all(lines[index - 1] == '' for index, line in enumerate(lines) if line in titles))
+        found = sections(lines, titles)
+        self.assertEqual([line.split()[1] for line in found['NEEDS YOU']], ['asks', 'search'])
+        self.assertEqual(found['REVIEW & MERGE'], ['  ✓ ' + 'green'.ljust(28) + '  2/2 auto  PR #9 green  '
+                                                   'https://example/pull/9'])
+        self.assertEqual(found['DEFERRED'], ['  · ' + 'swept'.ljust(28) + '  3/3       1 open item → /deferred-sweep '
+                                             'swept'])
+        self.assertRegex(found['WAITING'][0], r'^  · ci +1/1 +PR #7 CI running  https://example/pull/7$')
+        self.assertRegex(found['HELD'][0], r'^  · parked +1/2 +by you → pipeline start parked$')
+        self.assertRegex(found['MERGED'][0], r'^  · done +1/1 +PR #4  https://example/pull/4$')
+        self.assertEqual(found['NEEDS YOU'][0].index('plan asks'), found['REVIEW & MERGE'][0].index('PR #9'),
+                         'the step and auto share one padded column')
+        self.assertIn(f'  · {long_name}  2/3       limit until 15:00', found['WAITING'])
+        self.assertEqual([line[:5] for line in found['QUEUED']][8:], ['  9 q', ' 10 q'])
+        self.assertEqual([line.split()[1] for line in found['QUEUED']], [f'q{number:02}' for number in range(1, 11)])
+        queue_titles = [title for _, title in core.QUEUE_GROUPS]
+        queue_lines = core.render(model, groups=core.QUEUE_GROUPS)
+        self.assertEqual([line.split('  ')[0] for line in queue_lines if line.split('  ')[0] in queue_titles],
+                         queue_titles)
+        self.assertEqual(queue_lines[-2:], ['', 'BACKLOG  later'])
+        narrow = core.render(model, width=80)
+        paused = narrow.index(next(line for line in narrow if 'implement paused' in line))
+        self.assertEqual(narrow[paused + 1], ' ' * 44 + '→ pipeline show search')
+
+        for width in (30, 80, None):
+            for color in (False, True):
+                with self.subTest(width=width, color=color):
+                    drawn = core.render(model, color=color, width=width)
+                    self.assertEqual([line for line in drawn if width and core.text_width(plain(line)) > width], [])
+                    self.assertEqual([plain(line) for line in drawn], core.render(model, width=width))
+
+        coloured = core.render(model, color=True)
+        self.assertEqual(sum(line.count('\x1b]8;;https') for line in coloured), 3, 'one link per row that names a PR')
+        self.assertTrue(any('\x1b]8;;https://example/pull/7\x1b\\PR #7\x1b]8;;\x1b\\ CI running' in line
+                            for line in coloured), 'WAITING links its PR')
+        self.assertTrue(any('\x1b]8;;https://example/pull/4\x1b\\PR #4\x1b]8;;\x1b\\' in line for line in coloured),
+                        'MERGED links its PR')
+        self.assertTrue(any(line.startswith('\x1b[36m') and 'busy' in line for line in coloured), 'RUNNING is cyan')
+        self.assertTrue(any(line.startswith('\x1b[32m') and 'green' in line for line in coloured))
+        self.assertTrue(any(line.startswith('  · swept') for line in coloured), 'DEFERRED is plain')
+
+    def test_watch_drops_blank_lines_when_the_frame_does_not_fit(self):
+        lines = ['head', '', 'NEEDS YOU', ' ! a', '', 'RUNNING', ' ▶ b']
+
+        for rows, kept in ((20, True), (6, False)):
+            with self.subTest(rows=rows):
+                keyboard, terminal = FakeKeyboard(self), FakeTerminal()
+                self.quit_after(keyboard, terminal, 2)
+                self.assertEqual(self.watch(keyboard, terminal, size=(60, rows), render=lambda *arguments: lines), 0)
+                output = terminal.getvalue()
+                self.assertNotIn('more lines', output)
+                self.assertIn(' ▶ b', output)
+                self.assertEqual('head\x1b[K\n\x1b[K\nNEEDS YOU' in output, kept)
+                self.assertEqual('head\x1b[K\nNEEDS YOU' in output, not kept)
 
     def watch(self, keyboard, terminal, size=(60, 20), verbose=False, **patches):
         """command_watch on a fake terminal; self.restored collects the terminal modes written back. `size` is a
@@ -6111,6 +6314,8 @@ class ViewTest(RunnerCase):
             self.main('status')
 
         self.assertIn('CI       ci-1 busy · ci-2 VM up · ci-3 unit inactive   (ci-runner status)', self.output)
+        self.assertEqual(self.output.splitlines()[1], 'CI       ci-1 busy · ci-2 VM up · ci-3 unit inactive   '
+                                                       '(ci-runner status)', 'right under the header (and memory)')
         self.main('status')
         self.assertIn('CI       ci-1 unit inactive (VM left) · ci-2 unit inactive (VM left)', self.output)
 
@@ -6210,7 +6415,7 @@ class QueueTest(RunnerCase):
         self.spawned.clear()
         self.assertEqual(self.main('order', 'c', FEATURE), 0, self.errors)
         self.assertEqual(core.global_control()['order'], [f'{REPO}/c', f'{REPO}/{FEATURE}'])
-        self.assertRegex(self.output, rf'QUEUED\n 1 c +01/01  plan · x\n 2 {FEATURE} +01/01  plan · x\n 3 a ')
+        self.assertRegex(self.output, rf'QUEUED\n 1 c +1/1  plan · x\n 2 {FEATURE} +1/1  plan · x\n 3 a ')
         self.main('tick')
         self.assertEqual(self.spawned, [(REPO, 'c')])
 
@@ -6287,7 +6492,7 @@ class QueueTest(RunnerCase):
         self.assertEqual(self.spawned, [])
         self.assertIn(f'tick: held: shop/{FEATURE} (by you)', self.output)
         self.main('status')
-        self.assertIn(f'HELD     by you: {FEATURE} (pipeline start {FEATURE})', self.output)
+        self.assertRegex(self.output, rf'HELD\n · {FEATURE} +1/1  by you → pipeline start {FEATURE}\n')
         self.assertEqual(self.claude_calls(), [])
         self.assertEqual(self.main('start', FEATURE), 0)
         self.assertEqual(self.kicks, [1])
@@ -6398,6 +6603,26 @@ class QueueTest(RunnerCase):
         self.assertIn('held (pipeline start', self.errors)
 
 
+    def test_only_a_parked_row_names_pipeline_start(self):
+        core.update_feature_control(REPO, FEATURE, hold=True)
+        core.mark(self.state(), 'running', 'plan running')
+
+        with mock.patch.object(core, 'locked', return_value=True):
+            self.main('status')
+
+        self.assertRegex(self.output, rf'RUNNING\n ▶ {FEATURE} +1/1 +plan.* · then held\n')
+        self.assertNotIn('pipeline start', self.output)
+        state = self.state()
+        state.update(stage='done', pr={'number': 5, 'url': 'https://example/pull/5'}, published_sha='abc', ci={})
+        core.mark(state, 'done', 'PR #5: CI running')
+        self.main('status')
+        self.assertRegex(self.output, rf'WAITING\n · {FEATURE} +1/1 +PR #5 CI running · held  https://example/pull/5\n')
+        self.assertNotIn('pipeline start', self.output)
+        core.mark(state, 'ready', 'queued: x')
+        self.main('status')
+        self.assertRegex(self.output, rf'HELD\n · {FEATURE} +1/1 +by you → pipeline start {FEATURE}\n')
+
+
 class AutonomyTest(RunnerCase):
     """`autonomy auto`: the plan's recommendations answer its questions, a last review round's blocking findings go to
     respond, and every such decision is a ⚑ in the PR and the ping; blocked and failed still stop."""
@@ -6412,7 +6637,7 @@ class AutonomyTest(RunnerCase):
         self.assertEqual(core.feature_control(REPO, FEATURE)['autonomy'], 'auto')
         self.assertEqual(self.main('autonomy', FEATURE, 'bogus'), 2)
         self.main('status')
-        self.assertIn('01/01 auto', self.output)
+        self.assertIn('1/1 auto', self.output)
 
     def test_auto_takes_the_plans_recommendations_and_flags_each(self):
         self.main('autonomy', FEATURE, 'auto')
@@ -6520,7 +6745,7 @@ class ExtrasTest(RunnerCase):
         self.assertEqual(self.spawned, [(REPO, FEATURE)])
         self.assertIn(f'tick: held: shop/next (after {FEATURE})', self.output)
         self.main('status')
-        self.assertIn(f'HELD     after {FEATURE}: next', self.output)
+        self.assertRegex(self.output, rf'HELD\n · next +1/1  after {FEATURE}\n')
         self.assertEqual(self.main('next'), 1)
         self.assertIn(f'next: after {FEATURE} (pipeline start next drops it)', self.errors)
         core.mark(self.state(), 'closed', 'merged as PR #5')
@@ -6528,10 +6753,10 @@ class ExtrasTest(RunnerCase):
         self.main('tick')
         self.assertEqual(self.spawned, [(REPO, 'next')], 'merged: tick releases it')
 
-    def held_lines(self):
-        lines = self.output.splitlines()
-        start = next(index for index, line in enumerate(lines) if line.startswith('HELD'))
-        return [lines[start]] + [line for line in lines[start + 1:] if line.startswith(' ' * 9)]
+    def held_rows(self):
+        """HELD's rows as (name, text) pairs."""
+        rows = sections(self.output.splitlines(), ['HELD'])['HELD']
+        return [re.match(r'^ +· (\S+) +\d+/\d+(?: auto)? +(.*)$', row).groups() for row in rows]
 
     def test_held_lists_chains_in_merge_order(self):
         for name, after in (('c', 'b'), ('a', FEATURE), ('b', 'a'), ('x', 'y'), ('y', None)):
@@ -6540,15 +6765,15 @@ class ExtrasTest(RunnerCase):
             if after:
                 core.update_feature_control(REPO, name, after=after)
 
+        chain = [('a', f'after {FEATURE}'), ('b', 'after a'), ('c', 'after b')]
         self.main('status')
-        self.assertEqual(self.held_lines(), [f'HELD     after {FEATURE}: a → b → c', '         after y: x'])
+        self.assertEqual(self.held_rows(), chain + [('x', 'after y')])
         core.update_global_control(order=[f'{REPO}/y'])
         self.main('status')
-        self.assertEqual(self.held_lines(), ['HELD     after y: x', f'         after {FEATURE}: a → b → c'])
+        self.assertEqual(self.held_rows(), [('x', 'after y')] + chain)
         core.update_feature_control(REPO, 'y', hold=True)
         self.main('queue')
-        self.assertEqual(self.held_lines(), ['HELD     after y: x', f'         after {FEATURE}: a → b → c',
-                                             '         by you: y (pipeline start y)'])
+        self.assertEqual(self.held_rows(), [('x', 'after y')] + chain + [('y', 'by you → pipeline start y')])
 
     def test_render_clips_held_chains_and_the_empty_notes(self):
         model = core.status_model()
@@ -6570,7 +6795,26 @@ class ExtrasTest(RunnerCase):
             core.update_feature_control(REPO, name, after=after)
 
         self.main('status')
-        self.assertEqual(self.held_lines(), [f'HELD     after {FEATURE}: a → b, c', '         p (after q), q (after p)'])
+        self.assertEqual(self.held_rows(), [('a', f'after {FEATURE}'), ('b', 'after a'), ('c', 'after a'),
+                                            ('p', 'after q'), ('q', 'after p')])
+
+    def test_held_rows_render_once_each_across_repos_and_cycles(self):
+        rows = [
+            view_row('next', 'held', '1/1', 'after base', hold='base'),
+            view_row('next', 'held', '1/1', 'after base', repo='acme/other', hold='base'),
+            view_row('mine', 'held', '1/1', 'by you', action='pipeline start mine', hold='you'),
+            view_row('p', 'held', '1/1', 'after q', hold='q'),
+            view_row('q', 'held', '1/1', 'after p', hold='p'),
+            view_row('then', 'held', '1/1', 'after next', hold='next'),
+        ]
+
+        def held(order):
+            found = sections(core.render(view_model(rows, order=order)), ['HELD'])['HELD']
+            return [line.split()[1] for line in found]
+
+        self.assertEqual(held([]), ['shop/next', 'shop/then', 'other/next', 'shop/p', 'shop/q', 'shop/mine'])
+        self.assertEqual(held(['acme/other/base']), ['other/next', 'shop/next', 'shop/then', 'shop/p', 'shop/q',
+                                                     'shop/mine'])
 
     def test_next_for_a_held_step_names_start_not_detach(self):
         core.mark(self.state(), 'ready', f'queued: held (pipeline start {FEATURE})')
@@ -6599,7 +6843,7 @@ class ExtrasTest(RunnerCase):
         core.mark(state, 'done', 'PR #5: CI running')
         core.update_feature_control(REPO, FEATURE, hold=True)
         self.main('status')
-        self.assertIn(f'WAITING  {FEATURE} (PR #5 CI running · held)', self.output)
+        self.assertIn(f'WAITING\n · {FEATURE}  1/1  PR #5 CI running · held  https://example/pull/5\n', self.output)
         self.assertNotIn('HELD', self.output)
 
     def test_after_a_single_step_and_bad_waits(self):

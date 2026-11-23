@@ -3,6 +3,7 @@
 Run: python3 -m unittest discover tests
 """
 import json
+import re
 import subprocess
 import sys
 import time
@@ -997,17 +998,19 @@ class SkillTest(unittest.TestCase):
 
 
 class NudgeTest(DeferredCommandCase):
-    ROW = f'1 deferred to sweep → /deferred-sweep {FEATURE}'
+    ROW = f'1 open item → /deferred-sweep {FEATURE}'
 
-    def test_a_merged_feature_with_an_open_item_needs_you_everywhere(self):
+    def test_a_merged_feature_with_an_open_item_is_deferred_everywhere(self):
         self.seed(FEATURE, '01', ['an old note', GAP])
 
         for argv in (('status',), ('status', '--all'), ('queue',)):
             with self.subTest(argv=argv):
                 self.assertEqual(self.main(*argv), 0, self.errors)
-                self.assertIn('NEEDS YOU', self.output)
-                self.assertIn(self.ROW, self.output)
-                self.assertNotIn(f'{FEATURE} (merged)', self.output)
+                self.assertRegex(self.output, rf'\n\nDEFERRED\n · {FEATURE} +1/1 +{re.escape(self.ROW)}\n')
+                self.assertNotIn('NEEDS YOU', self.output)
+
+                if argv == ('status', '--all'):
+                    self.assertNotIn('MERGED', self.output)
 
         self.assertEqual(self.main('status', '-v'), 0, self.errors)
         self.assertIn(f'shop/{FEATURE} 01-x: ', self.output)
@@ -1022,7 +1025,7 @@ class NudgeTest(DeferredCommandCase):
                 self.main('status')
                 self.assertNotIn(FEATURE, self.output)
                 self.main('status', '--all')
-                self.assertIn(f'{FEATURE} (PR #5)', self.output)
+                self.assertRegex(self.output, rf'MERGED\n · {FEATURE} +1/1 +PR #5  https://example/pull/5\n')
                 self.main('status', '-v')
                 self.assertNotIn(f'shop/{FEATURE}', self.output)
                 self.main('show', FEATURE)
@@ -1034,6 +1037,7 @@ class NudgeTest(DeferredCommandCase):
         self.assertEqual(self.main('status'), 0, self.errors)
         self.assertIn('NEEDS YOU', self.output)
         self.assertIn('deferred items unreadable: ', self.output)
+        self.assertNotIn('DEFERRED', self.output)
         self.assertEqual(self.main('status', '-v'), 0, self.errors)
         self.assertIn('  deferred items unreadable: ', self.output)
 
@@ -1041,7 +1045,7 @@ class NudgeTest(DeferredCommandCase):
         self.seed(FEATURE, '01', [GAP])
         self.seed(FEATURE, '02', [], closed=False)
         self.main('status')
-        self.assertNotIn('deferred to sweep', self.output)
+        self.assertNotIn('open item', self.output)
         self.main('status', '-v')
         self.assertNotIn('deferred-sweep', self.output)
 
@@ -1077,7 +1081,7 @@ class NudgeTest(DeferredCommandCase):
         self.assertEqual(json.loads(core.deferred_file(REPO, FEATURE).read_text())['01.1']['owner'], 'follow-ups')
         self.main('status')
         self.assertNotIn(self.ROW, self.output)
-        self.assertNotIn('NEEDS YOU', self.output)
+        self.assertNotIn('DEFERRED', self.output)
 
 
 class MergePingTest(DeferredCase):
