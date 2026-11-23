@@ -5171,8 +5171,8 @@ class AdmissionTest(RunnerCase):
                 mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=12.34):
             self.main('status')
             memory = self.output.splitlines()[1]
-            self.assertEqual(memory, 'memory   VMs use 10.0 GiB of 16.5 soft cap (19.5 hard) · reserved 15.0 GiB: '
-                                     'stages 0.0 + CI 15.0 · host free 12.3 GiB (floor 0)', 'stopped VMs hold nothing')
+            self.assertEqual(memory, 'memory   VMs 10.0/16.5 · reserved 15.0/16.5 · host free 12.3 GiB',
+                             'stopped VMs hold nothing')
             self.assertTrue(self.output.splitlines()[0].endswith(
                 '   [stages queue: reserved 15.0 + 8.5 GiB > 16.5 (high)]'), "the queued step's VM would not fit")
             write(self.fixture.sbx / 'meta.json', json.dumps({
@@ -5182,17 +5182,66 @@ class AdmissionTest(RunnerCase):
             }))
             self.main('status')
             memory = self.output.splitlines()[1]
-            self.assertIn('reserved 24.5 GiB: stages 17.0 + CI 7.5 (over 16.5 by 8.0) · host free', memory)
+            self.assertEqual(memory, 'memory   VMs 10.0/16.5 · reserved 24.5 > 16.5 · host free 12.3 GiB')
             self.assertEqual(self.output.splitlines()[0].count('['), 1, 'reserved over the budget is no badge of its own')
             write(cgroup / 'memory.high', 'max\n')
             self.main('status')
             memory = self.output.splitlines()[1]
-            self.assertIn('VMs use 10.0 GiB (19.5 hard cap) · reserved 24.5 GiB: stages 17.0 + CI 7.5 · host', memory,
-                          'no MemoryHigh: no budget to be over')
+            self.assertEqual(memory, 'memory   VMs 10.0/19.5 hard · reserved 24.5 · host free 12.3 GiB',
+                             'no MemoryHigh: no budget to be over')
 
             write(self.fixture.sbx / 'meta.json', json.dumps({'pl-shop-thing-01': {'status': 'stopped'}}))
             self.main('status')
-            self.assertIn('reserved 0.0 GiB · host free', self.output.splitlines()[1])
+            self.assertEqual(self.output.splitlines()[1], 'memory   VMs 10.0/19.5 hard · reserved 0.0 · host free 12.3 GiB')
+
+    def test_the_memory_line_fits_80_columns_and_marks_each_alarm(self):
+        def line(**values):
+            return core.render(view_model([], memory=memory_reading(**values)), width=80)[1]
+
+        self.assertEqual(line(), 'memory   VMs 10.0/16.5 · reserved 24.5/26.5 · host free 13.5 GiB')
+        self.assertEqual(line(high=float('inf')), 'memory   VMs 10.0/19.5 hard · reserved 24.5/26.5 · host free 13.5 GiB')
+        self.assertEqual(line(high=float('inf'), max=float('inf')),
+                         'memory   VMs 10.0 · reserved 24.5/26.5 · host free 13.5 GiB')
+        self.assertEqual(line(high=None, max=None, budget=None), 'memory   VMs 10.0 · reserved 24.5 · host free 13.5 GiB')
+        self.assertEqual(line(reservations=None, floor=None, free=3.0), 'memory   VMs 10.0/16.5 · host free 3.0 GiB')
+        alarms = {'budget': 23 * 1024, 'free': 9.99}
+        self.assertEqual(line(**alarms), 'memory   VMs 10.0/16.5 · reserved 24.5 > 23.0 · host free 9.9 < 10 GiB')
+        self.assertEqual(core.render(view_model([], memory=memory_reading(**alarms)), color=True, width=80)[1],
+                         'memory   VMs 10.0/16.5 · \x1b[33mreserved 24.5 > 23.0\x1b[0m · '
+                         '\x1b[33mhost free 9.9 < 10 GiB\x1b[0m')
+        self.assertEqual(line(free=10.0), 'memory   VMs 10.0/16.5 · reserved 24.5/26.5 · host free 10.0 GiB',
+                         'at the floor still fits, as sbx-host decides')
+        widest = memory_reading(current=99.9 * 2**30, high=float('inf'), max=99.9 * 2**30, budget=88.8 * 1024,
+                                reservations=[('x', 'pl', 99.9 * 1024)], free=88.88, floor=99)
+        self.assertEqual(core.memory_line(widest)[0],
+                         'memory   VMs 99.9/99.9 hard · reserved 99.9 > 88.8 · host free 88.8 < 99 GiB')
+        self.assertLessEqual(core.text_width(core.memory_line(widest)[0]), 80, 'every part at its widest below 100 GiB')
+
+    def test_status_verbose_splits_the_reservations_and_shows_the_floor(self):
+        cgroup = self.fixture.base / 'cgroup/sbx.service'
+        write(cgroup / 'memory.current', str(10 * 2**30) + '\n')
+        write(cgroup / 'memory.high', str(16 * 2**30 + 2**29) + '\n')
+        write(self.fixture.sbx / 'meta.json', json.dumps({
+            'ci-1-1': {'status': 'running', 'memory_mib': 8192},
+            'pl-shop-thing-01': {'status': 'running', 'memory_mib': 8192},
+            'pl-shop-thing-02': {'status': 'running', 'memory_mib': 8192},
+        }))
+
+        with mock.patch.multiple(core.sbx_host, CGROUP_ROOT=self.fixture.base / 'cgroup', cgroup=lambda: cgroup), \
+                mock.patch.object(core.sbx_host, 'mem_available_gib', return_value=12.34):
+            self.main('status', '-v')
+            self.assertIn('\nreserved: 24.5 GiB of 16.5 (high) · stages 17.0 + CI 7.5 · ', self.output)
+            self.assertIn('\nhost free 12.3 GiB (floor 0)\n', self.output)
+            write(self.fixture.sbx_host_config, '{broken')
+            self.main('status', '-v')
+            self.assertIn('\nhost free 12.3 GiB (floor ?)\n', self.output)
+            self.main('status')
+            self.assertEqual(self.output.splitlines()[1], 'memory   VMs 10.0/16.5 · host free 12.3 GiB',
+                             'no reservations and no floor to be under')
+            write(self.fixture.sbx / 'meta.json', json.dumps({}))
+            write(self.fixture.sbx_host_config, json.dumps({'floorGib': 0}))
+            self.main('status', '-v')
+            self.assertIn('\nreserved: 0.0 GiB of 16.5 (high)\n', self.output)
 
     def test_low_memory_queues(self):
         self.happy_path()
@@ -5557,6 +5606,14 @@ def view_model(rows, **extra):
     return {'now': time.time(), 'usage': None, 'slots': (1, 2), 'memory': None, 'ci': [], 'badges': [],
             'show_all': False, 'rows': rows, 'order': [], 'repos': len({row['repo'] for row in rows}), 'skipped': [],
             'backlog': [], **extra}
+
+
+def memory_reading(**values):
+    """The memory fields the compact line reads: 10 GiB used of a 16.5 soft and 19.5 hard cap, 24.5 GiB reserved of a
+    26.5 budget, 13.5 GiB free above a 10 GiB floor."""
+    return {'current': 10 * 2**30, 'high': 16.5 * 2**30, 'max': 19.5 * 2**30,
+            'reservations': [('pl-shop-a-01', 'pl', 17 * 1024), ('ci-1-1', 'ci', 7.5 * 1024)], 'budget': 26.5 * 1024,
+            'free': 13.5, 'floor': 10, **values}
 
 
 MOCKUP_ROWS = [
@@ -5943,8 +6000,10 @@ class ViewTest(RunnerCase):
         self.assertEqual(core.clip('x' * 50, None), 'x' * 50)
 
     def test_the_status_matches_the_mockup_at_150_and_80_columns(self):
-        model = view_model(MOCKUP_ROWS, ci=[(1, 'busy'), (2, 'busy')])
+        memory = memory_reading(current=15.7 * 2**30, reservations=[('pl-shop-a-01', 'pl', 24.9 * 1024)])
+        model = view_model(MOCKUP_ROWS, ci=[(1, 'busy'), (2, 'busy')], memory=memory)
         self.assertEqual(core.render(model, width=150)[1:], [
+            'memory   VMs 15.7/16.5 · reserved 24.9/26.5 · host free 13.5 GiB',
             'CI       ci-1 busy · ci-2 busy   (ci-runner status)',
             '',
             'NEEDS YOU',
@@ -5974,6 +6033,7 @@ class ViewTest(RunnerCase):
         ])
         command_indent = ' ' * 38
         self.assertEqual(core.render(model, width=80)[1:], [
+            'memory   VMs 15.7/16.5 · reserved 24.9/26.5 · host free 13.5 GiB',
             'CI       ci-1 busy · ci-2 busy   (ci-runner status)',
             '',
             'NEEDS YOU',
@@ -6315,7 +6375,16 @@ class ViewTest(RunnerCase):
 
         self.assertIn('CI       ci-1 busy · ci-2 VM up · ci-3 unit inactive   (ci-runner status)', self.output)
         self.assertEqual(self.output.splitlines()[1], 'CI       ci-1 busy · ci-2 VM up · ci-3 unit inactive   '
-                                                       '(ci-runner status)', 'right under the header (and memory)')
+                                                       '(ci-runner status)', 'right under the header')
+        cgroup = self.fixture.base / 'cgroup/sbx.service'
+        write(cgroup / 'memory.current', str(10 * 2**30) + '\n')
+
+        with mock.patch.object(core, 'ci_units', return_value={1: True, 2: True, 3: False}), \
+                mock.patch.multiple(core.sbx_host, CGROUP_ROOT=self.fixture.base / 'cgroup', cgroup=lambda: cgroup):
+            self.main('status')
+
+        self.assertTrue(self.output.splitlines()[1].startswith('memory   VMs 10.0'), self.output)
+        self.assertTrue(self.output.splitlines()[2].startswith('CI       ci-1 busy'), 'right under memory')
         self.main('status')
         self.assertIn('CI       ci-1 unit inactive (VM left) · ci-2 unit inactive (VM left)', self.output)
 

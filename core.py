@@ -1246,7 +1246,8 @@ def sbx_service_summary(active, memory):
 
 
 def reserved_summary(memory):
-    """`status -v`'s reservations line: the total against the budget, then each VM (and the CI lane) at its reserve."""
+    """`status -v`'s reservations line: the total against the budget, by owner, then each VM (and the CI lane) at its
+    reserve."""
     counted = memory['reservations']
 
     if counted is None:
@@ -1256,8 +1257,11 @@ def reserved_summary(memory):
     budget = memory['budget']
     head = f'reserved: {total / 1024:.1f} GiB' + (f" of {budget / 1024:.1f} ({memory['budget_name']})"
                                                   if budget is not None else '')
+    owners = {kind: sum(mib for _, owner, mib in counted if owner == kind) / 1024 for kind in ('pl', 'ci', 'other')}
+    split = [f"stages {owners['pl']:.1f} + CI {owners['ci']:.1f}" +
+             (f" + other {owners['other']:.1f}" if owners['other'] else '')] if total else []
 
-    return ' · '.join([head] + [f'{name} {mib / 1024:.1f}' for name, _, mib in counted])
+    return ' · '.join([head] + split + [f'{name} {mib / 1024:.1f}' for name, _, mib in counted])
 
 
 def admission_problem(slot=True, probe=True, name=None, listed=None, memory=None):
@@ -3839,6 +3843,8 @@ def command_status_verbose(show_all=False, probes=None):
 
     if active:
         print(reserved_summary(memory))
+        floor = '?' if memory['floor'] is None else memory['floor']
+        print(f"host free {sbx_host.floor_tenth(memory['free'])} GiB (floor {floor})")
 
     print(f"template: {host['template_summary'] if active else f'? ({SBX_UNIT} not active)'}")
 
@@ -4276,38 +4282,43 @@ def header_line(model):
 
 
 def memory_line(memory):
-    """(line, the part to paint yellow or None): the VMs' memory against both caps, what the VMs reserve (by owner,
-    against the budget), and the host's free memory against the stage floor. None unless the unit's cgroup reads."""
+    """(line, the alarm parts to paint yellow): the VMs' memory against the soft cap (else the hard one), what the VMs
+    reserve against the budget, and the host's free memory, marked when below the stage floor as sbx_host.fits
+    decides. (None, []) unless the unit's cgroup reads. `status -v` holds the detail."""
     if not memory or memory['current'] is None:
-        return None, None
+        return None, []
+
+    vms = f"VMs {gib(memory['current'])}"
 
     if memory['high'] not in (None, float('inf')):
-        caps = f" of {gib(memory['high'])} soft cap ({gib(memory['max'])} hard)"
-    else:
-        caps = f" ({gib(memory['max'])} hard cap)" if memory['max'] not in (None, float('inf')) else ''
+        vms += f"/{gib(memory['high'])}"
+    elif memory['max'] not in (None, float('inf')):
+        vms += f"/{gib(memory['max'])} hard"
 
-    parts, over = [f"VMs use {gib(memory['current'])} GiB{caps}"], None
-    counted = memory['reservations']
+    parts, alarms = [vms], []
+    counted, budget = memory['reservations'], memory['budget']
 
     if counted is not None:
         total = sum(mib for _, _, mib in counted)
-        owners = {kind: sum(mib for _, owner, mib in counted if owner == kind) / 1024 for kind in ('pl', 'ci', 'other')}
-        text = f'reserved {total / 1024:.1f} GiB'
+        text = f'reserved {total / 1024:.1f}'
 
-        if total:
-            text += f": stages {owners['pl']:.1f} + CI {owners['ci']:.1f}" + \
-                (f" + other {owners['other']:.1f}" if owners['other'] else '')
-
-        if memory['budget'] is not None and total > memory['budget']:
-            over = f" (over {memory['budget'] / 1024:.1f} by {(total - memory['budget']) / 1024:.1f})"
-            text += over
+        if budget is not None and total > budget:
+            text += f' > {budget / 1024:.1f}'
+            alarms.append(text)
+        elif budget is not None:
+            text += f'/{budget / 1024:.1f}'
 
         parts.append(text)
 
-    floor = '?' if memory['floor'] is None else memory['floor']
-    parts.append(f"host free {sbx_host.floor_tenth(memory['free'])} GiB (floor {floor})")
+    free, floor = memory['free'], memory['floor']
 
-    return 'memory   ' + ' · '.join(parts), over
+    if floor is not None and free < floor:
+        alarms.append(f'host free {sbx_host.floor_tenth(free)} < {floor} GiB')
+        parts.append(alarms[-1])
+    else:
+        parts.append(f'host free {sbx_host.floor_tenth(free)} GiB')
+
+    return 'memory   ' + ' · '.join(parts), alarms
 
 
 def ci_line(slots):
@@ -4321,11 +4332,15 @@ def render(model, color=False, width=None, groups=GROUPS):
     badges = ' '.join(f'[{badge}]' for badge in model['badges'])
     first = clip(head + ('   ' + badges if badges else ''), width)
     lines = [first[:-len(badges)] + paint(badges, BADGE_COLOR, color) if badges and first.endswith(badges) else first]
-    memory, over = memory_line(model['memory'])
+    memory, alarms = memory_line(model['memory'])
 
     if memory:
         memory = clip(memory, width)
-        lines.append(memory.replace(over, paint(over, '33', color)) if over and over in memory else memory)
+
+        for alarm in alarms:
+            memory = memory.replace(alarm, paint(alarm, '33', color))
+
+        lines.append(memory)
 
     if ci_line(model['ci']):
         lines.append(clip(ci_line(model['ci']), width))
