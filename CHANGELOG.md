@@ -6,6 +6,20 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+**Rerun the gate:** no (only the status text changes).
+
+### Added
+
+- `p` pauses and resumes `pipeline status --watch`. A frame taller than the window ends with
+  `… N more lines (make the window taller)`.
+
+### Changed
+
+- `pipeline status --watch` draws on the normal screen, so the mouse selects and copies its text, also in tmux with
+  `mouse on`. Earlier output scrolls up first. On quit the last frame stays above the prompt. Lines stop one column
+  short of the window's edge. Closing the watch's input ends it.
+- An overlong line of `pipeline status` or `pipeline queue` is cut with `…` like the others, instead of wrapping.
+
 ## v0.16 - 2026-11-17
 
 **Rerun the gate:** no (no stage kit or `STAGES` change).
