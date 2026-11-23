@@ -6032,8 +6032,11 @@ class ViewTest(RunnerCase):
                     self.assertIn('line 4', output)
 
     def test_watch_lines_stop_one_column_short_of_the_edge(self):
-        for verbose in (False, True):
-            with self.subTest(verbose=verbose):
+        overflowing = {'size': (20, 6), 'render': lambda *arguments: [f'line {index}' for index in range(10)]}
+
+        for name, options, expected in (('status', {}, 'paused · p resumes…'), ('verbose', {'verbose': True}, 'paused · p resumes…'),
+                                        ('overflow', overflowing, '… 6 more lines (ma…')):
+            with self.subTest(name):
                 keyboard, terminal = FakeKeyboard(self), FakeTerminal()
 
                 def pause():
@@ -6041,10 +6044,10 @@ class ViewTest(RunnerCase):
                     self.until(lambda: 'paused' in terminal.getvalue())
 
                 self.quit_after(keyboard, terminal, 2, pause)
-                self.assertEqual(self.watch(keyboard, terminal, size=(20, 20), verbose=verbose), 0)
+                self.assertEqual(self.watch(keyboard, terminal, **{'size': (20, 20), **options}), 0)
                 pieces = [re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', re.sub(r'\x1b\]8;;[^\x1b]*\x1b\\', '', piece))
                           for piece in re.split(r'\n|\r|\x1b\[H', terminal.getvalue())]
-                self.assertIn('paused', ''.join(pieces))
+                self.assertIn(expected, pieces)
                 self.assertEqual([piece for piece in pieces if core.text_width(piece) > 19], [])
 
     def test_watch_scrolls_the_screen_away_again_after_a_resize(self):
