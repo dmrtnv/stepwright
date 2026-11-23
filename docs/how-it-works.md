@@ -168,7 +168,8 @@ Unknown keys are an error.
     parked. Every check runs before anything is written. A brief an earlier filing wrote is found by its Pointers
     line, and the item is closed instead of filed twice (done, when that brief is archived);
   - a fully merged feature with open items shows under DEFERRED in `status` and `queue` as
-    `n open item(s) → /deferred-sweep <name>`; `status -v`, `show` and the last merge's ping say
+    `n open item(s) → /deferred-sweep <name>`; `status -v` and `show` say
+    `next: /deferred-sweep <name> (n deferred to sweep)`; the last merge's ping says
     `n deferred to sweep → /deferred-sweep <name>`;
   - `/deferred-sweep [<name>] [--repo <o>/<r>]` in a Claude session on the host judges each open item of a fully
     merged feature on `pipeline deferred --json --evidence`, by the verdicts in its `rubric.md`, and records a
