@@ -1,6 +1,6 @@
 ---
 name: deferred-sweep
-description: Sweep the open deferred items of a finished pipeline feature (the `pipeline` CLI, stepwright's `core.py`). Judge each item on the evidence the runner gathers from the default branch, file the ones still worth a PR as step briefs with `pipeline deferred file` (into a matching feature, else `follow-ups`), ask the owner one batched question for won't do items and live filings, and record a verdict for each with `pipeline deferred close`. Use when status or queue says "deferred to sweep → /deferred-sweep <name>".
+description: Sweep the open deferred items of a finished pipeline feature (the `pipeline` CLI, stepwright's `core.py`). Judge each item on the evidence the runner gathers from the default branch, file the ones still worth a PR as step briefs with `pipeline deferred file` (into a matching feature, else `follow-ups`), ask the owner one batched question for won't do items and live filings, and record a verdict for each with `pipeline deferred close`. Use when status or queue lists the feature under DEFERRED, or the merge ping says "deferred to sweep → /deferred-sweep <name>".
 disable-model-invocation: true
 argument-hint: "[<feature>] [--repo <owner>/<repo>]"
 ---

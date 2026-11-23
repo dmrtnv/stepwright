@@ -8168,7 +8168,8 @@ COMMANDS = {
                 "accept plan.md's answers (or let respond fix review round 2's findings)", 'daily'),
     'revise': ('revise <feature> [--repo <o>/<r>]', 'send the plan back (`## Feedback` in plan.md)', 'daily'),
     'respond': ('respond <feature> [--repo <o>/<r>]', 'turn your PR comments into a respond round, now', 'daily'),
-    'queue': ('queue', 'running, queued in start order, held, waiting, needs you, backlog', 'queue'),
+    'queue': ('queue', 'running, queued in start order, waiting, held, needs you, review & merge, deferred, backlog',
+              'queue'),
     'deferred': ('deferred [<feature>] [--json [--evidence]] [--repo <o>/<r>] | deferred close <feature> <NN.K> '
                  'done|moot|wontdo <note> | deferred close <feature> <NN.K> owned <target> [<note>] | deferred file '
                  '<feature> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no | deferred sweep',

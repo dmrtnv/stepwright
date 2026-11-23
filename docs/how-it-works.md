@@ -121,16 +121,23 @@ Unknown keys are an error.
   log `~/.local/state/pipeline/<repo>-<name>.out`).
 - See what needs you: `pipeline status`:
   - header (claude usage, `stages n running of p`, badges only when abnormal, each with its fix);
-  - a `memory` line (the VMs' use against sbx.service's soft cap MemoryHigh and hard cap MemoryMax; `reserved` =
-    what every VM not stopped may grow to, by owner, stages + CI (`sbx-host status`), `(over X by Y)` in yellow
-    above the budget; host free against the stage floor);
-  - then NEEDS YOU · RUNNING (stage, time, last tool call) · QUEUED (start order) · `CI` (each optional companion CI
-    runner slot, when there is one) · HELD (`after X: a → b, c` chains in merge order, then `by you: …`; a held feature
-    whose PR waits stays in WAITING with `· held`) · WAITING;
+  - a `memory` line, `VMs used/soft cap · reserved total/budget · host free N GiB`: the VMs' use against
+    sbx.service's soft cap MemoryHigh (`/N hard` when only MemoryMax is set); `reserved` = what every VM not stopped
+    may grow to (`sbx-host status`); the host's free memory. Over the budget it reads `reserved 31.2 > 26.5`, below
+    the stage floor `host free 9.9 < 10 GiB`, each in yellow;
+  - a `CI` line under it: each optional companion CI runner slot, when there is one;
+  - then one section per kind of row, each after a blank line: NEEDS YOU (a plan's questions, a review's call, a
+    paused stage or PR, something unreadable) · REVIEW & MERGE (`PR #N green`) · RUNNING (stage, time, last tool
+    call) · QUEUED (start order) · WAITING (CI, a limit, a retry; a held feature whose PR waits stays here with
+    `· held`) · HELD (`after X` or `by you → pipeline start <name>`, in merge order) · DEFERRED;
+  - each row is a mark (`!`, `✓`, `▶`, the queue number or `·`), the name, the step as `n/m` (plus `auto`), the
+    text, then the command or the PR link. A row too wide for the window drops the URL (`PR #N` stays a link), then
+    puts the command on its own line under the text, then cuts the text;
   - `--watch [-n s]` redraws in place on the normal screen, so the mouse selects text (also in tmux with
     `mouse on`); `p` pauses and resumes; `q` quits and leaves the last frame;
   - `--all` adds merged features that are not archived;
-  - `-v` the full per-step view (every reservation, sandbox, PR/CI, fix, hold, autonomy, next command).
+  - `-v` the full per-step view (the reservations by owner, stages + CI, and each VM; `host free N GiB (floor F)`;
+    every sandbox, PR/CI, fix, hold, autonomy, next command).
 - One feature in full: `pipeline show <name>` (autonomy and hold, every step, the full reason, the next command,
   files, PR/CI, logs, last 5 history entries).
 - Sweep deferred items: `pipeline deferred [<name>] [--json [--evidence]] [--repo <o>/<r>]`:
@@ -160,8 +167,9 @@ Unknown keys are an error.
     note `filed as <path>`. `follow-ups` is used where it is, moved from `_archive/` to `_backlog/`, or created
     parked. Every check runs before anything is written. A brief an earlier filing wrote is found by its Pointers
     line, and the item is closed instead of filed twice (done, when that brief is archived);
-  - a fully merged feature with open items shows under NEEDS YOU as `n deferred to sweep → /deferred-sweep <name>`
-    (in `status`, `queue`, `status -v` and `show` too), and the last merge's ping says so;
+  - a fully merged feature with open items shows under DEFERRED in `status` and `queue` as
+    `n open item(s) → /deferred-sweep <name>`; `status -v`, `show` and the last merge's ping say
+    `n deferred to sweep → /deferred-sweep <name>`;
   - `/deferred-sweep [<name>] [--repo <o>/<r>]` in a Claude session on the host judges each open item of a fully
     merged feature on `pipeline deferred --json --evidence`, by the verdicts in its `rubric.md`, and records a
     verdict for each. It runs no git. An item still worth a PR becomes a step brief through `pipeline deferred file`,
@@ -196,7 +204,8 @@ Unknown keys are an error.
   - blocked/failed stages still stop.
 - Act on your PR comments: `pipeline respond <name>` (your review, inline and conversation comments since the last
   round).
-- See and steer the queue: `pipeline queue` (running, queued in start order, held, waiting, needs you, backlog);
+- See and steer the queue: `pipeline queue` (running, queued in start order, waiting, held, needs you, review &
+  merge, deferred, backlog);
   `pipeline order <a> <b>` (start these first).
 - Hold a feature: `pipeline pause <name>` (its running stage finishes, no new one starts; `--now` interrupts it,
   resumable); `pipeline start <name>` lifts it.

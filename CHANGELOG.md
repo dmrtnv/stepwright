@@ -19,6 +19,18 @@ What changed for you in each release, newest first. Each release says whether to
   `mouse on`. Earlier output scrolls up first. On quit the last frame stays above the prompt. Lines stop one column
   short of the window's edge. Closing the watch's input ends it.
 - An overlong line of `pipeline status` or `pipeline queue` is cut with `…` like the others, instead of wrapping.
+- `pipeline status` and `pipeline queue` show every section but BACKLOG as aligned rows: mark, name, step as `n/m`
+  (plus `auto`), text, then the command or the PR link. WAITING, HELD and MERGED rows gain the step and the PR link.
+  One blank line comes before each section, and the `CI` line sits under `memory`.
+- NEEDS YOU splits in three. A green PR shows under REVIEW & MERGE as `PR #N green`. A merged feature's open deferred
+  items show under DEFERRED as `n open item(s) → /deferred-sweep <name>`. `plan asks 2` reads
+  `plan asks 2 questions`.
+- HELD rows read `after X` or `by you → pipeline start <name>`, in merge order, instead of `after X: a → b` chains.
+- A row too wide for the window drops its URL first, then puts its command on its own line, whole, then cuts the
+  text.
+- The `memory` line fits 80 columns: `VMs used/soft cap · reserved total/budget · host free N GiB`. Over the budget
+  it reads `reserved 31.2 > 26.5`, below the floor `host free 9.9 < 10 GiB`, in yellow. The stages + CI split and the
+  floor move to `pipeline status -v`.
 
 ## v0.16 - 2026-11-17
 
