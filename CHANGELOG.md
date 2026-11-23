@@ -6,6 +6,8 @@ What changed for you in each release, newest first. Each release says whether to
 
 ## Unreleased
 
+## v0.17 - 2026-11-23
+
 **Rerun the gate:** no (only the status text changes).
 
 ### Added
