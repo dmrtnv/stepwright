@@ -1246,7 +1246,8 @@ def sbx_service_summary(active, memory):
 
 
 def reserved_summary(memory):
-    """`status -v`'s reservations line: the total against the budget, then each VM (and the CI lane) at its reserve."""
+    """`status -v`'s reservations line: the total against the budget, by owner, then each VM (and the CI lane) at its
+    reserve."""
     counted = memory['reservations']
 
     if counted is None:
@@ -1256,8 +1257,11 @@ def reserved_summary(memory):
     budget = memory['budget']
     head = f'reserved: {total / 1024:.1f} GiB' + (f" of {budget / 1024:.1f} ({memory['budget_name']})"
                                                   if budget is not None else '')
+    owners = {kind: sum(mib for _, owner, mib in counted if owner == kind) / 1024 for kind in ('pl', 'ci', 'other')}
+    split = [f"stages {owners['pl']:.1f} + CI {owners['ci']:.1f}" +
+             (f" + other {owners['other']:.1f}" if owners['other'] else '')] if total else []
 
-    return ' · '.join([head] + [f'{name} {mib / 1024:.1f}' for name, _, mib in counted])
+    return ' · '.join([head] + split + [f'{name} {mib / 1024:.1f}' for name, _, mib in counted])
 
 
 def admission_problem(slot=True, probe=True, name=None, listed=None, memory=None):
@@ -3839,6 +3843,8 @@ def command_status_verbose(show_all=False, probes=None):
 
     if active:
         print(reserved_summary(memory))
+        floor = '?' if memory['floor'] is None else memory['floor']
+        print(f"host free {sbx_host.floor_tenth(memory['free'])} GiB (floor {floor})")
 
     print(f"template: {host['template_summary'] if active else f'? ({SBX_UNIT} not active)'}")
 
@@ -3863,14 +3869,15 @@ def command_status_verbose(show_all=False, probes=None):
 
 # ---------------------------------------------------------------------------------------------- views
 
-GROUPS = (('needs', 'NEEDS YOU'), ('running', 'RUNNING'), ('queued', 'QUEUED'), ('held', 'HELD'), ('waiting', 'WAITING'),
-          ('closed', 'MERGED'))
-QUEUE_GROUPS = (('running', 'RUNNING'), ('queued', 'QUEUED'), ('held', 'HELD'), ('waiting', 'WAITING'),
-                ('needs', 'NEEDS YOU'), ('backlog', 'BACKLOG'))
-LISTED_GROUPS = ('held', 'waiting', 'closed')  # one wrapped line of `name (why)` items each
-GROUP_COLORS = {'needs': '31', 'running': '32', 'queued': '2', 'held': '33', 'waiting': '33', 'closed': '2'}
+GROUPS = (('needs', 'NEEDS YOU'), ('review', 'REVIEW & MERGE'), ('running', 'RUNNING'), ('queued', 'QUEUED'),
+          ('waiting', 'WAITING'), ('held', 'HELD'), ('deferred', 'DEFERRED'), ('closed', 'MERGED'))
+QUEUE_GROUPS = (('running', 'RUNNING'), ('queued', 'QUEUED'), ('waiting', 'WAITING'), ('held', 'HELD'),
+                ('needs', 'NEEDS YOU'), ('review', 'REVIEW & MERGE'), ('deferred', 'DEFERRED'), ('backlog', 'BACKLOG'))
+GROUP_COLORS = {'needs': '31', 'review': '32', 'running': '36', 'queued': '2', 'waiting': '33', 'held': '33',
+                'deferred': '', 'closed': '2'}
 BADGE_COLOR = '1;31'
-ICONS = {'needs': '✋', 'running': '▶'}
+MARKS = {'needs': '!', 'review': '✓', 'running': '▶'}
+NAME_COLUMN_MAX = 28
 PROBE_SECONDS = 15  # sbx, cgroup and template readings in --watch, at most this often
 ACTIVITY_BYTES = 64 * 1024
 TOOL_TARGET_KEYS = ('file_path', 'command', 'pattern', 'path', 'description', 'url', 'prompt', 'query')
@@ -4000,8 +4007,8 @@ def ci_green(state):
 
 
 def step_view(state, run_held, now):
-    """(group, text, link) for a feature's current step in the compact status: what it does or waits for, in a few
-    words, and what you type next when it is yours."""
+    """(group, text, link, action) for a feature's current step in the compact status: what it does or waits for, in
+    a few words, the PR's URL when it names one, and the command you type next when it is yours (else None)."""
     feature, stage, status = state['feature'], state['stage'], state['status']
     reason = headline(state['reason'])
     pr = state['pr'] or {}
@@ -4009,39 +4016,41 @@ def step_view(state, run_held, now):
     if status == 'awaiting-approval':
         if stage == 'plan':
             count = len((state['results'].get('plan') or {}).get('questions') or [])
-            return 'needs', f'plan asks {count} → pipeline answer {feature}', None
+            return 'needs', f"plan asks {plural(count, 'question')}", None, f'pipeline answer {feature}'
 
         blocking = (state['results'].get(f"review-{state['round']}") or {}).get('blocking') or '?'
-        return 'needs', f'review {state["round"]}: {blocking} blocking → pipeline approve {feature}', None
+        return 'needs', f'review {state["round"]}: {blocking} blocking', None, f'pipeline approve {feature}'
 
     if status == 'paused':
         where = f"PR #{pr['number']}" if stage == 'done' and pr else stage
-        return 'needs', f'{where} paused: {reason} → pipeline show {feature}', pr.get('url') if stage == 'done' else None
+        return ('needs', f'{where} paused: {reason}', pr.get('url') if stage == 'done' else None,
+                f'pipeline show {feature}')
 
     if stage == 'done' and status == 'done' and pr:
         if ci_green(state):
-            return 'needs', f"PR #{pr['number']} green → review & merge", pr.get('url')
+            return 'review', f"PR #{pr['number']} green", pr.get('url'), None
 
-        return 'waiting', f"PR #{pr['number']} CI {'fix ' if state['ci'].get('fixes') else ''}running", pr.get('url')
+        return ('waiting', f"PR #{pr['number']} CI {'fix ' if state['ci'].get('fixes') else ''}running", pr.get('url'),
+                None)
 
     if run_held:
         if status == 'running':
             since = stage_since(state)
             parts = [reason.split()[0] if reason else stage, duration(now - since) if since else '', activity(state) or '']
-            return 'running', '  '.join(part for part in parts if part), None
+            return 'running', '  '.join(part for part in parts if part), None, None
 
-        return 'running', f'{stage}: {reason or "starting"}', None
+        return 'running', f'{stage}: {reason or "starting"}', None, None
 
     if status == 'running':
-        return 'waiting', f'{stage}: run died, tick resumes it', None
+        return 'waiting', f'{stage}: run died, tick resumes it', None, None
 
     if (state['not_before'] or 0) > now:
-        return 'waiting', waiting_text(reason), None
+        return 'waiting', waiting_text(reason), None, None
 
     if not state['history']:
-        return 'queued', stage, None
+        return 'queued', stage, None, None
 
-    return 'queued', f"{stage} · {reason.removeprefix('queued: ')}"[:120], None
+    return 'queued', f"{stage} · {reason.removeprefix('queued: ')}"[:120], None, None
 
 
 def waiting_text(reason):
@@ -4057,7 +4066,8 @@ def waiting_text(reason):
 
 def feature_view(repo, feature, now, control):
     """One feature's row for the compact status. Your hold shows unless the step needs you anyway."""
-    view = {'repo': repo, 'feature': feature, 'position': '', 'link': None, 'queue': (0, ''), 'hold': None}
+    view = {'repo': repo, 'feature': feature, 'position': '', 'link': None, 'action': None, 'queue': (0, ''),
+            'hold': None}
 
     try:
         feature_steps = steps(repo, feature)
@@ -4065,22 +4075,27 @@ def feature_view(repo, feature, now, control):
     except (*ERRORS, OSError, ValueError) as error:
         return dict(view, group='needs', text=f'unreadable: {headline(str(error))[:160]}')
 
+    control_of = feature_control(repo, feature)
+    auto = ' auto' if control_of['autonomy'] == 'auto' else ''
     index = next((index for index, state in enumerate(states) if state['status'] != 'closed'), None)
 
     if index is None:
-        sweep = sweep_line(repo, feature)
+        view['position'] = f'{len(feature_steps)}/{len(feature_steps)}{auto}'
+        count, problem = sweep_due(repo, feature)
 
-        if sweep:
-            return dict(view, group='needs', text=sweep)
+        if problem:
+            return dict(view, group='needs', text=problem)
 
-        merged = (states[-1].get('merged') or {}).get('number')
-        return dict(view, group='closed', text=f'PR #{merged}' if merged else 'merged')
+        if count:
+            return dict(view, group='deferred', text=plural(count, 'open item'), action=f'/deferred-sweep {feature}')
+
+        merged = states[-1].get('merged') or {}
+        return dict(view, group='closed', text=f"PR #{merged['number']}" if merged.get('number') else 'merged',
+                    link=merged.get('url'))
 
     state = states[index]
-    group, text, link = step_view(state, locked(run_lock(repo, feature)), now)
-
-    control_of = feature_control(repo, feature)
-    position = f'{index + 1:02}/{len(feature_steps):02}' + (' auto' if control_of['autonomy'] == 'auto' else '')
+    group, text, link, action = step_view(state, locked(run_lock(repo, feature)), now)
+    position = f'{index + 1}/{len(feature_steps)}{auto}'
 
     waiting_for = after_unmet(repo, control_of['after']) if control_of['after'] and not control_of['hold'] else None
     hold = 'you' if control_of['hold'] else control_of['after'] if waiting_for else None
@@ -4092,8 +4107,9 @@ def feature_view(repo, feature, now, control):
             text += ' · held'  # its PR still waits for CI or you; the hold stops only the next stage
         elif group in ('queued', 'waiting'):
             group, text = 'held', waiting_for or 'by you'
+            action = f'pipeline start {feature}' if hold == 'you' else None
 
-    return dict(view, group=group, text=text, link=link, position=position, hold=hold,
+    return dict(view, group=group, text=text, link=link, action=action, position=position, hold=hold,
                 queue=queue_key(repo, feature, state, control['order']))
 
 
@@ -4266,38 +4282,43 @@ def header_line(model):
 
 
 def memory_line(memory):
-    """(line, the part to paint yellow or None): the VMs' memory against both caps, what the VMs reserve (by owner,
-    against the budget), and the host's free memory against the stage floor. None unless the unit's cgroup reads."""
+    """(line, the alarm parts to paint yellow): the VMs' memory against the soft cap (else the hard one), what the VMs
+    reserve against the budget, and the host's free memory, marked when below the stage floor as sbx_host.fits
+    decides. (None, []) unless the unit's cgroup reads. `status -v` holds the detail."""
     if not memory or memory['current'] is None:
-        return None, None
+        return None, []
+
+    vms = f"VMs {gib(memory['current'])}"
 
     if memory['high'] not in (None, float('inf')):
-        caps = f" of {gib(memory['high'])} soft cap ({gib(memory['max'])} hard)"
-    else:
-        caps = f" ({gib(memory['max'])} hard cap)" if memory['max'] not in (None, float('inf')) else ''
+        vms += f"/{gib(memory['high'])}"
+    elif memory['max'] not in (None, float('inf')):
+        vms += f"/{gib(memory['max'])} hard"
 
-    parts, over = [f"VMs use {gib(memory['current'])} GiB{caps}"], None
-    counted = memory['reservations']
+    parts, alarms = [vms], []
+    counted, budget = memory['reservations'], memory['budget']
 
     if counted is not None:
         total = sum(mib for _, _, mib in counted)
-        owners = {kind: sum(mib for _, owner, mib in counted if owner == kind) / 1024 for kind in ('pl', 'ci', 'other')}
-        text = f'reserved {total / 1024:.1f} GiB'
+        text = f'reserved {total / 1024:.1f}'
 
-        if total:
-            text += f": stages {owners['pl']:.1f} + CI {owners['ci']:.1f}" + \
-                (f" + other {owners['other']:.1f}" if owners['other'] else '')
-
-        if memory['budget'] is not None and total > memory['budget']:
-            over = f" (over {memory['budget'] / 1024:.1f} by {(total - memory['budget']) / 1024:.1f})"
-            text += over
+        if budget is not None and total > budget:
+            text += f' > {budget / 1024:.1f}'
+            alarms.append(text)
+        elif budget is not None:
+            text += f'/{budget / 1024:.1f}'
 
         parts.append(text)
 
-    floor = '?' if memory['floor'] is None else memory['floor']
-    parts.append(f"host free {sbx_host.floor_tenth(memory['free'])} GiB (floor {floor})")
+    free, floor = memory['free'], memory['floor']
 
-    return 'memory   ' + ' · '.join(parts), over
+    if floor is not None and free < floor:
+        alarms.append(f'host free {sbx_host.floor_tenth(free)} < {floor} GiB')
+        parts.append(alarms[-1])
+    else:
+        parts.append(f'host free {sbx_host.floor_tenth(free)} GiB')
+
+    return 'memory   ' + ' · '.join(parts), alarms
 
 
 def ci_line(slots):
@@ -4306,23 +4327,30 @@ def ci_line(slots):
 
 
 def render(model, color=False, width=None, groups=GROUPS):
-    """The compact status as lines: a header with anomaly badges, then one group per kind of row."""
+    """The compact status as lines: a header with anomaly badges, the host, then one section of rows per group."""
     head = header_line(model)
     badges = ' '.join(f'[{badge}]' for badge in model['badges'])
     first = clip(head + ('   ' + badges if badges else ''), width)
     lines = [first[:-len(badges)] + paint(badges, BADGE_COLOR, color) if badges and first.endswith(badges) else first]
-    memory, over = memory_line(model['memory'])
+    memory, alarms = memory_line(model['memory'])
 
     if memory:
         memory = clip(memory, width)
-        lines.append(memory.replace(over, paint(over, '33', color)) if over and over in memory else memory)
+
+        for alarm in alarms:
+            memory = memory.replace(alarm, paint(alarm, '33', color))
+
+        lines.append(memory)
+
+    if ci_line(model['ci']):
+        lines.append(clip(ci_line(model['ci']), width))
 
     rows = [row for row in model['rows'] if row['group'] != 'closed' or model['show_all']]
 
     def name(row):
         return f"{adapter.short(row['repo'])}/{row['feature']}" if model['repos'] > 1 else row['feature']
 
-    width_of_name = min(28, max((len(name(row)) for row in rows), default=0))
+    sections = []
 
     for group, title in groups:
         members = [row for row in rows if row['group'] == group]
@@ -4330,34 +4358,32 @@ def render(model, color=False, width=None, groups=GROUPS):
         if group == 'queued':
             members.sort(key=lambda row: row['queue'])
 
-        if group == 'backlog' and model['backlog']:
-            lines += [paint(clip(line, width), '2', color) for line in wrapped(title, model['backlog'], width)]
-
-        if group == 'held' and ci_line(model['ci']):
-            lines.append(clip(ci_line(model['ci']), width))
-
-        if not members:
-            continue
-
-        code = GROUP_COLORS[group]
-
         if group == 'held':
-            lines += [paint(clip(line, width), code, color) for line in held_lines(members, name, model['order'], width)]
+            members = held_order(members, model['order'])
+
+        if members or (group == 'backlog' and model['backlog']):
+            sections.append((group, title, members))
+
+    shown = [row for _, _, members in sections for row in members]
+    queued = sum(len(members) for group, _, members in sections if group == 'queued')
+    columns = (len(str(queued)) if queued else 1,
+               min(NAME_COLUMN_MAX, max((len(name(row)) for row in shown), default=0)),
+               max((len(row['position']) for row in shown), default=0))
+
+    for group, title, members in sections:
+        lines.append('')
+
+        if group == 'backlog':
+            lines += [paint(clip(line, width), '2', color) for line in wrapped(title, model['backlog'], width)]
             continue
 
-        if group in LISTED_GROUPS:
-            items = [f"{name(row)} ({row['text']})" for row in members]
-            lines += [paint(clip(line, width), code, color) for line in wrapped(title, items, width)]
-            continue
-
-        lines.append(paint(title, '1', color))
+        lines.append(paint(clip(title, width), '1', color))
 
         for number, row in enumerate(members, 1):
-            mark = str(number) if group == 'queued' else ICONS.get(group, '·')
-            text = f" {mark} {name(row):<{width_of_name}} {row['position']}  {row['text']}"
-            linked = f"{text}  {row['link']}" if row['link'] else text
-            text = linked if width is None or text_width(linked) <= width else clip(text, width)
-            lines.append(paint(hyperlink(text, row['link']) if color else text, code, color))
+            mark = str(number) if group == 'queued' else MARKS.get(group, '·')
+            drawn = row_lines(row, mark, name(row), columns, width)
+            drawn[0] = hyperlink(drawn[0], row['link']) if color else drawn[0]
+            lines += [paint(line, GROUP_COLORS[group], color) for line in drawn]
 
     if not model['rows']:
         lines.append(clip('no features yet', width))
@@ -4367,74 +4393,64 @@ def render(model, color=False, width=None, groups=GROUPS):
     return lines + [clip(line, width) for line in model['skipped']]
 
 
-HELD_INDENT = ' ' * 9  # under `HELD     `, `memory   `, `CI       `
+def row_lines(row, mark, name, columns, width):
+    """One row as lines: mark, name, step, text, then ` → command` and the URL. Too wide, it drops the URL, then puts
+    the command on a line of its own under the text (further left when it needs to, so it stays whole), then clips
+    the text. A name longer than the column is never cut: it pushes its own row."""
+    mark_width, name_width, step_width = columns
+    head = f" {mark:>{mark_width}} {name:<{name_width}}  {row['position']:<{step_width}}  "
+    command = f" → {row['action']}" if row['action'] else ''
+    url = f"  {row['link']}" if row['link'] else ''
+
+    for line in (head + row['text'] + command + url, head + row['text'] + command):
+        if width is None or text_width(line) <= width:
+            return [line]
+
+    lines = [clip(head + row['text'], width)]
+
+    if row['action']:
+        alone = '→ ' + row['action']
+        lines.append(clip(' ' * max(0, min(text_width(head), width - text_width(alone))) + alone, width))
+
+    return lines
 
 
-def held_lines(members, name, order, width):
-    """HELD as chains in merge order: `after X: a → b, c` per feature X still unmerged (each level waits for the one
-    before it), roots in `pipeline order` then feature order; your holds as `by you: a, b (pipeline start …)`. A cycle
-    (nothing in it has an unmerged root) falls back to `a (after b)` items."""
-    rows = {row['feature']: row for row in members}
-    waiting = {row['feature']: row['hold'] for row in members if row['hold'] not in (None, 'you')}
+def held_order(members, order):
+    """HELD's rows in merge order: for each awaited feature that is not held itself (in `pipeline order`, then by its
+    first waiting row), the rows waiting on it level by level (each level waits for the one before it); then a cycle's
+    rows; then your holds. Keyed by repo and feature, so each row comes once."""
+    def key(row):
+        return row['repo'], row['feature']
+
+    def awaited(row):
+        return row['repo'], row['hold'].partition(':')[0]
+
+    waiting = [row for row in members if row['hold'] not in (None, 'you')]
+    held = {key(row) for row in waiting}
     children = collections.defaultdict(list)
 
-    for feature, after in waiting.items():
-        children[after.partition(':')[0]].append(feature)
+    for row in waiting:
+        children[awaited(row)].append(row)
 
-    roots = [after for after in dict.fromkeys(waiting.values()) if after.partition(':')[0] not in waiting]
-    position = {feature: index for index, feature in enumerate(rows)}
+    def root_key(root):
+        name = '/'.join(root)
+        return order.index(name) if name in order else len(order), members.index(children[root][0])
 
-    def root_key(after):
-        key = f"{members[0]['repo']}/{after.partition(':')[0]}"
-        return order.index(key) if key in order else len(order), position.get(waiting_child(after), 0)
+    roots = sorted(dict.fromkeys(awaited(row) for row in waiting if awaited(row) not in held), key=root_key)
+    ordered, placed = [], set()
 
-    def waiting_child(after):
-        return next(feature for feature, value in waiting.items() if value == after)
-
-    lines, placed = [], set()
-
-    for after in sorted(roots, key=root_key):
-        level = [feature for feature, value in waiting.items() if value == after]
-        levels = []
+    for root in roots:
+        level = children[root]
 
         while level:
-            levels.append(', '.join(name(rows[feature]) for feature in level))
-            placed.update(level)
-            level = [child for feature in level for child in children[feature] if child not in placed]
+            level = [row for row in level if key(row) not in placed]
+            ordered += level
+            placed.update(key(row) for row in level)
+            level = [child for row in level for child in children[key(row)]]
 
-        label = rows[waiting_child(after)]['text']
-        lines += wrapped_chain(f'{label}: ', levels, width)
+    cycle = [row for row in waiting if key(row) not in placed]
 
-    cycle = [feature for feature in waiting if feature not in placed]
-
-    if cycle:
-        lines += wrapped_chain('', [', '.join(f"{name(rows[feature])} ({rows[feature]['text']})" for feature in cycle)],
-                               width)
-
-    mine = [name(row) for row in members if row['hold'] == 'you']
-
-    if mine:
-        lines += wrapped_chain('by you: ', [', '.join(mine) + ' (pipeline start ' +
-                                            (mine[0] if len(mine) == 1 else '<feature>') + ')'], width)
-
-    return ['HELD     ' + line[len(HELD_INDENT):] if index == 0 else line for index, line in enumerate(lines)]
-
-
-def wrapped_chain(head, levels, width):
-    """`head` + levels joined by → over as many indented lines as the width needs (wrapped between levels, clipped
-    by `render` only when one level is wider than the width)."""
-    lines, line = [], HELD_INDENT + head
-
-    for index, piece in enumerate(levels):
-        piece = piece if index == 0 else ' → ' + piece
-
-        if width and index and text_width(line + piece) > width:
-            lines.append(line)
-            line = HELD_INDENT + '  ' + piece.removeprefix(' ')
-        else:
-            line += piece
-
-    return lines + [line]
+    return ordered + cycle + [row for row in members if row['hold'] == 'you']
 
 
 def hyperlink(text, link):
@@ -4561,9 +4577,13 @@ def command_watch(show_all, interval, verbose=False, stdin=None, stdout=None):
 
 
 def watch_frame(lines, rows, width, footer, color):
-    """One watch frame: at most `rows - 1` lines (the last one says how many are hidden), then the footer, each line
-    erased to its end and the rest of the screen below; no newline after the footer, so nothing scrolls."""
+    """One watch frame: at most `rows - 1` lines (without the blank ones when they don't fit; the last one says how
+    many are hidden), then the footer, each line erased to its end and the rest of the screen below; no newline after
+    the footer, so nothing scrolls."""
     budget = max(1, rows - 1)
+
+    if len(lines) > budget:
+        lines = [line for line in lines if line]
 
     if len(lines) > budget:
         hidden = len(lines) - budget + 1
@@ -8148,7 +8168,8 @@ COMMANDS = {
                 "accept plan.md's answers (or let respond fix review round 2's findings)", 'daily'),
     'revise': ('revise <feature> [--repo <o>/<r>]', 'send the plan back (`## Feedback` in plan.md)', 'daily'),
     'respond': ('respond <feature> [--repo <o>/<r>]', 'turn your PR comments into a respond round, now', 'daily'),
-    'queue': ('queue', 'running, queued in start order, held, waiting, needs you, backlog', 'queue'),
+    'queue': ('queue', 'running, queued in start order, waiting, held, needs you, review & merge, deferred, backlog',
+              'queue'),
     'deferred': ('deferred [<feature>] [--json [--evidence]] [--repo <o>/<r>] | deferred close <feature> <NN.K> '
                  'done|moot|wontdo <note> | deferred close <feature> <NN.K> owned <target> [<note>] | deferred file '
                  '<feature> <NN.K> <target> --brief <file> --areas <areas> --migration yes|no | deferred sweep',
